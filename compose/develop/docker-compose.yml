@@ -1,0 +1,39 @@
+services:
+  # 1. The LLM Engine (CPU-only with TurboQuant)
+  llm-server:
+    image: ghcr.io/ggml-org/llama.cpp:full
+    container_name: llm_engine
+    volumes:
+      - ../../models:/models
+    command: >
+      --server --host 0.0.0.0 --port 8080
+      --model /models/your-model.gguf
+      --kv-cache-type q8_0
+      --threads 8
+    restart: unless-stopped
+
+  # 2. The Database
+  db:
+    image: postgres:15-alpine
+    container_name: stats_db
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: llm_monitoring
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+
+  # 3. The Statistics Collector (Custom Python Bridge)
+  collector:
+    build: ./collector
+    container_name: stats_collector
+    depends_on:
+      - llm-server
+      - db
+    environment:
+      LLM_URL: "http://llm-server:8080"
+      DB_URL: "postgresql://user:password@db:5432/llm_monitoring"
+    ports:
+      - "8000:8000" # You will send your prompts here instead of 8080
