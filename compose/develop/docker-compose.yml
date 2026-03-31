@@ -45,6 +45,34 @@ services:
     ports:
       - "5432:5432"
 
+  # 5. Open WebUI (Chat Interface)
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open_webui
+    environment:
+      - OPENAI_API_BASE_URL=http://stats_collector:8000/v1
+      - OPENAI_API_KEY=sk-dummy
+      - WEBUI_AUTH=False
+      - ENABLE_OLLAMA_API=false
+      - ENABLE_SIGNUP=false
+    ports:
+      - "3000:8080"
+    restart: unless-stopped
+    depends_on:
+      - collector
+
+  # 6. Grafana (Stats Visualizer)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+    depends_on:
+      - db
+
   # 4. Collector
   collector:
     build: 
@@ -55,9 +83,26 @@ services:
       - llm-server
       - db
     volumes:
-      - ../../collector:/app/collector
+      - ../../src/collector:/app
     environment:
       LLM_URL: "http://llm-server:8080"
       DB_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}"
     ports:
       - "8000:8000"
+
+  # 7. Model Orchestrator UI
+  orchestrator:
+    build:
+      context: ../../
+      dockerfile: compose/develop/orchestrator/Dockerfile
+    container_name: model_orchestrator
+    volumes:
+      - ../../models:/models
+      - ../../src/orchestrator:/app
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    ports:
+      - "7860:7860"
+    restart: unless-stopped
+    depends_on:
+      - downloader
