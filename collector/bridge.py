@@ -5,8 +5,19 @@ from fastapi import FastAPI, Request
 
 app = FastAPI()
 
-# Connect using environment variables
-conn = psycopg2.connect(os.getenv("DB_URL"))
+import time
+
+# Connect using environment variables with a retry mechanism
+for _ in range(15):
+    try:
+        conn = psycopg2.connect(os.getenv("DB_URL"))
+        break
+    except psycopg2.OperationalError:
+        print("Database not ready yet, waiting 2 seconds...")
+        time.sleep(2)
+else:
+    raise Exception("Could not connect to database after 30 seconds.")
+
 cursor = conn.cursor()
 
 @app.post("/v1/chat/completions")

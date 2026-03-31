@@ -6,4 +6,4 @@ WORKDIR /app
 COPY collector/ .
 
 # Use --reload so changes to the volume-mapped file take effect immediately
-CMD ["uvicorn", "bridge.py:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "bridge:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

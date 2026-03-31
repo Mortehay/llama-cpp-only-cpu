@@ -1,2 +1,5 @@
 bartowski/Llama-3.2-3B-Instruct-GGUF Llama-3.2-3B-Instruct-Q4_K_M.gguf
 bartowski/Mistral-7B-Instruct-v0.3-GGUF Mistral-7B-Instruct-v0.3-Q4_K_M.gguf
+# Adding smaller models for faster CPU-only testing
+bartowski/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
+bartowski/gemma-2-2b-it-GGUF gemma-2-2b-it-Q4_K_M.gguf
