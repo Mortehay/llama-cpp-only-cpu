@@ -8,11 +8,16 @@ DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
 # Start containers in the background
 dev:
+	@echo "Running model downloader interactively to show progress..."
+	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
 
 # Force a rebuild of the images and start
 build:
-	docker compose -f $(COMPOSE_FILE) up -d --build
+	docker compose -f $(COMPOSE_FILE) build
+	@echo "Running model downloader interactively to show progress..."
+	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
+	docker compose -f $(COMPOSE_FILE) up -d
 
 # Stop the containers
 stop:
@@ -37,12 +42,27 @@ shell:
 # Force a total rebuild from scratch (no cache)
 rebuild-clean:
 	docker compose -f $(COMPOSE_FILE) build --no-cache
+	@echo "Running model downloader interactively to show progress..."
+	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
 
 # Rebuild
 rebuild:
 	docker compose -f $(COMPOSE_FILE) build
+	@echo "Running model downloader interactively to show progress..."
+	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
+
+# Download a new model dynamically using the background running downloader container
+download:
+	@if [ -z "$(repo)" ] || [ -z "$(file)" ]; then \
+		echo "Usage: make download repo=<hf-repo> file=<filename>"; \
+		exit 1; \
+	fi
+	@echo "Downloading $(file) from $(repo)..."
+	docker exec -it model_downloader hf download "$(repo)" "$(file)" --local-dir /models
+	@echo "$(repo) $(file)" >> compose/develop/downloader/models.txt
+	@echo "Model appended to models.txt for future rebuilds."
 
 # Shortcut to just rebuild the specific service without cache
 rebuild-app:

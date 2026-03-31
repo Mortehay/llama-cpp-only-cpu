@@ -1,0 +1,3 @@
+compose/develop/.env
+!models/*
+models/*

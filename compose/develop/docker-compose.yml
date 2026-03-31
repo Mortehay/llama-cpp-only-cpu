@@ -1,39 +1,63 @@
+name: llama-cpp-only-cpu
 services:
-  # 1. The LLM Engine (CPU-only with TurboQuant)
+  # 1. Model Downloader (Skips if exists)
+  downloader:
+    build:
+      context: ./downloader
+      dockerfile: Dockerfile
+    container_name: model_downloader
+    platform: linux/amd64
+    volumes:
+      - ../../models:/models
+      - ./downloader/models.txt:/usr/local/bin/models.txt
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    command: ["-c", "/usr/local/bin/download_models.sh && tail -f /dev/null"]
+
+  # 2. Multi-Model LLM Engine
   llm-server:
     image: ghcr.io/ggml-org/llama.cpp:full
+    platform: linux/amd64
     container_name: llm_engine
+    depends_on:
+      downloader:
+        condition: service_started
     volumes:
       - ../../models:/models
     command: >
       --server --host 0.0.0.0 --port 8080
-      --model /models/your-model.gguf
-      --kv-cache-type q8_0
+      --models-dir /models
+      --models-max 2
+      -ctk q8_0 -ctv q8_0
       --threads 8
     restart: unless-stopped
 
-  # 2. The Database
+  # 3. Database
   db:
     image: postgres:15-alpine
     container_name: stats_db
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
-      POSTGRES_DB: llm_monitoring
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     volumes:
       - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     ports:
       - "5432:5432"
 
-  # 3. The Statistics Collector (Custom Python Bridge)
+  # 4. Collector
   collector:
-    build: ./collector
+    build: 
+      context: ../../
+      dockerfile: compose/develop/collector/Dockerfile
     container_name: stats_collector
     depends_on:
       - llm-server
       - db
+    volumes:
+      - ../../collector:/app/collector
     environment:
       LLM_URL: "http://llm-server:8080"
-      DB_URL: "postgresql://user:password@db:5432/llm_monitoring"
+      DB_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}"
     ports:
-      - "8000:8000" # You will send your prompts here instead of 8080
+      - "8000:8000"
