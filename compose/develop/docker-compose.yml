@@ -106,3 +106,18 @@ services:
     restart: unless-stopped
     depends_on:
       - downloader
+
+  # 8. Sprite Generator 
+  sprite-generator:
+    build:
+      context: ../../
+      dockerfile: compose/develop/sprite_generator/Dockerfile
+    container_name: sprite_generator
+    volumes:
+      - ../../models:/models
+      - ../../src/sprite_generator:/app
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+    ports:
+      - "8001:8001"
+    restart: unless-stopped

@@ -3,6 +3,7 @@ import json
 import time
 import requests
 import psycopg2
+from pydantic import BaseModel
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -78,6 +79,20 @@ def log_stats(model_name, prompt_tokens, completion_tokens, total_tokens, tps, p
         )
     except Exception as e:
         print(f"[stats] failed to log: {e}")
+
+class StatsPayload(BaseModel):
+    model_name: str
+    prompt_tokens: float
+    completion_tokens: float
+    total_tokens: float
+    tokens_per_second: float
+    prompt_eval_ms: float
+    total_duration_ms: float
+
+@app.post("/v1/internal/log_stats")
+async def internal_log_stats(req: StatsPayload):
+    log_stats(req.model_name, req.prompt_tokens, req.completion_tokens, req.total_tokens, req.tokens_per_second, req.prompt_eval_ms, req.total_duration_ms)
+    return {"status": "logged"}
 
 
 @app.get("/v1/models")
