@@ -11,6 +11,8 @@ dev:
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
+	@echo "Checking/applying database migrations..."
+	docker compose -f $(COMPOSE_FILE) exec -T sprite-generator python migrations.py
 
 # Force a rebuild of the images and start
 build:
@@ -18,6 +20,8 @@ build:
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
+	@echo "Checking/applying database migrations..."
+	docker compose -f $(COMPOSE_FILE) exec -T sprite-generator python migrations.py
 
 # Stop the containers
 stop:
@@ -45,6 +49,8 @@ rebuild-clean:
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
+	@echo "Checking/applying database migrations..."
+	docker compose -f $(COMPOSE_FILE) exec -T sprite-generator python migrations.py
 
 # Rebuild
 rebuild:
@@ -52,6 +58,8 @@ rebuild:
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) up -d
+	@echo "Checking/applying database migrations..."
+	docker compose -f $(COMPOSE_FILE) exec -T sprite-generator python migrations.py
 
 # Download a new model dynamically using the background running downloader container
 download:

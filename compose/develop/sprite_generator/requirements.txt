@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 python-multipart
+psycopg2-binary
 # Use CPU wheels for pytorch to keep image size small
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch

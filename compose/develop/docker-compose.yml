@@ -1,4 +1,8 @@
 name: llama-cpp-only-cpu
+
+volumes:
+  sprite_images:
+
 services:
   # 1. Model Downloader (Skips if exists)
   downloader:
@@ -116,8 +120,12 @@ services:
     volumes:
       - ../../models:/models
       - ../../src/sprite_generator:/app
+      - sprite_images:/app/images
     environment:
       - HF_TOKEN=${HF_TOKEN}
+      - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
     ports:
       - "8001:8001"
     restart: unless-stopped
+    depends_on:
+      - db
