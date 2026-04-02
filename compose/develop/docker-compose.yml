@@ -49,6 +49,13 @@ services:
     ports:
       - "5432:5432"
 
+  # 9. Redis (Celery Broker/Backend)
+  redis:
+    image: redis:7-alpine
+    container_name: redis_broker
+    ports:
+      - "6379:6379"
+
   # 5. Open WebUI (Chat Interface)
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -111,7 +118,7 @@ services:
     depends_on:
       - downloader
 
-  # 8. Sprite Generator 
+  # 8. Sprite Generator (API)
   sprite-generator:
     build:
       context: ../../
@@ -124,8 +131,31 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://redis:6379/0
     ports:
       - "8001:8001"
     restart: unless-stopped
     depends_on:
       - db
+      - redis
+
+  # 10. Sprite Worker (Celery)
+  sprite-worker:
+    build:
+      context: ../../
+      dockerfile: compose/develop/sprite_generator/Dockerfile
+    container_name: sprite_worker
+    command: ["celery", "-A", "tasks", "worker", "--loglevel=info", "--concurrency=1"]
+    volumes:
+      - ../../models:/models
+      - ../../src/sprite_generator:/app
+      - sprite_images:/app/images
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://redis:6379/0
+    restart: unless-stopped
+    depends_on:
+      - db
+      - redis
+      - downloader
