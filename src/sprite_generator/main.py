@@ -4,7 +4,7 @@ import time
 import requests
 import psycopg2
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, HTTPException
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from migrations import run_migrations
@@ -52,6 +52,8 @@ def fetch_gallery_rows(limit=None):
                     duration_ms,
                     COALESCE(error, '') as error,
                     task_id,
+                    COALESCE(progress_pct, 0) as progress_pct,
+                    COALESCE(progress_msg, '') as progress_msg,
                     ROW_NUMBER() OVER (PARTITION BY prompt ORDER BY timestamp) AS attempt_number
                 FROM sprite_images
                 ORDER BY timestamp DESC
@@ -109,10 +111,19 @@ SHARED_CSS = """
   }
   nav a:hover, nav a.active { background: var(--accent); color: #fff; }
   nav .brand { font-weight: 700; font-size: 16px; color: var(--accent2); margin-right: auto; }
+  
   .tag { font-size: 10px; padding: 2px 6px; border-radius: 4px; font-weight: 700; text-transform: uppercase; }
   .tag-danger { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.2); }
   .tag-success { background: rgba(52, 211, 153, 0.15); color: #6ee7b7; border: 1px solid rgba(52, 211, 153, 0.2); }
   .tag-working { background: rgba(251, 191, 36, 0.15); color: #fcd34d; border: 1px solid rgba(251, 191, 36, 0.2); }
+
+  .progress-bg { height: 4px; width: 100%; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 6px; }
+  .progress-fill { height: 100%; background: var(--accent); transition: width .3s ease-out; }
+  
+  .btn-sm { padding: 4px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 11px; font-weight: 600; cursor: pointer; transition: all .2s; }
+  .btn-sm:hover { background: var(--card); border-color: var(--muted); }
+  .btn-danger-sm:hover { background: var(--danger); border-color: var(--danger); }
+  .btn-retry-sm:hover { background: var(--success); border-color: var(--success); color: #000; }
 </style>
 """
 
@@ -140,45 +151,39 @@ async def index():
   <title>Sprite Generator (CPU Queue)</title>
   {SHARED_CSS}
   <style>
-    .page {{ max-width: 900px; margin: 48px auto; padding: 0 20px; display: grid; grid-template-columns: 1fr 320px; gap: 32px; }}
+    .page {{ max-width: 900px; margin: 48px auto; padding: 0 20px; display: grid; grid-template-columns: 1fr 340px; gap: 32px; }}
     @media (max-width: 850px) {{ .page {{ grid-template-columns: 1fr; }} }}
     h1 {{ font-size: 28px; font-weight: 700; margin-bottom: 6px; }}
     .sub {{ color: var(--muted); font-size: 14px; margin-bottom: 32px; }}
-    .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; height: fit-content; }}
+    .card {{ background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }}
     label {{ font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; display: block; margin-bottom: 8px; }}
     textarea {{
-      width: 100%; background: var(--surface); color: var(--text);
-      border: 1px solid var(--border); border-radius: 8px;
-      padding: 12px; font-size: 15px; font-family: inherit;
-      resize: vertical; transition: border .2s;
+      width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; font-size: 15px; font-family: inherit; resize: vertical;
     }}
-    textarea:focus {{ outline: none; border-color: var(--accent); }}
     .btn {{
       display: block; width: 100%; margin-top: 20px;
       background: linear-gradient(135deg, var(--accent) 0%, #a855f7 100%);
       color: #fff; padding: 14px; border: none; border-radius: 8px;
-      font-size: 15px; font-weight: 700; cursor: pointer; transition: opacity .2s;
+      font-size: 15px; font-weight: 700; cursor: pointer;
     }}
-    .btn:hover {{ opacity: .88; }}
     .btn:disabled {{ opacity: .4; cursor: not-allowed; }}
-    #status {{ margin-top: 14px; font-size: 13px; color: var(--warn); text-align: center; }}
+    #status {{ margin-top: 14px; font-size: 13px; color: var(--warn); text-align: center; line-height: 1.5; }}
     
     .preview {{
       margin-top: 24px; min-height: 200px; border: 2px dashed var(--border);
       border-radius: 10px; display: flex; align-items: center; justify-content: center;
       background: repeating-conic-gradient(#1e1e30 0% 25%, #161626 0% 50%) 0 0 / 20px 20px;
     }}
-    .preview img {{ max-width: 100%; border-radius: 6px; image-rendering: pixelated; }}
-    .preview-placeholder {{ color: var(--muted); font-size: 13px; text-align: center; padding: 0 20px; }}
+    .preview img {{ max-width: 100%; image-rendering: pixelated; }}
+    .preview-placeholder {{ color: var(--muted); font-size: 13px; text-align: center; }}
 
     /* Task List Sidebar */
     .task-list-title {{ font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 16px; display: flex; justify-content: space-between; }}
-    .task-item {{ 
-      background: var(--surface); border: 1px solid var(--border); border-radius: 8px; 
-      padding: 12px; margin-bottom: 12px; font-size: 13px;
-    }}
+    .task-item {{ background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; font-size: 13px; }}
     .task-item .prompt-clip {{ color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 6px; font-weight: 500; }}
     .task-item .meta {{ display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); }}
+    .task-item .progress-info {{ font-size: 11px; color: var(--accent2); margin-top: 4px; font-weight: 600; display: block; }}
     .pulse {{ animation: pulse 2s infinite; }}
     @keyframes pulse {{ 0% {{ opacity: 1; }} 50% {{ opacity: 0.5; }} 100% {{ opacity: 1; }} }}
   </style>
@@ -188,26 +193,24 @@ async def index():
   <div class="page">
     <div class="main-content">
       <h1>Pixel Art Sprite Generator</h1>
-      <p class="sub">CPU-Optimized sequential queue. Background auto-removed.</p>
+      <p class="sub">Dynamic sequential queue with live pass tracking.</p>
       <div class="card">
         <label for="prompt">Character description</label>
-        <textarea id="prompt" rows="3" placeholder="Describe your character...">green zombie, tattered clothes, solid white background</textarea>
-        <button class="btn" id="gen-btn" onclick="generate()">⚡ Queue Sprite Generation</button>
+        <textarea id="prompt" rows="3">green zombie, tattered clothes, solid white background</textarea>
+        <button class="btn" id="gen-btn" onclick="generate()">⚡ Start Generation</button>
         <div id="status"></div>
         <div class="preview" id="result">
-          <span class="preview-placeholder">Enter a prompt and start a task to see the magic here.</span>
+          <span class="preview-placeholder">Live preview will appear here during generation.</span>
         </div>
       </div>
     </div>
 
     <div class="sidebar">
        <div class="task-list-title"> 
-         <span>Recent Tasks</span>
-         <span style="font-size: 10px; font-weight: 400; opacity: 0.6;">(Updates Live)</span>
+         <span>Live Tasks</span>
        </div>
        <div id="task-queue">
-         <!-- Tasks will be injected here -->
-         <p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">Loading queue...</p>
+         <p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">Loading tasks...</p>
        </div>
     </div>
   </div>
@@ -216,9 +219,8 @@ async def index():
     let pollInterval = null;
     let queueInterval = null;
 
-    // Initial load
     updateQueue();
-    queueInterval = setInterval(updateQueue, 5000);
+    queueInterval = setInterval(updateQueue, 3000);
 
     async function updateQueue() {{
       try {{
@@ -227,27 +229,38 @@ async def index():
         const queueDiv = document.getElementById('task-queue');
         
         if (tasks.length === 0) {{
-          queueDiv.innerHTML = '<p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">No recent tasks.</p>';
+          queueDiv.innerHTML = '<p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">No history yet.</p>';
           return;
         }}
 
         queueDiv.innerHTML = tasks.map(t => {{
           let statusTag = '';
-          if (t.error) statusTag = '<span class="tag tag-danger">Failed</span>';
-          else if (t.file_path) statusTag = '<span class="tag tag-success">Done</span>';
-          else statusTag = '<span class="tag tag-working pulse">Working...</span>';
+          let progressLine = '';
+          
+          if (t.error) {{
+             statusTag = '<span class="tag tag-danger">Failed</span>';
+          }} else if (t.file_path) {{
+             statusTag = '<span class="tag tag-success">Done</span>';
+          }} else {{
+             statusTag = `<span class="tag tag-working pulse">${{t.progress_pct}}%</span>`;
+             progressLine = `
+              <span class="progress-info">${{t.progress_msg || 'Preparing...'}}</span>
+              <div class="progress-bg"><div class="progress-fill" style="width: ${{t.progress_pct}}%"></div></div>
+             `;
+          }}
 
           return `
             <div class="task-item">
-              <div class="prompt-clip" title="${{t.prompt.replace(/"/g, '&quot;')}}">${{t.prompt}}</div>
+              <div class="prompt-clip">${{t.prompt}}</div>
               <div class="meta">
                 <span>${{statusTag}}</span>
                 <span>${{t.timestamp.split('T')[1].split('.')[0]}}</span>
               </div>
+              ${{progressLine}}
             </div>
           `;
         }}).join('');
-      }} catch (e) {{ console.error('Queue update failed', e); }}
+      }} catch (e) {{ console.error(e); }}
     }}
 
     async function generate() {{
@@ -257,8 +270,8 @@ async def index():
       const statusDiv = document.getElementById('status');
       const btn = document.getElementById('gen-btn');
 
-      resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Task is being added to queue...</span>';
-      statusDiv.innerText = 'Communicating with Redis...';
+      resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
+      statusDiv.innerText = 'Initializing...';
       btn.disabled = true;
 
       try {{
@@ -268,10 +281,8 @@ async def index():
 
         if (req.ok) {{
           const data = await req.json();
-          const taskId = data.task_id;
-          statusDiv.innerText = '✅ Task Queued! Tracking...';
+          pollTaskStatus(data.task_id);
           updateQueue();
-          pollTaskStatus(taskId);
         }} else {{
           statusDiv.innerText = '❌ Error: ' + await req.text();
           btn.disabled = false;
@@ -290,33 +301,33 @@ async def index():
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = setInterval(async () => {{
         try {{
-          const res = await fetch('/api/task-status/' + taskId);
-          const data = await res.json();
+          const resRecent = await fetch('/api/tasks/recent');
+          const recentTasks = await resRecent.json();
+          const me = recentTasks.find(t => t.task_id === taskId);
 
-          if (data.status === 'SUCCESS') {{
-            clearInterval(pollInterval);
-            const result = data.result;
-            if (result.error) {{
-                statusDiv.innerText = '❌ Failed: ' + result.error;
-                resultDiv.innerHTML = '<span class="preview-placeholder">Generation encountered an error. Check the task list for details.</span>';
-            }} else {{
-                resultDiv.innerHTML = `<img src="${{result.url}}" alt="Sprite Sheet" />`;
-                statusDiv.innerText = `✅ Finished in ${{(result.duration_ms / 1000).toFixed(1)}}s`;
+          if (me) {{
+            if (me.file_path) {{
+                clearInterval(pollInterval);
+                resultDiv.innerHTML = `<img src="/images/${{me.file_path.split('/').pop()}}" alt="Sprite" />`;
+                statusDiv.innerText = `✅ Success! Completed in ${{me.duration_ms / 1000}}s`;
+                btn.disabled = false;
+                updateQueue();
+                return;
             }}
-            btn.disabled = false;
-            updateQueue();
-          }} else if (data.status === 'FAILURE') {{
-            clearInterval(pollInterval);
-            statusDiv.innerText = '❌ Task system error.';
-            btn.disabled = false;
-            updateQueue();
-          }} else if (data.status === 'STARTED') {{
-            statusDiv.innerText = '🏃 Worker is crunching pixels now...';
-          }} else {{
-            statusDiv.innerText = '⌛ Waiting in queue (Sequential Mode)...';
+            if (me.error) {{
+                clearInterval(pollInterval);
+                statusDiv.innerText = '❌ Error: ' + me.error;
+                btn.disabled = false;
+                updateQueue();
+                return;
+            }}
+            statusDiv.innerHTML = `
+              <div style="font-weight: 700; color: var(--accent2);">${{me.progress_msg || 'Queued'}}</div>
+              <div class="progress-bg" style="width: 240px; margin: 8px auto;"><div class="progress-fill" style="width: ${{me.progress_pct}}%"></div></div>
+            `;
           }}
         }} catch (e) {{ console.error(e); }}
-      }}, 3000);
+      }}, 1500);
     }}
   </script>
 </body>
@@ -326,38 +337,50 @@ async def index():
 async def gallery():
     rows = fetch_gallery_rows()
     if not rows:
-        cards_html = """<div class="empty"><span>🖼️</span><p>No sprites yet.</p></div>"""
+        cards_html = """<div class="empty"><span>🖼️</span><p>No history.</p></div>"""
     else:
         cards = []
         for row in rows:
             ts = row["timestamp"].strftime("%m-%d %H:%M") if row["timestamp"] else "—"
             dur = f"{row['duration_ms'] / 1000:.1f}s" if row["duration_ms"] else "—"
-            url = f"/images/{os.path.basename(row['file_path'])}" if row["file_path"] else "#"
             prompt_escaped = row["prompt"].replace('"', '&quot;').replace("<", "&lt;")
             
-            error_html = ''
+            status_html = ''
+            img_content = '<span>Pending...</span>'
+            img_url = "#"
+            
             if row["error"]:
-                error_html = f'<div class="tag tag-danger" title="{row["error"]}">Error</div>'
-            elif not row["file_path"]:
-                 error_html = f'<div class="tag tag-working pulse">Queued</div>'
+                status_html = f'<div class="tag tag-danger" title="{row["error"]}">Error</div>'
+            elif row["file_path"]:
+                img_url = f"/images/{os.path.basename(row['file_path'])}"
+                img_content = f'<img src="{img_url}" alt="sprite" />'
+                status_html = f'<div class="tag tag-success">OK</div>'
+            else:
+                 status_html = f'<div class="tag tag-working pulse">{row["progress_pct"]}%</div>'
+
+            # Header with buttons
+            control_html = f"""
+              <div style="display: flex; gap: 4px; margin-top: 8px;">
+                <button class="btn-sm btn-danger-sm" onclick="deleteTask({row['id']})">Delete</button>
+                {f'<button class="btn-sm btn-retry-sm" onclick="retryTask({row["id"]})">Retry</button>' if not row['file_path'] or row['error'] else ''}
+              </div>
+            """
 
             cards.append(f"""
-            <div class="sprite-card">
-              <a href="{url if row['file_path'] else '#'}" target="_blank">
-                <div class="thumb-wrap" style="{'' if row['file_path'] else 'opacity: 0.5;'}">
-                  {f'<img src="{url}" alt="sprite" loading="lazy" />' if row["file_path"] else '<span>Pending...</span>'}
+            <div class="sprite-card" id="card-{row['id']}">
+              <a href="{img_url}" target="_blank" style="display: block; width: 100%; border: none;">
+                <div class="thumb-wrap">
+                  {img_content}
                 </div>
               </a>
               <div class="card-body">
                 <div style="display: flex; justify-content: space-between; align-items: start;">
                   <div class="attempt-badge">Attempt #{row['attempt_number']}</div>
-                  {error_html}
+                  {status_html}
                 </div>
                 <div class="prompt-text" title="{prompt_escaped}">{prompt_escaped}</div>
-                <div class="card-meta">
-                  <span>🕒 {ts}</span>
-                  <span>⏱ {dur}</span>
-                </div>
+                <div class="card-meta"><span>🕒 {ts}</span> <span>⏱ {dur}</span></div>
+                {control_html}
               </div>
             </div>""")
         cards_html = "\n".join(cards)
@@ -366,75 +389,109 @@ async def gallery():
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Sprite Gallery</title>
+  <title>Gallery</title>
   {SHARED_CSS}
   <style>
     .page-header {{ padding: 36px 28px 0; max-width: 1200px; margin: 0 auto; }}
-    h1 {{ font-size: 28px; font-weight: 700; margin-bottom: 4px; }}
-    .sub {{ color: var(--muted); font-size: 14px; margin-bottom: 28px; }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 20px; padding: 0 28px 48px; max-width: 1200px; margin: 0 auto; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 24px; padding: 24px 28px; max-width: 1200px; margin: 0 auto; }}
     .sprite-card {{ background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }}
-    .thumb-wrap {{ background: repeating-conic-gradient(#1e1e30 0% 25%, #161626 0% 50%) 0 0 / 16px 16px; display: flex; align-items: center; justify-content: center; height: 180px; }}
+    .thumb-wrap {{ background: repeating-conic-gradient(#1e1e30 0% 25%, #161626 0% 50%) 0 0 / 16px 16px; height: 180px; display: flex; align-items: center; justify-content: center; cursor: zoom-in; }}
     .thumb-wrap img {{ max-height: 100%; max-width: 100%; image-rendering: pixelated; }}
-    .card-body {{ padding: 12px 14px 14px; }}
-    .attempt-badge {{ display: inline-block; font-size: 10px; font-weight: 700; background: rgba(124,106,247,.1); color: var(--accent2); border-radius: 4px; padding: 2px 6px; margin-bottom: 7px; }}
-    .prompt-text {{ font-size: 13px; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 10px; }}
+    .card-body {{ padding: 12px 14px 14px; position: relative; }}
+    .attempt-badge {{ font-size: 10px; font-weight: 700; background: rgba(124,106,247,.1); color: var(--accent2); padding: 2px 6px; border-radius: 4px; margin-bottom: 8px; display: inline-block; }}
+    .prompt-text {{ font-size: 13px; color: var(--text); overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; margin-bottom: 8px; font-weight: 500; }}
     .card-meta {{ display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }}
-    .empty {{ text-align: center; padding: 80px 20px; color: var(--muted); }}
+    .empty {{ text-align: center; padding: 100px; color: var(--muted); }}
   </style>
 </head>
 <body>
   {nav_bar("gallery")}
   <div class="page-header">
     <h1>🖼️ Sprite Gallery</h1>
-    <p class="sub">Completed and queued sprites.</p>
   </div>
   <div class="grid">{cards_html}</div>
+
+  <script>
+    async function deleteTask(id) {{
+        if(!confirm('Permanently remove this task and image?')) return;
+        try {{
+            const res = await fetch('/api/task/' + id, {{ method: 'DELETE' }});
+            if (res.ok) document.getElementById('card-' + id).remove();
+        }} catch(e) {{ alert('Delete failed: ' + e.message); }}
+    }}
+
+    async function retryTask(id) {{
+        try {{
+            const res = await fetch('/api/retry/' + id, {{ method: 'POST' }});
+            if (res.ok) {{
+                const data = await res.json();
+                alert('Task re-queued! Redirecting to dashboard...');
+                window.location.href = '/';
+            }}
+        }} catch(e) {{ alert('Retry failed: ' + e.message); }}
+    }}
+  </script>
 </body>
 </html>"""
 
 @app.post("/api/generate")
 def generate_sprite(prompt: str = Form(...)):
-    # Clean prompt for DB record
     DIRECTIONS = ["PixelartFSS", "PixelartBSS", "PixelartLSS", "PixelartRSS"]
     clean_prompt = prompt
     for t in DIRECTIONS:
         clean_prompt = clean_prompt.replace(t, "").strip().lstrip(",").strip()
 
-    # Queue the task
     task = generate_sprite_task.delay(prompt)
-
-    # Store skeleton record in DB immediately
     conn = get_db()
     if conn:
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id) VALUES (%s, %s)",
-                        (clean_prompt, task.id)
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg) VALUES (%s, %s, %s)",
+                        (clean_prompt, task.id, "Waiting in queue...")
                     )
-        except Exception as e:
-            print(f"Initial record save failed: {e}")
-        finally:
-            conn.close()
-
+        except Exception as e: print(f"Record error: {e}")
+        finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
+
+@app.delete("/api/task/{id}")
+def delete_task(id: int):
+    conn = get_db()
+    if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                # Get file path to delete from disk
+                cur.execute("SELECT file_path FROM sprite_images WHERE id = %s", (id,))
+                row = cur.fetchone()
+                if row and row[0] and os.path.exists(row[0]):
+                    os.remove(row[0])
+                cur.execute("DELETE FROM sprite_images WHERE id = %s", (id,))
+        return {"status": "deleted"}
+    finally: conn.close()
+
+@app.post("/api/retry/{id}")
+def retry_task(id: int):
+    conn = get_db()
+    if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT prompt FROM sprite_images WHERE id = %s", (id,))
+                row = cur.fetchone()
+                if not row: raise HTTPException(status_code=404, detail="Task not found")
+                prompt = row[0]
+        # Simply use the existing generate logic
+        return generate_sprite(prompt=prompt)
+    finally: conn.close()
 
 @app.get("/api/task-status/{task_id}")
 def get_task_status(task_id: str):
     res = AsyncResult(task_id, app=celery_app)
-    result_data = None
-    if res.ready():
-        result_data = res.result
-    
-    return {
-        "task_id": task_id,
-        "status": res.status,
-        "result": result_data
-    }
+    result_data = res.result if res.ready() else None
+    return {"task_id": task_id, "status": res.status, "result": result_data}
 
 @app.get("/api/tasks/recent")
 def recent_tasks():
-    # Fetch recent 10 records from DB (includes queued and finished)
-    return fetch_gallery_rows(limit=10)
+    return fetch_gallery_rows(limit=12)

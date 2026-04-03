@@ -48,24 +48,42 @@ def get_db():
         print(f"DB connection failed: {e}")
         return None
 
-def update_task_record(task_id: str, file_path: str = None, duration_ms: float = 0, error_msg: str = None):
-    """Update an existing record (identified by task_id) with results."""
+def update_task_record(task_id: str, file_path: str = None, duration_ms: float = 0, 
+                       error_msg: str = None, progress_pct: int = None, progress_msg: str = None):
+    """Update progress or final result for a task record in the DB."""
     conn = get_db()
     if not conn:
         return
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE sprite_images 
-                    SET file_path = %s, duration_ms = %s, error = %s 
-                    WHERE task_id = %s
-                    """,
-                    (file_path, duration_ms, error_msg, task_id),
-                )
+                update_fields = []
+                values = []
+                
+                if file_path is not None:
+                    update_fields.append("file_path = %s")
+                    values.append(file_path)
+                if duration_ms > 0:
+                    update_fields.append("duration_ms = %s")
+                    values.append(duration_ms)
+                if error_msg is not None:
+                    update_fields.append("error = %s")
+                    values.append(error_msg)
+                if progress_pct is not None:
+                    update_fields.append("progress_pct = %s")
+                    values.append(progress_pct)
+                if progress_msg is not None:
+                    update_fields.append("progress_msg = %s")
+                    values.append(progress_msg)
+                
+                if update_fields:
+                    values.append(task_id)
+                    cur.execute(
+                        f"UPDATE sprite_images SET {', '.join(update_fields)} WHERE task_id = %s",
+                        tuple(values)
+                    )
     except Exception as e:
-        print(f"Could not update task record {task_id}: {e}")
+        print(f"Could not update record {task_id}: {e}")
     finally:
         conn.close()
 
@@ -91,29 +109,49 @@ def generate_sprite_task(self, prompt: str):
 
     strips = []
     start_time = time.time()
+    num_steps = 25
 
     try:
-        for trigger, label in DIRECTIONS:
+        for i, (trigger, label) in enumerate(DIRECTIONS):
             full_prompt = f"{trigger}, {clean_prompt}"
             print(f"Generating {label}: {full_prompt}")
+            
+            # Update DB with new direction
+            update_task_record(task_id, progress_pct=int((i/4)*100), progress_msg=f"Pass {i+1}/4: {label}")
+
+            # Define progress callback
+            def progress_callback(step, timestep, latents):
+                step_pct = (step / num_steps)
+                total_pct = int(((i / 4) + (step_pct / 4)) * 100)
+                # We update every 3 steps to avoid DB spam
+                if step % 3 == 0:
+                    update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/4 ({label}): {int(step_pct*100)}%")
+                    # Also update Celery state for fallback polling
+                    self.update_state(state="PROGRESS", meta={"pct": total_pct, "msg": label})
+
             img = p(
                 full_prompt,
                 negative_prompt=negative,
                 height=512,
                 width=512,
-                num_inference_steps=25,
+                num_inference_steps=num_steps,
                 guidance_scale=7.5,
+                callback=progress_callback,
+                callback_steps=1
             ).images[0]
             strips.append(img)
+            
     except Exception as e:
-        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
+        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}", progress_pct=0)
         return {"error": str(e)}
 
     end_time = time.time()
     total_duration_ms = (end_time - start_time) * 1000
 
+    # UI cleanup: stitching state
+    update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Stitching...")
+
     # Stitch vertically
-    print("Stitching 4 directions...")
     total_height = sum(img.height for img in strips)
     master = Image.new("RGB", (strips[0].width, total_height))
     y = 0
@@ -141,13 +179,12 @@ def generate_sprite_task(self, prompt: str):
     # Save to disk
     filename = f"sprite_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
-    
     os.makedirs(IMAGES_DIR, exist_ok=True)
     master.save(filepath, format="PNG")
-    print(f"Saved image: {filepath}")
 
-    # Update record in DB
-    update_task_record(task_id, file_path=filepath, duration_ms=total_duration_ms, error_msg=generation_error)
+    # Final DB Update
+    update_task_record(task_id, file_path=filepath, duration_ms=total_duration_ms, 
+                       error_msg=generation_error, progress_pct=100, progress_msg="Complete")
 
     # Log stats to collector
     try:
@@ -157,9 +194,9 @@ def generate_sprite_task(self, prompt: str):
             json={
                 "model_name": "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
                 "prompt_tokens": tokens,
-                "completion_tokens": float(25 * 4),
-                "total_tokens": tokens + float(25 * 4),
-                "tokens_per_second": float(25 * 4) / max(end_time - start_time, 0.001),
+                "completion_tokens": float(num_steps * 4),
+                "total_tokens": tokens + float(num_steps * 4),
+                "tokens_per_second": float(num_steps * 4) / max(end_time - start_time, 0.001),
                 "prompt_eval_ms": 0.0,
                 "total_duration_ms": total_duration_ms,
             },
