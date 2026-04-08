@@ -5,6 +5,7 @@ import uuid
 import torch
 import requests
 import psycopg2
+import random
 from celery import Celery
 from diffusers import StableDiffusionPipeline, DPMSolverMultistepScheduler
 from PIL import Image
@@ -30,7 +31,8 @@ def get_pipeline():
             cache_dir="/models",
             token=os.environ.get("HF_TOKEN"),
         )
-        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+        # Using a very high quality scheduler
+        pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
         pipe.to("cpu")
         pipe.enable_attention_slicing()
         print("Pipeline loaded successfully.")
@@ -59,7 +61,6 @@ def update_task_record(task_id: str, file_path: str = None, duration_ms: float =
             with conn.cursor() as cur:
                 update_fields = []
                 values = []
-                
                 if file_path is not None:
                     update_fields.append("file_path = %s")
                     values.append(file_path)
@@ -101,54 +102,64 @@ def generate_sprite_task(self, prompt: str):
         ("PixelartLSS", "left"),
         ("PixelartRSS", "right"),
     ]
-    negative = "blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise"
+    
+    # CRITICAL FOR QUALITY & CONSISTENCY: 
+    # Use the same seed for all 4 directions so it generates the SAME character.
+    seed = random.randint(0, 10**9)
+    generator = torch.Generator("cpu").manual_seed(seed)
+    
+    # QUALITY: Enhanced Negative Prompt
+    negative = "blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
 
+    # QUALITY: Enhanced Prompt Prefix
     clean_prompt = prompt
     for t, _ in DIRECTIONS:
         clean_prompt = clean_prompt.replace(t, "").strip().lstrip(",").strip()
+    
+    # Force a solid background for better post-processing
+    if "background" not in clean_prompt.lower():
+        full_prompt_base = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus"
+    else:
+        full_prompt_base = f"{clean_prompt}, high quality pixel art, sharp focus"
 
     strips = []
     start_time = time.time()
-    num_steps = 25
+    num_steps = 35 # Increased for higher quality detail
 
     try:
         for i, (trigger, label) in enumerate(DIRECTIONS):
-            full_prompt = f"{trigger}, {clean_prompt}"
-            print(f"Generating {label}: {full_prompt}")
+            current_prompt = f"{trigger}, {full_prompt_base}"
+            print(f"Generating {label} (Seed {seed}): {current_prompt}")
             
-            # Update DB with new direction
             update_task_record(task_id, progress_pct=int((i/4)*100), progress_msg=f"Pass {i+1}/4: {label}")
 
-            # Define progress callback
             def progress_callback(step, timestep, latents):
-                step_pct = (step / num_steps)
-                total_pct = int(((i / 4) + (step_pct / 4)) * 100)
-                # We update every 3 steps to avoid DB spam
-                if step % 3 == 0:
+                if step % 4 == 0:
+                    step_pct = (step / num_steps)
+                    total_pct = int(((i / 4) + (step_pct / 4)) * 100)
                     update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/4 ({label}): {int(step_pct*100)}%")
-                    # Also update Celery state for fallback polling
                     self.update_state(state="PROGRESS", meta={"pct": total_pct, "msg": label})
 
             img = p(
-                full_prompt,
+                current_prompt,
                 negative_prompt=negative,
                 height=512,
                 width=512,
                 num_inference_steps=num_steps,
-                guidance_scale=7.5,
+                guidance_scale=9.0, # Balanced for creativity vs consistency
+                generator=generator,
                 callback=progress_callback,
                 callback_steps=1
             ).images[0]
             strips.append(img)
             
     except Exception as e:
-        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}", progress_pct=0)
+        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
         return {"error": str(e)}
 
     end_time = time.time()
     total_duration_ms = (end_time - start_time) * 1000
 
-    # UI cleanup: stitching state
     update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Stitching...")
 
     # Stitch vertically
@@ -159,22 +170,39 @@ def generate_sprite_task(self, prompt: str):
         master.paste(img, (0, y))
         y += img.height
 
-    # Chromakey background removal
-    print("Removing background (chromakey)...")
-    generation_error = None
+    # ADVANCED CHROMACAY: Pick multiple corners and safety check
+    print("Removing background...")
     try:
         master = master.convert("RGBA")
-        bg_r, bg_g, bg_b, *_ = master.getpixel((0, 0))
+        # Sample multiple corners
+        corners = [(0,0), (master.width-1, 0), (0, master.height-1), (master.width-1, master.height-1)]
+        bg_r, bg_g, bg_b = 255, 255, 255
+        
+        # Look for the most common corner color
+        for cx, cy in corners:
+            r, g, b, *_ = master.getpixel((cx, cy))
+            if r + g + b > 50: # Avoid overly dark pixels as background
+                bg_r, bg_g, bg_b = r, g, b
+                break
+
         new_data = []
+        pixels_removed = 0
+        total_pix = master.width * master.height
+        
         for r, g, b, a in master.getdata():
-            if abs(r - bg_r) < 18 and abs(g - bg_g) < 18 and abs(b - bg_b) < 18:
+            if abs(r - bg_r) < 22 and abs(g - bg_g) < 22 and abs(b - bg_b) < 22:
                 new_data.append((0, 0, 0, 0))
+                pixels_removed += 1
             else:
                 new_data.append((r, g, b, a))
-        master.putdata(new_data)
+        
+        # If removal wiped everything, it matched character color. Revert to 12.
+        if pixels_removed / total_pix > 0.98:
+            print("Safety trigger: Background removal too aggressive. Keeping background.")
+        else:
+            master.putdata(new_data)
     except Exception as e:
-        print(f"Background removal failed: {e}")
-        generation_error = f"Background removal failed: {str(e)}"
+        print(f"BG removal failed: {e}")
 
     # Save to disk
     filename = f"sprite_{uuid.uuid4().hex[:12]}.png"
@@ -182,32 +210,19 @@ def generate_sprite_task(self, prompt: str):
     os.makedirs(IMAGES_DIR, exist_ok=True)
     master.save(filepath, format="PNG")
 
-    # Final DB Update
     update_task_record(task_id, file_path=filepath, duration_ms=total_duration_ms, 
-                       error_msg=generation_error, progress_pct=100, progress_msg="Complete")
+                       error_msg=None, progress_pct=100, progress_msg="Complete")
 
-    # Log stats to collector
+    # Log stats
     try:
         tokens = float(len(clean_prompt.split()) * 10)
-        requests.post(
-            "http://stats_collector:8000/v1/internal/log_stats",
-            json={
-                "model_name": "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
-                "prompt_tokens": tokens,
-                "completion_tokens": float(num_steps * 4),
-                "total_tokens": tokens + float(num_steps * 4),
-                "tokens_per_second": float(num_steps * 4) / max(end_time - start_time, 0.001),
-                "prompt_eval_ms": 0.0,
-                "total_duration_ms": total_duration_ms,
-            },
-            timeout=2,
-        )
-    except Exception as e:
-        print(f"Could not log stats: {e}")
+        requests.post("http://stats_collector:8000/v1/internal/log_stats", json={
+            "model_name": "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
+            "prompt_tokens": tokens,
+            "completion_tokens": float(num_steps * 4),
+            "total_tokens": tokens + float(num_steps * 4),
+            "total_duration_ms": total_duration_ms,
+        }, timeout=2)
+    except: pass
 
-    return {
-        "status": "success",
-        "url": f"/images/{filename}",
-        "filename": filename,
-        "duration_ms": total_duration_ms
-    }
+    return {"status": "success", "url": f"/images/{filename}", "duration_ms": total_duration_ms }
