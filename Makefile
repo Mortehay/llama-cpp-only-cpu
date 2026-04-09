@@ -72,6 +72,11 @@ download:
 	@echo "$(repo) $(file)" >> compose/develop/downloader/models.txt
 	@echo "Model appended to models.txt for future rebuilds."
 
+# Check models.txt against the local directory and download any missing weights
+sync-models:
+	@echo "Checking models.txt for any missing models..."
+	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
+
 # Shortcut to just rebuild the specific service without cache
 rebuild-app:
 	docker compose -f $(COMPOSE_FILE) build --no-cache $(SERVICE_NAME)

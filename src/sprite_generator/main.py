@@ -53,11 +53,28 @@ def fetch_gallery_rows(limit=None):
                     duration_ms,
                     COALESCE(error, '') as error,
                     task_id,
-                    COALESCE(progress_pct, 0) as progress_pct,
-                    COALESCE(progress_msg, '') as progress_msg,
-                    ROW_NUMBER() OVER (PARTITION BY prompt ORDER BY timestamp) AS attempt_number,
-                    image_type, parent_id, components, requested_actions
-                FROM sprite_images
+                    progress_pct,
+                    progress_msg,
+                    attempt_number,
+                    image_type, parent_id, components, requested_actions,
+                    COALESCE(llm_name, 'Unknown') as llm_name,
+                    COALESCE(step_number, 0) as step_number
+                FROM (
+                    SELECT
+                        id,
+                        timestamp,
+                        prompt,
+                        file_path,
+                        duration_ms,
+                        error,
+                        task_id,
+                        progress_pct,
+                        progress_msg,
+                        ROW_NUMBER() OVER (PARTITION BY prompt ORDER BY timestamp) AS attempt_number,
+                        image_type, parent_id, components, requested_actions,
+                        llm_name, step_number
+                    FROM sprite_images
+                ) AS sub
                 ORDER BY timestamp DESC
             """
             if limit:
@@ -225,8 +242,14 @@ async def index():
       </div>
       
       <div class="card tab-content active" id="tab-core">
+        <label>Select Model</label>
+        <select id="core-llm" style="width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 14px; margin-bottom: 16px;">
+            <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
+            <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        </select>
+        
         <label for="core-prompt">Core Character Description</label>
-        <textarea id="core-prompt" rows="3">green zombie, tattered clothes, solid white background</textarea>
+        <textarea id="core-prompt" rows="3">green zombie, tattered clothes, solid transparent background</textarea>
         <button class="btn" id="gen-core-btn" onclick="generateCore()">⚡ Generate Core Sprite</button>
         <div class="status" id="core-status"></div>
         <div class="preview" id="core-result">
@@ -235,6 +258,12 @@ async def index():
       </div>
       
       <div class="card tab-content" id="tab-sheet">
+        <label>Select Model</label>
+        <select id="sheet-llm" style="width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 14px; margin-bottom: 16px;">
+            <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
+            <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        </select>
+        
         <label>Select Core Image</label>
         <div class="core-grid" id="core-picker"><span style="color:var(--muted); font-size: 13px;">Loading cores...</span></div>
         
@@ -327,6 +356,7 @@ async def index():
           
           if (t.error) {{
              statusTag = '<span class="tag tag-danger">Failed</span>';
+             progressLine = `<div style="color: var(--danger); font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${{t.error}}">${{t.error}}</div>`;
           }} else if (t.file_path) {{
              statusTag = '<span class="tag tag-success">Done</span>';
           }} else {{
@@ -340,17 +370,44 @@ async def index():
           let typeTag = t.image_type === 'core' ? '<span class="tag tag-core" style="margin-left: 4px;">Core</span>' : '';
 
           return `
-            <div class="task-item">
+            <div class="task-item" id="live-task-${{t.id}}">
               <div class="prompt-clip">${{typeTag}} ${{t.prompt}}</div>
               <div class="meta">
                 <span>${{statusTag}}</span>
                 <span>${{t.timestamp.split('T')[1].split('.')[0]}}</span>
               </div>
               ${{progressLine}}
+              <div style="display: flex; gap: 4px; margin-top: 8px; justify-content: flex-end;">
+                  <button class="btn-sm btn-retry-sm" onclick="retryLiveTask(${{t.id}})">Retry</button>
+                  <button class="btn-sm btn-danger-sm" onclick="deleteTask(${{t.id}})">Delete</button>
+              </div>
             </div>
           `;
         }}).join('');
       }} catch (e) {{ console.error(e); }}
+    }}
+
+    async function retryLiveTask(id) {{
+        if(!confirm('Duplicate and retry this task?')) return;
+        try {{
+            const res = await fetch('/api/task/' + id + '/retry', {{ method: 'POST' }});
+            if (res.ok) {{
+                const data = await res.json();
+                const mode = data.image_type === 'spritesheet' ? 'sheet' : data.image_type;
+                pollTaskStatus(data.task_id, mode);
+                updateQueue();
+            }} else {{
+                alert('Retry failed: ' + await res.text());
+            }}
+        }} catch(e) {{ alert('Retry failed: ' + e.message); }}
+    }}
+
+    async function deleteTask(id) {{
+        if(!confirm('Permanently cancel and remove this task?')) return;
+        try {{
+            const res = await fetch('/api/task/' + id, {{ method: 'DELETE' }});
+            if (res.ok) updateQueue();
+        }} catch(e) {{ alert('Delete failed: ' + e.message); }}
     }}
 
     async function generateCore() {{
@@ -365,8 +422,10 @@ async def index():
       btn.disabled = true;
 
       try {{
+        const llm_name = document.getElementById('core-llm').value;
         const fd = new FormData();
         fd.append('prompt', promptVal);
+        fd.append('llm_name', llm_name);
         const req = await fetch('/api/generate_core', {{ method: 'POST', body: fd }});
 
         if (req.ok) {{
@@ -399,9 +458,11 @@ async def index():
       btn.disabled = true;
 
       try {{
+        const llm_name = document.getElementById('sheet-llm').value;
         const fd = new FormData();
         fd.append('parent_id', selectedCoreId);
         fd.append('actions', JSON.stringify(actions));
+        fd.append('llm_name', llm_name);
         const req = await fetch('/api/generate_sheet', {{ method: 'POST', body: fd }});
 
         if (req.ok) {{
@@ -491,6 +552,15 @@ async def gallery():
                  status_html = f'<div class="tag tag-working pulse">{row["progress_pct"]}%</div>'
                  
             type_tag = f'<div class="tag tag-core" style="margin-right: 4px;">Core</div>' if row['image_type'] == 'core' else ''
+            
+            step_tag = ""
+            if row.get('step_number'):
+                step_tag = f'<div class="tag tag-working" style="margin-right: 4px;">Step {row["step_number"]}</div>'
+            
+            llm_tag = ""
+            if row.get('llm_name') and row['llm_name'] != 'Unknown':
+                llm_compact = "SDXL-Turbo" if "sdxl-turbo" in row['llm_name'].lower() else "PixelArt 1.5"
+                llm_tag = f'<div class="tag" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); margin-right: 4px;">{llm_compact}</div>'
 
             # Header with buttons
             control_html = f"""
@@ -509,9 +579,11 @@ async def gallery():
               {components_html}
               <div class="card-body">
                 <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
-                  <div>
+                  <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
                       {type_tag}
-                      <span class="attempt-badge">Attempt #{row['attempt_number']}</span>
+                      {step_tag}
+                      {llm_tag}
+                      <span class="attempt-badge" style="margin-left: 2px;">Attempt #{row['attempt_number']}</span>
                   </div>
                   {status_html}
                 </div>
@@ -564,50 +636,50 @@ async def gallery():
 </html>"""
 
 @app.post("/api/generate")
-def generate_sprite(prompt: str = Form(...)):
+def generate_sprite(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
     # Fallback to older generation functionality if accessed directly
-    task = generate_sprite_task.delay(prompt)
+    task = generate_sprite_task.delay(prompt, llm_name)
     conn = get_db()
     if conn:
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type) VALUES (%s, %s, %s, %s)",
-                        (prompt, task.id, "Waiting in queue...", "spritesheet")
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
+                        (prompt, task.id, "Waiting in queue...", "spritesheet", llm_name)
                     )
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.post("/api/generate_core")
-def generate_core(prompt: str = Form(...)):
-    task = generate_core_task.delay(prompt)
+def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
+    task = generate_core_task.delay(prompt, llm_name)
     conn = get_db()
     if conn:
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type) VALUES (%s, %s, %s, %s)",
-                        (prompt, task.id, "Waiting in queue...", "core")
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (prompt, task.id, "Waiting in queue...", "core", llm_name, 1)
                     )
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.post("/api/generate_sheet")
-def generate_sheet(parent_id: int = Form(...), actions: str = Form(...)):
+def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
     actions_list = json.loads(actions)
-    task = generate_sheet_task.delay(parent_id, actions_list)
+    task = generate_sheet_task.delay(parent_id, actions_list, llm_name)
     conn = get_db()
     if conn:
         try:
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions) VALUES (%s, %s, %s, %s, %s, %s)",
-                        (str(actions_list), task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(actions_list))
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (str(actions_list), task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(actions_list), llm_name, 2)
                     )
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
@@ -639,11 +711,19 @@ def delete_task(id: int):
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT file_path, components FROM sprite_images WHERE id = %s", (id,))
+                cur.execute("SELECT file_path, components, task_id FROM sprite_images WHERE id = %s", (id,))
                 row = cur.fetchone()
                 if row:
                     filepath = row[0]
                     comps = row[1]
+                    task_id_to_revoke = row[2]
+                    
+                    if task_id_to_revoke:
+                        try:
+                            celery_app.control.revoke(task_id_to_revoke, terminate=True)
+                        except Exception as revoke_e:
+                            print(f"Revoke warning: {revoke_e}")
+
                     if filepath and os.path.exists(filepath):
                         os.remove(filepath)
                     if comps and isinstance(comps, list):
@@ -652,6 +732,44 @@ def delete_task(id: int):
                             if os.path.exists(c_path): os.remove(c_path)
                 cur.execute("DELETE FROM sprite_images WHERE id = %s", (id,))
         return {"status": "deleted"}
+    finally: conn.close()
+
+@app.post("/api/task/{id}/retry")
+def retry_task(id: int):
+    conn = get_db()
+    if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT prompt, image_type, parent_id, requested_actions, llm_name, step_number FROM sprite_images WHERE id = %s", (id,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Task not found")
+                
+                prompt, image_type, parent_id, requested_actions, llm_name, step_number = row
+                
+                llm_actual = llm_name if llm_name and llm_name != 'Unknown' else "stabilityai/sdxl-turbo"
+                
+                if image_type == "core":
+                    task = generate_core_task.delay(prompt, llm_actual)
+                    cur.execute(
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (prompt, task.id, "Waiting in queue...", "core", llm_actual, step_number)
+                    )
+                elif image_type == "spritesheet":
+                    task = generate_sheet_task.delay(parent_id, requested_actions, llm_actual)
+                    cur.execute(
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        (prompt, task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(requested_actions), llm_actual, step_number)
+                    )
+                else:
+                    task = generate_sprite_task.delay(prompt, llm_actual)
+                    cur.execute(
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
+                        (prompt, task.id, "Waiting in queue...", "spritesheet", llm_actual)
+                    )
+                    
+                return {"status": "queued", "task_id": task.id, "image_type": image_type}
     finally: conn.close()
 
 @app.get("/api/task-status/{task_id}")
