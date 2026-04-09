@@ -369,17 +369,20 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
             trigger = ""
             action_lower = action.lower()
             # Precisely structured positional alignment map natively matched to the identical 3-slot physics template structure.
-            if "move right" in action_lower: trigger = "PixelartRSS, walk right"
-            elif "move left" in action_lower: trigger = "PixelartLSS, walk left."
-            elif "move down" in action_lower or "move front" in action_lower: trigger = "PixelartFSS, walk front"
-            elif "move top" in action_lower or "move up" in action_lower or "move back" in action_lower: trigger = "PixelartBSS, walk back."
-            elif "idle" in action_lower: trigger = "PixelartFSS, idle front"
-            elif "attack" in action_lower: trigger = "PixelartFSS, fast strike"
-            elif "got damage" in action_lower: trigger = "PixelartFSS, take damage"
-            elif "burning" in action_lower: trigger = "PixelartFSS, in flames!!"
-            else: trigger = f"PixelartFSS, {action}       "
+            if "move right" in action_lower: trigger = "walk right" if "sdxl" in llm_name.lower() else "PixelartRSS, walk right"
+            elif "move left" in action_lower: trigger = "walk left" if "sdxl" in llm_name.lower() else "PixelartLSS, walk left."
+            elif "move down" in action_lower or "move front" in action_lower: trigger = "walk front toward viewer" if "sdxl" in llm_name.lower() else "PixelartFSS, walk front"
+            elif "move top" in action_lower or "move up" in action_lower or "move back" in action_lower: trigger = "walk back away from viewer" if "sdxl" in llm_name.lower() else "PixelartBSS, walk back."
+            elif "idle" in action_lower: trigger = "idle standing" if "sdxl" in llm_name.lower() else "PixelartFSS, idle front"
+            elif "attack" in action_lower: trigger = "fast strike attack" if "sdxl" in llm_name.lower() else "PixelartFSS, fast strike"
+            elif "got damage" in action_lower: trigger = "taking damage" if "sdxl" in llm_name.lower() else "PixelartFSS, take damage"
+            elif "burning" in action_lower: trigger = "in flames burning" if "sdxl" in llm_name.lower() else "PixelartFSS, in flames!!"
+            else: trigger = action if "sdxl" in llm_name.lower() else f"PixelartFSS, {action}       "
 
-            current_prompt = f"{trigger}, {base_prompt}"
+            if "sdxl" in llm_name.lower():
+                current_prompt = f"Video game character sprite sheet, exactly 4 individual frames of {clean_prompt} {trigger} sequence, laid out horizontally side by side in one row, solid white background, highly detailed 2D pixel art."
+            else:
+                current_prompt = f"{trigger}, {base_prompt}"
             logger.info(f"Generating {action} (Seed {parent_seed}): {current_prompt}")
             
             update_task_record(task_id, progress_pct=int((i/total_actions)*100), progress_msg=f"Pass {i+1}/{total_actions}: {action}", seed=parent_seed)
@@ -391,11 +394,14 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
                     update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/{total_actions} ({action}): {int(step_pct*100)}%")
                     self.update_state(state="PROGRESS", meta={"pct": total_pct, "msg": action})
 
+            w = 1024 if "sdxl" in llm_name.lower() else 512
+            h = 256 if "sdxl" in llm_name.lower() else 512
+
             img = p(
                 prompt=current_prompt,
                 negative_prompt=negative,
-                height=512,
-                width=512,
+                height=h,
+                width=w,
                 num_inference_steps=num_steps,
                 guidance_scale=9.0,
                 generator=generator,

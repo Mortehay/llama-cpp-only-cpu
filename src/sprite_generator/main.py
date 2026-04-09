@@ -73,7 +73,7 @@ def fetch_gallery_rows(limit=None):
                         ROW_NUMBER() OVER (PARTITION BY prompt ORDER BY timestamp) AS attempt_number,
                         image_type, parent_id, components, requested_actions,
                         llm_name, step_number
-                    FROM sprite_images
+                    FROM sprite_images WHERE deleted = false
                 ) AS sub
                 ORDER BY timestamp DESC
             """
@@ -260,8 +260,8 @@ async def index():
       <div class="card tab-content" id="tab-sheet">
         <label>Select Model</label>
         <select id="sheet-llm" style="width: 100%; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 14px; margin-bottom: 16px;">
-            <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
-            <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+            <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Sprite Grid)</option>
+            <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5 (Sprite Grid Default)</option>
         </select>
         
         <label>Select Core Image</label>
@@ -694,7 +694,7 @@ def get_cores():
             cur.execute("""
                 SELECT id, file_path, prompt 
                 FROM sprite_images 
-                WHERE image_type='core' AND file_path IS NOT NULL 
+                WHERE image_type='core' AND file_path IS NOT NULL AND deleted = false
                 ORDER BY timestamp DESC LIMIT 24
             """)
             cols = [desc[0] for desc in cur.description]
@@ -725,12 +725,12 @@ def delete_task(id: int):
                             print(f"Revoke warning: {revoke_e}")
 
                     if filepath and os.path.exists(filepath):
-                        os.remove(filepath)
+                        pass # Soft-delete protocol: retain file on disk
                     if comps and isinstance(comps, list):
                         for c in comps:
                             c_path = c.replace("/images/", IMAGES_DIR + "/")
-                            if os.path.exists(c_path): os.remove(c_path)
-                cur.execute("DELETE FROM sprite_images WHERE id = %s", (id,))
+                            if os.path.exists(c_path): pass
+                cur.execute("UPDATE sprite_images SET deleted = true WHERE id = %s", (id,))
         return {"status": "deleted"}
     finally: conn.close()
 
