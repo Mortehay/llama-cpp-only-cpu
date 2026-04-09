@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="stats-overview">
+    <div class="stat-card">
+      <div class="label">Total Requests</div>
+      <div class="value" id="total-reqs">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Avg Tokens/Sec</div>
+      <div class="value" id="avg-tps">-</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Total Tokens</div>
+      <div class="value" id="total-tokens">-</div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <div class="section-header">
+      <h2>Recent Performance History</h2>
+      <button class="btn-refresh" onclick="fetchStats()">Refresh</button>
+    </div>
+    <div class="scroll-table">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Model</th>
+            <th>TPS</th>
+            <th>Tokens</th>
+            <th>Latency</th>
+          </tr>
+        </thead>
+        <tbody id="stats-body">
+          <tr><td colspan="5" class="loading">Fetching data...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

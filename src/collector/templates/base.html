@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}LLM Stats Collector{% endblock %}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/collector.css">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+
+<header>
+  <div class="logo">📊</div>
+  <div>
+    <h1>LLM Stats Collector</h1>
+    <p>Real-time performance metrics for your cluster</p>
+  </div>
+  <div class="badge" id="service-status">⬤ Live Metrics</div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/collector.js"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Sprite Gallery{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/gallery.css">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>🖼️ Sprite Gallery</h1>
+</div>
+
+<div class="grid" id="gallery-grid">
+  {% if not rows %}
+    <div class="empty"><span>🖼️</span><p>No history.</p></div>
+  {% else %}
+    {% for row in rows %}
+      {% set img_url = "/images/" + row.file_path.split('/')[-1] if row.file_path else "#" %}
+      <div class="sprite-card" id="card-{{ row.id }}">
+        <a href="{{ img_url }}" target="_blank" style="display: block; width: 100%; border: none;">
+          <div class="thumb-wrap">
+            {% if row.error %}
+              <span>Error</span>
+            {% elif row.file_path %}
+              <img src="{{ img_url }}" alt="sprite" />
+            {% else %}
+              <span>Pending...</span>
+            {% endif %}
+          </div>
+        </a>
+        
+        {% if row.components and row.components is iterable and row.components|length > 0 %}
+          <div class="components-wrap">
+            {% for c in row.components %}
+              <img src="{{ c }}" class="comp-img"/>
+            {% endfor %}
+          </div>
+        {% endif %}
+
+        <div class="card-body">
+          <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+            <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center;">
+                {% if row.image_type == 'core' %}
+                  <div class="tag tag-core">Core</div>
+                {% endif %}
+                {% if row.step_number %}
+                  <div class="tag tag-working">Step {{ row.step_number }}</div>
+                {% endif %}
+                {% if row.llm_name and row.llm_name != 'Unknown' %}
+                  <div class="tag llm-tag">
+                    {{ "SDXL-Turbo" if "sdxl-turbo" in row.llm_name|lower else "PixelArt 1.5" }}
+                  </div>
+                {% endif %}
+                <span class="attempt-badge">Attempt #{{ row.attempt_number }}</span>
+            </div>
+            
+            {% if row.error %}
+              <div class="tag tag-danger" title="{{ row.error }}">Error</div>
+            {% elif row.file_path %}
+              <div class="tag tag-success">OK</div>
+            {% else %}
+              <div class="tag tag-working pulse">{{ row.progress_pct }}%</div>
+            {% endif %}
+          </div>
+
+          <div class="prompt-text" title="{{ row.prompt }}">{{ row.prompt }}</div>
+          <div class="card-meta">
+            <span>🕒 {{ row.timestamp.strftime("%m-%d %H:%M") if row.timestamp else "—" }}</span> 
+            <span>⏱ {{ "%.1f"|format(row.duration_ms / 1000) if row.duration_ms else "—" }}s</span>
+          </div>
+
+          <div class="task-actions">
+            <button class="btn-sm btn-danger-sm" onclick="deleteTask({{ row.id }})">Delete</button>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/gallery.js"></script>
+{% endblock %}

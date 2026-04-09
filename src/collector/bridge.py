@@ -5,9 +5,15 @@ import requests
 import psycopg2
 from pydantic import BaseModel
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
+from fastapi.templating import Jinja2Templates
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
+
+# Templates and Static files
+templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 LLM_URL = os.getenv("LLM_URL", "http://llm-server:8080")
 
@@ -96,10 +102,44 @@ async def internal_log_stats(req: StatsPayload):
 
 
 @app.get("/v1/models")
-async def list_models():
+async def v1_list_models():
     """Proxy the models list from llama.cpp so Open WebUI can discover them."""
     resp = requests.get(f"{LLM_URL}/v1/models")
     return JSONResponse(content=resp.json(), status_code=resp.status_code)
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    return templates.TemplateResponse(request=request, name="index.html")
+
+@app.get("/api/stats")
+async def get_stats():
+    try:
+        cursor.execute("SELECT COUNT(*), AVG(tokens_per_second), SUM(total_tokens) FROM llm_stats")
+        summary = cursor.fetchone()
+        
+        cursor.execute("SELECT timestamp, model_name, tokens_per_second, total_tokens, total_duration_ms FROM llm_stats ORDER BY timestamp DESC LIMIT 20")
+        rows = cursor.fetchall()
+        
+        history = []
+        for r in rows:
+            history.append({
+                "timestamp": r[0].isoformat() if r[0] else None,
+                "model_name": r[1],
+                "tokens_per_second": r[2],
+                "total_tokens": r[3],
+                "total_duration_ms": r[4]
+            })
+            
+        return {
+            "total_count": summary[0] or 0,
+            "avg_tps": float(summary[1] or 0),
+            "total_tokens": int(summary[2] or 0),
+            "history": history
+        }
+    except Exception as e:
+        print(f"Stats fetch error: {e}")
+        return {"error": str(e)}
 
 
 @app.post("/v1/chat/completions")
@@ -111,8 +151,6 @@ async def proxy_and_log(request: Request):
 
     if is_stream:
         # ── Streaming path ────────────────────────────────────────────────
-        # Pipe raw bytes directly — iter_lines() drops the empty lines that
-        # SSE uses as event delimiters, breaking the client parser.
         upstream = requests.post(
             f"{LLM_URL}/v1/chat/completions",
             json=body,
@@ -133,7 +171,7 @@ async def proxy_and_log(request: Request):
         )
 
     else:
-        # ── Non-streaming path (curl, etc.) ───────────────────────────────
+        # ── Non-streaming path ───────────────────────────────
         response_raw = requests.post(f"{LLM_URL}/v1/chat/completions", json=body)
         response = response_raw.json()
 

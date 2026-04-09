@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <!-- Stats bar -->
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-value" id="model-count">—</div>
+      <div class="stat-label">Models Downloaded</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="total-size">—</div>
+      <div class="stat-label">Total Storage Used</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">8080</div>
+      <div class="stat-label">LLM Engine Port</div>
+    </div>
+  </div>
+
+  <!-- Download section -->
+  <div class="download-card">
+    <h2>⬇️ Download New Model</h2>
+    <p>Download any GGUF model directly from HuggingFace into your models folder.</p>
+    <div class="form-row">
+      <div class="field">
+        <label>HuggingFace Repository</label>
+        <input id="repo" type="text" placeholder="bartowski/Qwen2.5-1.5B-Instruct-GGUF" />
+      </div>
+      <div class="field">
+        <label>Filename (.gguf)</label>
+        <input id="file" type="text" placeholder="Qwen2.5-1.5B-Instruct-Q4_K_M.gguf" />
+      </div>
+      <button class="btn btn-primary" id="dl-btn" onclick="startDownload()">Download</button>
+    </div>
+    <div class="log-box" id="log-box"></div>
+  </div>
+
+  <!-- Models list -->
+  <div class="section-title">Downloaded Models</div>
+  <div class="models-grid" id="models-grid">
+    <div class="empty-state"><div class="icon">⏳</div><p>Loading models...</p></div>
+  </div>
+{% endblock %}

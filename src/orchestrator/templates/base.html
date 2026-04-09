@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Model Orchestrator{% endblock %}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/orchestrator.css">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+
+<header>
+  <div class="logo">🤖</div>
+  <div>
+    <h1>LLM Model Orchestrator</h1>
+    <p>Manage and download models for your llama.cpp cluster</p>
+  </div>
+  <div class="badge" id="engine-status">⬤ Connected</div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script src="/static/js/orchestrator.js"></script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

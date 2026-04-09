@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Sprite Generator{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  {% block extra_css %}{% endblock %}
+</head>
+<body>
+  <nav>
+    <span class="brand">🎮 Sprite Generator</span>
+    <a href="/" class="{{ 'active' if active_page == 'gen' else '' }}">Generate</a>
+    <a href="/gallery" class="{{ 'active' if active_page == 'gallery' else '' }}">Gallery</a>
+  </nav>
+
+  {% block content %}{% endblock %}
+
+  {% block extra_js %}{% endblock %}
+</body>
+</html>
