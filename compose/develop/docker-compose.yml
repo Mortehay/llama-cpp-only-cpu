@@ -99,7 +99,7 @@ services:
       LLM_URL: "http://llm-server:8080"
       DB_URL: "postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}"
     ports:
-      - "8000:8000"
+      - "8002:8000"
 
   # 7. Model Orchestrator UI
   orchestrator:
