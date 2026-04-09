@@ -4,5 +4,12 @@ bartowski/Mistral-7B-Instruct-v0.3-GGUF Mistral-7B-Instruct-v0.3-Q4_K_M.gguf
 bartowski/Llama-3.2-1B-Instruct-GGUF Llama-3.2-1B-Instruct-Q4_K_M.gguf
 bartowski/gemma-2-2b-it-GGUF gemma-2-2b-it-Q4_K_M.gguf
 
+
+# New Gemma 4 releases (April 2026)
+bartowski/google_gemma-4-E4B-it-GGUF google_gemma-4-E4B-it-Q4_K_M.gguf
+llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF gemma-4-E4B-it-uncensored-heretic-Q4_K_M.gguf
+
+
+
 # SD Sprite Generation Model (Auto-downloaded by diffusers backend to /models):
 # Onodofthenorth/SD_PixelArt_SpriteSheet_Generator

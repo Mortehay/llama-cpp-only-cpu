@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-RUN pip install fastapi uvicorn requests psycopg2-binary
+RUN pip install fastapi uvicorn requests psycopg2-binary jinja2
 WORKDIR /app
 
 # Copy from src/collector at project root

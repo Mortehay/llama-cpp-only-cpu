@@ -12,3 +12,5 @@ transformers
 accelerate
 rembg
 Pillow
+jinja2
+requests

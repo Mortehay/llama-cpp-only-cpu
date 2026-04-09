@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 
-RUN pip install --no-cache-dir fastapi uvicorn huggingface_hub
+RUN pip install --no-cache-dir fastapi uvicorn huggingface_hub requests jinja2
 
 WORKDIR /app
 # Copy from src/orchestrator at project root
