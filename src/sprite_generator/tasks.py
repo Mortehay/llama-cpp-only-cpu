@@ -9,7 +9,7 @@ import random
 import logging
 import requests
 from collections import namedtuple
-from celery import Celery
+from celery import Celery, chord, group
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, DPMSolverMultistepScheduler
 from PIL import Image, ImageDraw
 import base64
@@ -91,6 +91,46 @@ class LLMProxyPipeline:
                 return self.fallback_pipeline(prompt, **kwargs)
             raise e
 
+    def enhance_animation(self, action_label, base_prompt):
+        """Specifically useful for animation frames. Returns 4 descriptions."""
+        logger.info(f"VLM: Requesting 4-frame animation breakdown for '{action_label}'")
+        model_file = self.model_file_map.get(self.model_name, self.model_name)
+        
+        prompt_text = (
+            f"Describe 4 individual animation frames for a character doing: {action_label}. "
+            f"The character is: {base_prompt}. "
+            "Respond in exactly 4 lines, one for each frame. Each line must be a concise visual description."
+        )
+        
+        messages = [
+            {"role": "system", "content": "You are a professional pixel art animator. Provide exactly 4 lines of visual descriptions for animation frames."},
+            {"role": "user", "content": prompt_text}
+        ]
+
+        try:
+            resp = requests.post(
+                self.endpoint, 
+                json={
+                    "model": model_file,
+                    "messages": messages,
+                    "max_tokens": 300
+                },
+                timeout=45
+            )
+            resp.raise_for_status()
+            content = resp.json()['choices'][0]['message']['content'].strip()
+            lines = [line.strip() for line in content.split('\n') if line.strip()][:4]
+            
+            # Pad if less than 4
+            while len(lines) < 4:
+                lines.append(f"Frame {len(lines)+1} of {action_label}")
+            
+            logger.info(f"VLM Animation Guides: {lines}")
+            return lines
+        except Exception as e:
+            logger.error(f"VLM enhance_animation failed: {e}")
+            return [f"Frame {i+1} of {action_label}" for i in range(4)]
+
 def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo"):
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
@@ -157,7 +197,7 @@ def update_task_record(task_id: str, file_path: str = None, duration_ms: float =
                     update_fields.append("error = %s")
                     values.append(error_msg)
                 if progress_pct is not None:
-                    update_fields.append("progress_pct = %s")
+                    update_fields.append("progress_pct = GREATEST(COALESCE(progress_pct, 0), %s)")
                     values.append(progress_pct)
                 if progress_msg is not None:
                     update_fields.append("progress_msg = %s")
@@ -410,18 +450,14 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
 @celery_app.task(name="tasks.generate_sheet_task", bind=True)
 def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "stabilityai/sdxl-turbo"):
     task_id = self.request.id
-    logger.info(f"Task {task_id} generated sheet with llm {llm_name}")
-    p = get_pipeline(llm_name)
-    if not p:
-        update_task_record(task_id, error_msg="Model failed to load on worker")
-        return {"error": "Model failed to load"}
-
-    # Fetch parent info from DB
+    logger.info(f"Orchestrating Distributed Sheet Task {task_id} with llm {llm_name}")
+    
+    # 1. Fetch parent info for all sub-tasks
     conn = get_db()
     if not conn:
         update_task_record(task_id, error_msg="DB connection failed")
         return {"error": "DB connection failed"}
-        
+    
     parent_prompt = ""
     parent_seed = None
     try:
@@ -436,105 +472,149 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
     finally:
         conn.close()
 
-    if parent_seed is None:
-        parent_seed = random.randint(0, 10**9)
+    if parent_seed is None: parent_seed = random.randint(0, 10**9)
 
+    # 2. Fire off the Chord
+    # Group of action generators -> Finalizer
+    header = [
+        generate_action_strip_task.s(task_id, action, i, len(actions), parent_id, parent_prompt, parent_seed, llm_name)
+        for i, action in enumerate(actions)
+    ]
+    
+    callback = finalize_sheet_task.s(task_id, parent_id, actions, parent_seed, llm_name)
+    
+    update_task_record(task_id, progress_pct=5, progress_msg="Distributed: Queuing sub-tasks...", requested_actions=actions)
+    
+    chord(header)(callback)
+    return {"status": "orchestrated", "task_id": task_id}
+
+@celery_app.task(name="tasks.generate_action_strip_task", bind=True)
+def generate_action_strip_task(self, main_task_id: str, action: str, action_index: int, total_actions: int, parent_id: int, parent_prompt: str, parent_seed: int, llm_name: str):
+    logger.info(f"Sub-task {self.request.id} starting action '{action}' ({action_index+1}/{total_actions}) for main task {main_task_id}")
+    p = get_pipeline(llm_name)
+    
     clean_prompt = parent_prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     base_prompt = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
     negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
-    
-    strips = []
-    component_files = []
-    start_time = time.time()
     
     # Dynamic parameters based on model type
     is_turbo = "turbo" in llm_name.lower()
     num_steps = 4 if is_turbo else 35
     guidance = 1.0 if is_turbo else 9.0
+    is_vlm = isinstance(p, LLMProxyPipeline)
+
+    # 1. Get 4 Frame descriptions
+    frame_descriptions = []
+    if is_vlm:
+        frame_descriptions = p.enhance_animation(action, base_prompt)
+    else:
+        action_lower = action.lower()
+        trigger = ""
+        if "move right" in action_lower: trigger = "walk right"
+        elif "move left" in action_lower: trigger = "walk left"
+        elif "move down" in action_lower: trigger = "walk front"
+        elif "move up" in action_lower: trigger = "walk back"
+        elif "idle" in action_lower: trigger = "idle standing"
+        elif "attack" in action_lower: trigger = "fast strike attack"
+        elif "got damage" in action_lower: trigger = "taking damage"
+        elif "burning" in action_lower: trigger = "in flames burning"
+        else: trigger = action
+        
+        frame_descriptions = [
+            f"Frame 1 of {trigger} animation, {base_prompt}",
+            f"Frame 2 of {trigger} animation, movement sequence, {base_prompt}",
+            f"Frame 3 of {trigger} animation, movement sequence, {base_prompt}",
+            f"Frame 4 of {trigger} animation, finish pose, {base_prompt}"
+        ]
+
+    # 2. Generate 4 frames
+    action_frames = []
+    for f_idx, frame_prompt in enumerate(frame_descriptions):
+        generator = torch.Generator("cpu").manual_seed(parent_seed + f_idx)
+        
+        # Note: In a distributed system, we don't update the MAIN task progress here 
+        # unless we want to do complex accumulation. For now, we log to stdout.
+        logger.info(f"Worker {self.request.id} Generating Frame {f_idx+1}/4 for '{action}'")
+        
+        # Define per-frame progress callback for distributed awareness
+        def frame_progress_callback(step, timestep, latents):
+            if step % 1 == 0:
+                frame_pct = (step / num_steps)
+                # Global Progress = (Actions Done / Total) + (This Action Progress / Total)
+                global_pct = int(((action_index / total_actions) + (frame_pct / 4 / total_actions)) * 100)
+                # Ensure we don't hit 100% until the finalizer finishes
+                safe_pct = min(global_pct, 95)
+                update_task_record(main_task_id, progress_pct=safe_pct, progress_msg=f"{action}: {int(frame_pct*100)}%")
+                self.update_state(state="PROGRESS", meta={"pct": safe_pct, "msg": f"{action} F{f_idx+1}"})
+
+        img = p(
+            prompt=frame_prompt,
+            negative_prompt=negative,
+            height=512,
+            width=512,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance,
+            generator=generator,
+            callback=frame_progress_callback,
+            callback_steps=1
+        ).images[0]
+        
+        img_transparent = remove_background(img)
+        action_frames.append(img_transparent)
+
+    # 3. Stitch Action Strip
+    action_strip = Image.new("RGBA", (2048, 512), (0,0,0,0))
+    for x_idx, frame_img in enumerate(action_frames):
+        action_strip.paste(frame_img, (x_idx * 512, 0), frame_img)
+
+    # 4. Save intermediate
+    buf = io.BytesIO()
+    action_strip.save(buf, format="PNG")
+    b64_data = base64.b64encode(buf.getvalue()).decode('utf-8')
     
-    total_actions = len(actions)
+    logger.info(f"Sub-task {self.request.id} for action '{action}' COMPLETE")
+    return {"action": action, "image_b64": b64_data}
 
-    try:
-        for i, action in enumerate(actions):
-            generator = torch.Generator("cpu").manual_seed(parent_seed)
-
-            trigger = ""
-            action_lower = action.lower()
-            # Precisely structured positional alignment map natively matched to the identical 3-slot physics template structure.
-            if "move right" in action_lower: trigger = "walk right" if "sdxl" in llm_name.lower() else "PixelartRSS, walk right"
-            elif "move left" in action_lower: trigger = "walk left" if "sdxl" in llm_name.lower() else "PixelartLSS, walk left."
-            elif "move down" in action_lower or "move front" in action_lower: trigger = "walk front toward viewer" if "sdxl" in llm_name.lower() else "PixelartFSS, walk front"
-            elif "move top" in action_lower or "move up" in action_lower or "move back" in action_lower: trigger = "walk back away from viewer" if "sdxl" in llm_name.lower() else "PixelartBSS, walk back."
-            elif "idle" in action_lower: trigger = "idle standing" if "sdxl" in llm_name.lower() else "PixelartFSS, idle front"
-            elif "attack" in action_lower: trigger = "fast strike attack" if "sdxl" in llm_name.lower() else "PixelartFSS, fast strike"
-            elif "got damage" in action_lower: trigger = "taking damage" if "sdxl" in llm_name.lower() else "PixelartFSS, take damage"
-            elif "burning" in action_lower: trigger = "in flames burning" if "sdxl" in llm_name.lower() else "PixelartFSS, in flames!!"
-            else: trigger = action if "sdxl" in llm_name.lower() else f"PixelartFSS, {action}       "
-
-            if "sdxl" in llm_name.lower():
-                current_prompt = f"Video game character sprite sheet, exactly 4 individual frames of {clean_prompt} {trigger} sequence, laid out horizontally side by side in one row, solid white background, highly detailed 2D pixel art."
-            else:
-                current_prompt = f"{trigger}, {base_prompt}"
-            logger.info(f"Generating {action} (Seed {parent_seed}): {current_prompt}")
+@celery_app.task(name="tasks.finalize_sheet_task", bind=True)
+def finalize_sheet_task(self, results, main_task_id: str, parent_id: int, actions_order: list, parent_seed: int, llm_name: str):
+    logger.info(f"Finalizing distributed task {main_task_id}")
+    
+    # Sort results to match requested action order
+    results_map = {res['action']: res['image_b64'] for res in results}
+    
+    strips = []
+    component_files = []
+    
+    for action in actions_order:
+        if action in results_map:
+            # Reconstruct image from b64
+            img_data = base64.b64decode(results_map[action])
+            img = Image.open(io.BytesIO(img_data))
+            strips.append(img)
             
-            update_task_record(task_id, progress_pct=int((i/total_actions)*100), progress_msg=f"Pass {i+1}/{total_actions}: {action}", seed=parent_seed)
-
-            def progress_callback(step, timestep, latents):
-                if step % 1 == 0:
-                    step_pct = (step / num_steps)
-                    total_pct = int(((i / total_actions) + (step_pct / total_actions)) * 100)
-                    update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/{total_actions} ({action}): {int(step_pct*100)}%")
-                    self.update_state(state="PROGRESS", meta={"pct": total_pct, "msg": action})
-
-            w = 1024 if "sdxl" in llm_name.lower() else 512
-            h = 256 if "sdxl" in llm_name.lower() else 512
-
-            img = p(
-                prompt=current_prompt,
-                negative_prompt=negative,
-                height=h,
-                width=w,
-                num_inference_steps=num_steps,
-                guidance_scale=guidance,
-                generator=generator,
-                callback=progress_callback,
-                callback_steps=1
-            ).images[0]
-            
-            img_transparent = remove_background(img)
-            
+            # Save as persistent component
             comp_filename = f"comp_{uuid.uuid4().hex[:12]}.png"
             comp_filepath = os.path.join(IMAGES_DIR, comp_filename)
-            img_transparent.save(comp_filepath, format="PNG")
-            
+            img.save(comp_filepath, format="PNG")
             component_files.append(f"/images/{comp_filename}")
-            strips.append(img_transparent)
-            
-    except Exception as e:
-        logger.error(f"Task {task_id} failed: {str(e)}", exc_info=True)
-        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
-        return {"error": str(e)}
 
-    end_time = time.time()
-    total_duration_ms = (end_time - start_time) * 1000
-    log_stats(task_id, llm_name, clean_prompt, num_steps * total_actions, start_time, end_time, total_duration_ms)
-
-    update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Stitching...")
-
-    total_height = sum(img.height for img in strips)
-    master = Image.new("RGBA", (strips[0].width, total_height), (0,0,0,0))
+    # Final vertical stitch
+    sheet_h = len(strips) * 512
+    master = Image.new("RGBA", (2048, sheet_h), (0,0,0,0))
     y = 0
-    for img in strips:
-        master.paste(img, (0, y), img) 
-        y += img.height
+    for action_strip in strips:
+        master.paste(action_strip, (0, y), action_strip)
+        y += 512
 
     filename = f"sheet_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
     os.makedirs(IMAGES_DIR, exist_ok=True)
     master.save(filepath, format="PNG")
 
-    update_task_record(task_id, file_path=filepath, duration_ms=total_duration_ms, 
+    # Update the MAIN task record
+    update_task_record(main_task_id, file_path=filepath, 
                        error_msg=None, progress_pct=100, progress_msg="Complete", image_type="spritesheet",
-                       parent_id=parent_id, requested_actions=actions, components=component_files, seed=parent_seed)
+                       parent_id=parent_id, requested_actions=actions_order, components=component_files, seed=parent_seed)
 
-    return {"status": "success", "url": f"/images/{filename}", "duration_ms": total_duration_ms }
+    logger.info(f"Master Sheet {filename} SAVED for task {main_task_id}")
+    return {"status": "success", "url": f"/images/{filename}"}

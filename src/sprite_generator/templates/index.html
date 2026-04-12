@@ -36,9 +36,9 @@
     <div class="card tab-content" id="tab-sheet">
       <label>Select Model</label>
       <select id="sheet-llm" class="select-field">
-          <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Sprite Grid)</option>
-          <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5 (Sprite Grid Default)</option>
-          <option value="Aakash010/MedGemma_FineTuned">MedGemma (VLM Sprite Guide)</option>
+          <!-- <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Sprite Grid)</option>
+          <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5 (Sprite Grid Default)</option> -->
+          <option value="Aakash010/MedGemma_FineTuned" selected>MedGemma (VLM Sprite Guide)</option>
           <option value="rafacost/DreamOmni2-7.6B-GGUF">DreamOmni2 7.6B (VLM Sprite Guide)</option>
       </select>
       
@@ -49,17 +49,17 @@
       
       <label>Select Actions</label>
       <div class="actions-grid">
-          <label class="action-cb"><input type="checkbox" name="action" value="move right" checked /> Move Right</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="move left" checked /> Move Left</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="move down" checked /> Move Down</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="move up" checked /> Move Up</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="attack" /> Attack</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="got damage" /> Get Damage</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="idle" /> Idle</label>
-          <label class="action-cb"><input type="checkbox" name="action" value="burning" /> Burning</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move right" /> Move Right</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move left" /> Move Left</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move down" /> Move Down</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move up" /> Move Up</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="attack" /> Attack</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="got damage" /> Get Damage</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="idle" /> Idle</label>
+          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="burning" /> Burning</label>
       </div>
       
-      <button class="btn" id="gen-sheet-btn" onclick="generateSheet()">⚡ Generate Spritesheet</button>
+      <button class="btn" id="gen-sheet-btn" onclick="generateSheet()" disabled>⚡ Generate Spritesheet</button>
       <div class="status" id="sheet-status"></div>
       <div class="preview" id="sheet-result">
         <span class="preview-placeholder">Live preview will appear here.</span>

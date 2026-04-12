@@ -5,7 +5,21 @@ let selectedCoreId = null;
 document.addEventListener('DOMContentLoaded', () => {
     updateQueue();
     setInterval(updateQueue, 3000);
+    
+    // Listen for action checkbox changes to toggle button
+    const actionCbs = document.querySelectorAll('input[name="action"]');
+    actionCbs.forEach(cb => {
+        cb.addEventListener('change', updateGenSheetButtonState);
+    });
+    updateGenSheetButtonState(); // initial check
 });
+
+function updateGenSheetButtonState() {
+    const btn = document.getElementById('gen-sheet-btn');
+    if (!btn) return;
+    const checked = document.querySelectorAll('input[name="action"]:checked');
+    btn.disabled = (checked.length === 0);
+}
 
 function switchTab(tabId) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
