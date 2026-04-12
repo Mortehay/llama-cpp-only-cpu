@@ -260,13 +260,13 @@ def generate_sprite_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-tu
     
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
-    negative = "blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
+    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
 
     clean_prompt = prompt
     for t, _ in DIRECTIONS:
         clean_prompt = clean_prompt.replace(t, "").strip().lstrip(",").strip()
     
-    full_prompt_base = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
+    full_prompt_base = f"single standalone {clean_prompt}, one centered character, no duplicates, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"single standalone {clean_prompt}, one centered character, no duplicates, high quality pixel art, sharp focus"
 
     strips = []
     start_time = time.time()
@@ -338,12 +338,12 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
 
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
-    negative = "blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
+    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
 
     clean_prompt = prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     
-    # Strictly aligned prefix length: "PixelartFSS, idle front,"
-    full_prompt = f"PixelartFSS, idle front, {clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, {clean_prompt}, high quality pixel art, sharp focus"
+    # Strictly aligned prefix: "PixelartFSS, idle front,"
+    full_prompt = f"PixelartFSS, idle front, single standalone {clean_prompt}, one centered character, no duplicates, flat solid transparent background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, single standalone {clean_prompt}, one centered character, no duplicates, high quality pixel art, sharp focus"
 
     start_time = time.time()
     
@@ -441,7 +441,7 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
 
     clean_prompt = parent_prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     base_prompt = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
-    negative = "blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
+    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
     
     strips = []
     component_files = []
