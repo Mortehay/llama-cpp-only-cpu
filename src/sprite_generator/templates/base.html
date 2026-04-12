@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{% block title %}Sprite Generator{% endblock %}</title>
   <link rel="stylesheet" href="/static/css/main.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css">
+  <link rel="icon" type="image/png" href="/static/favicon/favicon-96x96.png" sizes="96x96" />
+  <link rel="icon" type="image/svg+xml" href="/static/favicon/favicon.svg" />
+  <link rel="shortcut icon" href="/static/favicon/favicon.ico" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png" />
+  <link rel="manifest" href="/static/favicon/site.webmanifest" />
+
+
   {% block extra_css %}{% endblock %}
 </head>
 <body>
@@ -14,8 +22,33 @@
     <a href="/gallery" class="{{ 'active' if active_page == 'gallery' else '' }}">Gallery</a>
   </nav>
 
+
   {% block content %}{% endblock %}
 
+  <!-- Crop Modal Overlay -->
+  <div id="crop-overlay" class="modal-overlay" style="display: none;">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="margin:0; font-size: 16px;">Manual Character Crop</h3>
+        <button class="btn-sm" onclick="closeCropModal()" style="padding: 4px 8px;">&times;</button>
+      </div>
+      <div class="modal-body" style="padding: 16px;">
+        <div id="crop-container" style="max-height: 400px; overflow: hidden; background: #111; border-radius: 4px;">
+          <img id="crop-image" src="" style="display: block; max-width: 100%;">
+        </div>
+        <p style="font-size: 11px; color: var(--muted); margin-top: 12px; line-height: 1.4;">
+          Select a tight box around your character. We will automatically remove the background for you.
+        </p>
+      </div>
+      <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px;">
+        <button class="btn btn-outline" onclick="closeCropModal()" style="width: auto;">Cancel</button>
+        <button class="btn" id="confirm-crop-btn" onclick="saveCrop()" style="width: auto;">✂️ Save as New Core</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+  <script src="/static/js/crop_tool.js"></script>
   {% block extra_js %}{% endblock %}
 </body>
 </html>

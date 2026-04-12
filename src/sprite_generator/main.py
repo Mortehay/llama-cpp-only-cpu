@@ -4,6 +4,9 @@ import time
 import json
 import requests
 import psycopg2
+import uuid
+import random
+from PIL import Image
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse
@@ -11,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from migrations import run_migrations
 from celery.result import AsyncResult
-from tasks import celery_app, generate_sprite_task, generate_core_task, generate_sheet_task
+from tasks import celery_app, generate_sprite_task, generate_core_task, generate_sheet_task, remove_background
 
 DB_URL = os.environ.get("DB_URL")
 
@@ -163,6 +166,54 @@ def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), llm_nam
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
+    
+@app.post("/api/crop")
+async def crop_sprite(request: Request):
+    try:
+        data = await request.json()
+        source_id = data.get('source_id')
+        x = int(data.get('x', 0))
+        y = int(data.get('y', 0))
+        w = int(data.get('w', 0))
+        h = int(data.get('h', 0))
+        
+        if not source_id or w == 0 or h == 0:
+            raise HTTPException(status_code=400, detail="Invalid crop data")
+            
+        conn = get_db()
+        if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
+        
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT file_path, prompt, llm_name FROM sprite_images WHERE id = %s", (source_id,))
+                    row = cur.fetchone()
+                    if not row: raise HTTPException(status_code=404, detail="Source image not found")
+                    
+                    orig_path, prompt, llm_name = row
+                    if not os.path.exists(orig_path):
+                        raise HTTPException(status_code=404, detail="Original file missing on disk")
+                        
+                    # Perform Crop
+                    with Image.open(orig_path) as img:
+                        # PIL crop uses (left, top, right, bottom)
+                        cropped = img.crop((x, y, x + w, y + h))
+                        cropped = remove_background(cropped)
+                        
+                        filename = f"crop_{uuid.uuid4().hex[:12]}.png"
+                        filepath = os.path.join(IMAGES_DIR, filename)
+                        cropped.save(filepath, "PNG")
+                        
+                        # Save new core record with source link
+                        cur.execute(
+                            "INSERT INTO sprite_images (prompt, file_path, image_type, parent_id, cropped_from, progress_pct, progress_msg, llm_name, duration_ms) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                            (f"Cropped: {prompt}", filepath, "core", source_id, source_id, 100, "Cropped & Saved", llm_name, 0)
+                        )
+                        new_id = cur.fetchone()[0]
+                        return {"status": "success", "id": new_id, "url": f"/images/{filename}"}
+        finally: conn.close()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/cores")
 def get_cores():

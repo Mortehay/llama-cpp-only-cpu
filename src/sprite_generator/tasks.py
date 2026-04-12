@@ -7,9 +7,13 @@ import torch
 import psycopg2
 import random
 import logging
+import requests
+from collections import namedtuple
 from celery import Celery
 from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, DPMSolverMultistepScheduler
-from PIL import Image
+from PIL import Image, ImageDraw
+import base64
+import io
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -21,6 +25,71 @@ IMAGES_DIR = "/app/images"
 celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
 pipes = {}
+PipelineOutput = namedtuple("PipelineOutput", ["images"])
+
+class LLMProxyPipeline:
+    def __init__(self, model_name, fallback_pipeline=None):
+        self.model_name = model_name
+        self.endpoint = "http://llm_engine:8080/v1/chat/completions"
+        self.fallback_pipeline = fallback_pipeline
+        # Mapping for llama.cpp server model selection if needed
+        self.model_file_map = {
+            "Aakash010/MedGemma_FineTuned": "medgemma-Q4_K_M.gguf",
+            "rafacost/DreamOmni2-7.6B-GGUF": "DreamOmni2-Vlm-Model-7.6B-Q4_K_M.gguf"
+        }
+
+    def _encode_image(self, image):
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+    def __call__(self, prompt, **kwargs):
+        logger.info(f"Proxying sprite generation to LLM server ({self.model_name})")
+        
+        # 1. Prepare Request to VLM
+        model_file = self.model_file_map.get(self.model_name, self.model_name)
+        messages = [
+            {"role": "system", "content": "You are a pixel art sprite expert. Analyze character images and describe their movement for animation frames. Be brief but highly descriptive of posture and specific limbs."},
+            {"role": "user", "content": [{"type": "text", "text": f"Enhance this sprite generation prompt: {prompt}"}]}
+        ]
+
+        # If a reference image is provided in the generator (Step 2 logic usually passes it as part of a different flow, but here we can check kwargs)
+        # Note: In our current get_pipeline architecture, 'prompt' is the primary string.
+        # If we wanted to pass an image, we'd need to modify the call site or extract it if embedded.
+        
+        try:
+            # Call Local VLM
+            resp = requests.post(
+                self.endpoint, 
+                json={
+                    "model": model_file,
+                    "messages": messages,
+                    "max_tokens": 150
+                },
+                timeout=30
+            )
+            resp.raise_for_status()
+            vlm_text = resp.json()['choices'][0]['message']['content']
+            logger.info(f"VLM Enhanced Prompt: {vlm_text}")
+            
+            # 2. Use Fallback SD Pipeline with Enhanced Prompt
+            if self.fallback_pipeline:
+                logger.info("Using fallback SD pipeline with VLM guidance...")
+                # We combine original prompt words with VLM description
+                new_prompt = f"{prompt}, {vlm_text}"
+                return self.fallback_pipeline(new_prompt, **kwargs)
+            
+            # 3. Last Resort: Placeholder if no fallback
+            img = Image.new('RGB', (512, 512), color=(30, 30, 40))
+            d = ImageDraw.Draw(img)
+            d.text((20, 20), f"VLM Guide: {vlm_text[:50]}...", fill=(200, 200, 200))
+            return PipelineOutput(images=[img])
+
+        except Exception as e:
+            logger.error(f"Proxy call failed: {e}. Falling back to default if possible.")
+            if self.fallback_pipeline:
+                return self.fallback_pipeline(prompt, **kwargs)
+            raise e
 
 def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo"):
     if llm_name == "models--stabilityai--sdxl-turbo":
@@ -28,6 +97,14 @@ def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo"):
     global pipes
     if llm_name in pipes:
         return pipes[llm_name]
+    
+    if "gguf" in llm_name.lower() or "medgemma" in llm_name.lower() or "dreamomni" in llm_name.lower():
+        logger.info(f"Using LLMProxyPipeline for '{llm_name}'")
+        # For GGUF/VLM models, we use SDXL-Turbo as the fallback generator
+        fallback = get_pipeline("stabilityai/sdxl-turbo")
+        pipes[llm_name] = LLMProxyPipeline(llm_name, fallback_pipeline=fallback)
+        return pipes[llm_name]
+
     logger.info(f"Loading '{llm_name}' Stable Diffusion Pipeline on CPU (Worker)...")
     try:
         pipeline_class = StableDiffusionXLPipeline if "sdxl" in llm_name.lower() else StableDiffusionPipeline
@@ -269,13 +346,17 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     full_prompt = f"PixelartFSS, idle front, {clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, {clean_prompt}, high quality pixel art, sharp focus"
 
     start_time = time.time()
-    num_steps = 35
+    
+    # Dynamic parameters based on model type
+    is_turbo = "turbo" in llm_name.lower()
+    num_steps = 4 if is_turbo else 35
+    guidance = 1.0 if is_turbo else 9.0
 
     try:
         update_task_record(task_id, progress_pct=0, progress_msg="Generating core image...", seed=seed)
 
         def progress_callback(step, timestep, latents):
-            if step % 4 == 0:
+            if step % 1 == 0:
                 pct = int((step / num_steps) * 100)
                 update_task_record(task_id, progress_pct=pct, progress_msg=f"Generating: {int(pct)}%")
                 self.update_state(state="PROGRESS", meta={"pct": pct, "msg": "Generating core image"})
@@ -286,7 +367,7 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
             height=512,
             width=512,
             num_inference_steps=num_steps,
-            guidance_scale=9.0,
+            guidance_scale=guidance,
             generator=generator,
             callback=progress_callback,
             callback_steps=1
@@ -304,11 +385,17 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Removing background...")
     img = remove_background(img)
 
-    # Core physics logic: The model natively generates a 4x1 animation sequence.
-    # We strip out Frame 1 dynamically to present solely the physical character structure.
+    # Smart Aspect Ratio Detection:
+    # If the model natively generates a 4x1 animation sequence, strip out Frame 1.
+    # Otherwise, if it produces a square character image, do not crop.
     width, height = img.size
-    frame_width = width // 4
-    core_crop = img.crop((0, 0, frame_width, height))
+    if width > (height * 3.5):
+        logger.info(f"Detected 4x1 sheet ({width}x{height}). Cropping first frame as core.")
+        frame_width = width // 4
+        core_crop = img.crop((0, 0, frame_width, height))
+    else:
+        logger.info(f"Detected square core ({width}x{height}). No cropping needed.")
+        core_crop = img
     
     filename = f"core_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
@@ -359,7 +446,12 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
     strips = []
     component_files = []
     start_time = time.time()
-    num_steps = 35
+    
+    # Dynamic parameters based on model type
+    is_turbo = "turbo" in llm_name.lower()
+    num_steps = 4 if is_turbo else 35
+    guidance = 1.0 if is_turbo else 9.0
+    
     total_actions = len(actions)
 
     try:
@@ -388,7 +480,7 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
             update_task_record(task_id, progress_pct=int((i/total_actions)*100), progress_msg=f"Pass {i+1}/{total_actions}: {action}", seed=parent_seed)
 
             def progress_callback(step, timestep, latents):
-                if step % 4 == 0:
+                if step % 1 == 0:
                     step_pct = (step / num_steps)
                     total_pct = int(((i / total_actions) + (step_pct / total_actions)) * 100)
                     update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/{total_actions} ({action}): {int(step_pct*100)}%")
@@ -403,7 +495,7 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
                 height=h,
                 width=w,
                 num_inference_steps=num_steps,
-                guidance_scale=9.0,
+                guidance_scale=guidance,
                 generator=generator,
                 callback=progress_callback,
                 callback_steps=1

@@ -38,6 +38,8 @@
       <select id="sheet-llm" class="select-field">
           <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Sprite Grid)</option>
           <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5 (Sprite Grid Default)</option>
+          <option value="Aakash010/MedGemma_FineTuned">MedGemma (VLM Sprite Guide)</option>
+          <option value="rafacost/DreamOmni2-7.6B-GGUF">DreamOmni2 7.6B (VLM Sprite Guide)</option>
       </select>
       
       <label>Select Core Image</label>
@@ -69,9 +71,10 @@
      <div class="task-list-title"> 
        <span>Live Tasks</span>
      </div>
-     <div id="task-queue">
-       <p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">Loading tasks...</p>
-     </div>
+      <div id="task-queue">
+        <p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">Loading tasks...</p>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}

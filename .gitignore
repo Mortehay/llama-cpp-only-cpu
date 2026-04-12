@@ -1,8 +1,11 @@
 compose/develop/.env
-!models/*
 models/*
+!models
 *.pyc
 __pycache__/*
 .env
 .env.example
 .venv
+compose/develop/db/data/
+!images
+images/*

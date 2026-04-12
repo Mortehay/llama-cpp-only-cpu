@@ -70,18 +70,22 @@ async function updateQueue() {
          `;
       }
       
-      let typeTag = t.image_type === 'core' ? '<span class="tag tag-core" style="margin-left: 4px;">Core</span>' : '';
+      const isCore = t.image_type === 'core';
+      const imgUrl = t.file_path ? `/images/${t.file_path.split('/').pop()}` : null;
 
       return `
         <div class="task-item" id="live-task-${t.id}">
-          <div class="prompt-clip">${typeTag} ${t.prompt}</div>
+          <div class="prompt-clip">${t.prompt}</div>
           <div class="meta">
             <span>${statusTag}</span>
             <span>${t.timestamp.split('T')[1].split('.')[0]}</span>
           </div>
           ${progressLine}
           <div class="task-actions">
-              <button class="btn-sm btn-retry-sm" onclick="retryLiveTask(${t.id})">Retry</button>
+              ${t.file_path ? `
+                  ${isCore ? `<button class="btn-sm btn-retry-sm" onclick="openCropModal('${imgUrl}', ${t.id})" style="border-color: var(--accent); color: var(--accent2);">Crop</button>` : ''}
+                  <button class="btn-sm btn-retry-sm" onclick="retryLiveTask(${t.id})">Retry</button>
+              ` : ''}
               <button class="btn-sm btn-danger-sm" onclick="deleteTask(${t.id})">Delete</button>
           </div>
         </div>
@@ -197,7 +201,13 @@ function pollTaskStatus(taskId, mode) {
       if (me) {
         if (me.file_path) {
             clearInterval(pollInterval);
-            resultDiv.innerHTML = `<img src="/images/${me.file_path.split('/').pop()}" alt="Sprite" />`;
+            const imgUrl = `/images/${me.file_path.split('/').pop()}`;
+            resultDiv.innerHTML = `
+                <img src="${imgUrl}" alt="Sprite" />
+                <div class="crop-btn-container">
+                    <button class="btn-crop" onclick="openCropModal('${imgUrl}', ${me.id})">✂️ Crop Character</button>
+                </div>
+            `;
             statusDiv.innerText = `✅ Success! Completed in ${me.duration_ms / 1000}s`;
             btn.disabled = false;
             updateQueue();

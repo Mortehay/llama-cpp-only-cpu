@@ -24,9 +24,25 @@ def run_migrations(db_url: str) -> None:
         print("[migrations] No .sql migration files found.")
         return
 
+    import time
+    conn = None
+    max_retries = 5
+    retry_delay = 2
+
+    for i in range(max_retries):
+        try:
+            conn = psycopg2.connect(db_url)
+            print(f"[migrations] Connected to database on attempt {i+1}.")
+            break
+        except Exception as e:
+            if i < max_retries - 1:
+                print(f"[migrations] Connection attempt {i+1} failed ({e}). Retrying in {retry_delay}s…")
+                time.sleep(retry_delay)
+            else:
+                print(f"[migrations] ERROR — could not connect to database after {max_retries} attempts: {e}")
+                return
+
     try:
-        conn = psycopg2.connect(db_url)
-        
         # 1. Ensure the migrations tracking table exists
         with conn:
             with conn.cursor() as cur:

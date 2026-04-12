@@ -71,6 +71,9 @@
           </div>
 
           <div class="task-actions">
+            {% if row.image_type == 'core' and row.file_path %}
+              <button class="btn-sm btn-retry-sm" onclick="openCropModal('{{ img_url }}', {{ row.id }})" style="border-color: var(--accent); color: var(--accent2);">Crop</button>
+            {% endif %}
             <button class="btn-sm btn-danger-sm" onclick="deleteTask({{ row.id }})">Delete</button>
           </div>
         </div>

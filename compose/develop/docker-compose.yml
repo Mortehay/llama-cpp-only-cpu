@@ -1,8 +1,5 @@
 name: llama-cpp-only-cpu
 
-volumes:
-  sprite_images:
-
 services:
   # 1. Model Downloader (Skips if exists)
   downloader:
@@ -14,6 +11,8 @@ services:
     volumes:
       - ../../models:/models
       - ./downloader/models.txt:/usr/local/bin/models.txt
+    env_file:
+      - .env
     environment:
       - HF_TOKEN=${HF_TOKEN}
     command: ["-c", "/usr/local/bin/download_models.sh && tail -f /dev/null"]
@@ -46,6 +45,7 @@ services:
       POSTGRES_DB: ${DB_NAME}
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db/data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
 
@@ -127,7 +127,7 @@ services:
     volumes:
       - ../../models:/models
       - ../../src/sprite_generator:/app
-      - sprite_images:/app/images
+      - ../../images:/app/images
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -149,7 +149,7 @@ services:
     volumes:
       - ../../models:/models
       - ../../src/sprite_generator:/app
-      - sprite_images:/app/images
+      - ../../images:/app/images
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
