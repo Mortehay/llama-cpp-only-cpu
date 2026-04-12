@@ -151,9 +151,11 @@ def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdx
     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.post("/api/generate_sheet")
-def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
+def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), 
+                   llm_name: str = Form("stabilityai/sdxl-turbo"),
+                   width: int = Form(128), height: int = Form(128)):
     actions_list = json.loads(actions)
-    task = generate_sheet_task.delay(parent_id, actions_list, llm_name)
+    task = generate_sheet_task.delay(parent_id, actions_list, llm_name, width, height)
     conn = get_db()
     if conn:
         try:

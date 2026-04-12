@@ -448,7 +448,7 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     return {"status": "success", "url": f"/images/{filename}", "duration_ms": total_duration_ms }
 
 @celery_app.task(name="tasks.generate_sheet_task", bind=True)
-def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "stabilityai/sdxl-turbo"):
+def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "stabilityai/sdxl-turbo", frame_width: int = 128, frame_height: int = 128):
     task_id = self.request.id
     logger.info(f"Orchestrating Distributed Sheet Task {task_id} with llm {llm_name}")
     
@@ -477,7 +477,7 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
     # 2. Fire off the Chord
     # Group of action generators -> Finalizer
     header = [
-        generate_action_strip_task.s(task_id, action, i, len(actions), parent_id, parent_prompt, parent_seed, llm_name)
+        generate_action_strip_task.s(task_id, action, i, len(actions), parent_id, parent_prompt, parent_seed, llm_name, frame_width, frame_height)
         for i, action in enumerate(actions)
     ]
     
@@ -489,7 +489,7 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
     return {"status": "orchestrated", "task_id": task_id}
 
 @celery_app.task(name="tasks.generate_action_strip_task", bind=True)
-def generate_action_strip_task(self, main_task_id: str, action: str, action_index: int, total_actions: int, parent_id: int, parent_prompt: str, parent_seed: int, llm_name: str):
+def generate_action_strip_task(self, main_task_id: str, action: str, action_index: int, total_actions: int, parent_id: int, parent_prompt: str, parent_seed: int, llm_name: str, frame_width: int = 128, frame_height: int = 128):
     logger.info(f"Sub-task {self.request.id} starting action '{action}' ({action_index+1}/{total_actions}) for main task {main_task_id}")
     p = get_pipeline(llm_name)
     
@@ -560,12 +560,17 @@ def generate_action_strip_task(self, main_task_id: str, action: str, action_inde
         ).images[0]
         
         img_transparent = remove_background(img)
+        
+        # Resize to requested frame dimensions
+        if img_transparent.width != frame_width or img_transparent.height != frame_height:
+            img_transparent = img_transparent.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
+            
         action_frames.append(img_transparent)
 
     # 3. Stitch Action Strip
-    action_strip = Image.new("RGBA", (2048, 512), (0,0,0,0))
+    action_strip = Image.new("RGBA", (frame_width * 4, frame_height), (0,0,0,0))
     for x_idx, frame_img in enumerate(action_frames):
-        action_strip.paste(frame_img, (x_idx * 512, 0), frame_img)
+        action_strip.paste(frame_img, (x_idx * frame_width, 0), frame_img)
 
     # 4. Save intermediate
     buf = io.BytesIO()
@@ -599,12 +604,13 @@ def finalize_sheet_task(self, results, main_task_id: str, parent_id: int, action
             component_files.append(f"/images/{comp_filename}")
 
     # Final vertical stitch
-    sheet_h = len(strips) * 512
-    master = Image.new("RGBA", (2048, sheet_h), (0,0,0,0))
+    sheet_w = strips[0].width if strips else 512
+    sheet_h = sum(s.height for s in strips)
+    master = Image.new("RGBA", (sheet_w, sheet_h), (0,0,0,0))
     y = 0
     for action_strip in strips:
         master.paste(action_strip, (0, y), action_strip)
-        y += 512
+        y += action_strip.height
 
     filename = f"sheet_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)

@@ -180,10 +180,13 @@ async function generateSheet() {
 
   try {
     const llm_name = document.getElementById('sheet-llm').value;
+    const size = document.getElementById('sheet-frame-size').value;
     const fd = new FormData();
     fd.append('parent_id', selectedCoreId);
     fd.append('actions', JSON.stringify(actions));
     fd.append('llm_name', llm_name);
+    fd.append('width', size);
+    fd.append('height', size);
     const req = await fetch('/api/generate_sheet', { method: 'POST', body: fd });
 
     if (req.ok) {
