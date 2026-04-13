@@ -33,6 +33,7 @@ services:
       --models-max 4
       -ctk q8_0 -ctv q8_0
       --threads 8
+      --mlock
     restart: unless-stopped
 
   # 3. Database
@@ -138,6 +139,8 @@ services:
     depends_on:
       - db
       - redis
+    tmpfs:
+      - /app/images/temp:size=2G,mode=1777
 
   # 10. Sprite Worker (Celery)
   sprite-worker:
@@ -159,3 +162,5 @@ services:
       - db
       - redis
       - downloader
+    tmpfs:
+      - /app/images/temp:size=2G,mode=1777

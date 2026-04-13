@@ -10,7 +10,12 @@ import logging
 import requests
 from collections import namedtuple
 from celery import Celery, chord, group
-from diffusers import StableDiffusionPipeline, StableDiffusionXLPipeline, DPMSolverMultistepScheduler
+from diffusers import (
+    StableDiffusionPipeline, 
+    StableDiffusionXLPipeline, 
+    StableDiffusionXLImg2ImgPipeline,
+    DPMSolverMultistepScheduler
+)
 from PIL import Image, ImageDraw
 import base64
 import io
@@ -34,8 +39,9 @@ class LLMProxyPipeline:
         self.fallback_pipeline = fallback_pipeline
         # Mapping for llama.cpp server model selection if needed
         self.model_file_map = {
-            "Aakash010/MedGemma_FineTuned": "medgemma-Q4_K_M.gguf",
-            "rafacost/DreamOmni2-7.6B-GGUF": "DreamOmni2-Vlm-Model-7.6B-Q4_K_M.gguf"
+            "Aakash010/MedGemma_FineTuned": "medgemma-Q4_K_M",
+            "rafacost/DreamOmni2-7.6B-GGUF": "DreamOmni2-Vlm-Model-7.6B-Q4_K_M",
+            "Qwen/Qwen2-VL-7B-Instruct-GGUF": "Qwen2-VL-7B-Instruct-Q4_K_M"
         }
 
     def _encode_image(self, image):
@@ -50,17 +56,12 @@ class LLMProxyPipeline:
         model_file = self.model_file_map.get(self.model_name, self.model_name)
         messages = [
             {"role": "system", "content": "You are a pixel art sprite expert. Analyze character images and describe their movement for animation frames. Be brief but highly descriptive of posture and specific limbs."},
-            {"role": "user", "content": [{"type": "text", "text": f"Enhance this sprite generation prompt: {prompt}"}]}
+            {"role": "user", "content": f"Enhance this sprite generation prompt: {prompt}"}
         ]
-
-        # If a reference image is provided in the generator (Step 2 logic usually passes it as part of a different flow, but here we can check kwargs)
-        # Note: In our current get_pipeline architecture, 'prompt' is the primary string.
-        # If we wanted to pass an image, we'd need to modify the call site or extract it if embedded.
         
         try:
-            # Call Local VLM
             resp = requests.post(
-                self.endpoint, 
+                self.endpoint,
                 json={
                     "model": model_file,
                     "messages": messages,
@@ -68,25 +69,22 @@ class LLMProxyPipeline:
                 },
                 timeout=30
             )
-            resp.raise_for_status()
-            vlm_text = resp.json()['choices'][0]['message']['content']
-            logger.info(f"VLM Enhanced Prompt: {vlm_text}")
+            if resp.status_code != 200:
+                logger.error(f"Proxy call failed ({resp.status_code}): {resp.text}")
+                return self.fallback_pipeline(prompt, **kwargs) if self.fallback_pipeline else PipelineOutput(images=[])
+            
+            enhanced = resp.json()['choices'][0]['message']['content'].strip()
+            # Clean up VLM output (sometimes they wrap in quotes or add 'Revised prompt:')
+            enhanced = enhanced.replace("Revised prompt:", "").replace('"', '').strip()
             
             # 2. Use Fallback SD Pipeline with Enhanced Prompt
             if self.fallback_pipeline:
                 logger.info("Using fallback SD pipeline with VLM guidance...")
-                # We combine original prompt words with VLM description
-                new_prompt = f"{prompt}, {vlm_text}"
-                return self.fallback_pipeline(new_prompt, **kwargs)
+                return self.fallback_pipeline(enhanced, **kwargs)
             
-            # 3. Last Resort: Placeholder if no fallback
-            img = Image.new('RGB', (512, 512), color=(30, 30, 40))
-            d = ImageDraw.Draw(img)
-            d.text((20, 20), f"VLM Guide: {vlm_text[:50]}...", fill=(200, 200, 200))
-            return PipelineOutput(images=[img])
-
+            return PipelineOutput(images=[])
         except Exception as e:
-            logger.error(f"Proxy call failed: {e}. Falling back to default if possible.")
+            logger.error(f"Proxy call exception: {e}")
             if self.fallback_pipeline:
                 return self.fallback_pipeline(prompt, **kwargs)
             raise e
@@ -97,19 +95,20 @@ class LLMProxyPipeline:
         model_file = self.model_file_map.get(self.model_name, self.model_name)
         
         prompt_text = (
-            f"Describe 4 individual animation frames for a character doing: {action_label}. "
-            f"The character is: {base_prompt}. "
-            "Respond in exactly 4 lines, one for each frame. Each line must be a concise visual description."
+            f"Describe 4 sequential movement poses for a character performing: {action_label}. "
+            f"The character looks like: {base_prompt}. "
+            "Respond ONLY in exactly 4 lines, one for each pose. Each line must be a concise visual description of posture and limb placement. "
+            "Do NOT mention 'frames', 'borders', 'grid', or 'layout'."
         )
         
         messages = [
-            {"role": "system", "content": "You are a professional pixel art animator. Provide exactly 4 lines of visual descriptions for animation frames."},
+            {"role": "system", "content": "You are a professional pixel art animator. Provide exactly 4 lines of visual descriptions for sequential animation poses. Focus on weight distribution and movement. Never describe the background or layout."},
             {"role": "user", "content": prompt_text}
         ]
 
         try:
             resp = requests.post(
-                self.endpoint, 
+                self.endpoint,
                 json={
                     "model": model_file,
                     "messages": messages,
@@ -117,7 +116,10 @@ class LLMProxyPipeline:
                 },
                 timeout=45
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                logger.error(f"VLM enhance_animation failed ({resp.status_code}): {resp.text}")
+                return [f"Frame {i+1} of {action_label} animation" for i in range(4)]
+            
             content = resp.json()['choices'][0]['message']['content'].strip()
             lines = [line.strip() for line in content.split('\n') if line.strip()][:4]
             
@@ -131,40 +133,82 @@ class LLMProxyPipeline:
             logger.error(f"VLM enhance_animation failed: {e}")
             return [f"Frame {i+1} of {action_label}" for i in range(4)]
 
-def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo"):
+def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str = "text2img"):
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
-    if llm_name in pipes:
-        return pipes[llm_name]
     
-    if "gguf" in llm_name.lower() or "medgemma" in llm_name.lower() or "dreamomni" in llm_name.lower():
-        logger.info(f"Using LLMProxyPipeline for '{llm_name}'")
-        # For GGUF/VLM models, we use SDXL-Turbo as the fallback generator
-        fallback = get_pipeline("stabilityai/sdxl-turbo")
-        pipes[llm_name] = LLMProxyPipeline(llm_name, fallback_pipeline=fallback)
-        return pipes[llm_name]
+    cache_key = f"{llm_name}_{pipeline_type}"
+    if cache_key in pipes:
+        return pipes[cache_key]
+    
+    # Memory Optimization: Check for existing pipeline of the same model to share components
+    other_type = "img2img" if pipeline_type == "text2img" else "text2img"
+    other_key = f"{llm_name}_{other_type}"
+    shared_components = None
+    if other_key in pipes and not hasattr(pipes[other_key], "fallback_pipeline"):
+        logger.info(f"Memory Save: Sharing components from '{other_key}' to create '{cache_key}'")
+        shared_components = pipes[other_key].components
 
-    logger.info(f"Loading '{llm_name}' Stable Diffusion Pipeline on CPU (Worker)...")
+    if "gguf" in llm_name.lower() or "medgemma" in llm_name.lower() or "dreamomni" in llm_name.lower() or "qwen" in llm_name.lower():
+        logger.info(f"Using LLMProxyPipeline for '{llm_name}' (Type: {pipeline_type})")
+        fallback = get_pipeline("stabilityai/sdxl-turbo", pipeline_type=pipeline_type)
+        pipes[cache_key] = LLMProxyPipeline(llm_name, fallback_pipeline=fallback)
+        return pipes[cache_key]
+
+    # Dynamic Hardware Detection
+    settings = get_compute_settings()
+    device = "cuda" if torch.cuda.is_available() and settings.get("compute_mode") == "cuda" else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+
+    logger.info(f"Loading '{llm_name}' ({pipeline_type}) on {device.upper()} ({dtype})...")
     try:
-        pipeline_class = StableDiffusionXLPipeline if "sdxl" in llm_name.lower() else StableDiffusionPipeline
-        pipe = pipeline_class.from_pretrained(
-            llm_name,
-            torch_dtype=torch.float32,
-            cache_dir="/models",
-            token=os.environ.get("HF_TOKEN"),
-        )
-        if "sdxl" not in llm_name.lower():
-            pass # Apply SD-specific options if strictly necessary
+        if "sdxl" in llm_name.lower():
+            pipeline_class = StableDiffusionXLImg2ImgPipeline if pipeline_type == "img2img" else StableDiffusionXLPipeline
+        else:
+            pipeline_class = StableDiffusionPipeline 
+
+        if shared_components:
+            # Re-use already loaded weights
+            pipe = pipeline_class(**shared_components)
+        else:
+            # Load from disk
+            pipe = pipeline_class.from_pretrained(
+                llm_name,
+                torch_dtype=dtype,
+                cache_dir="/models",
+                token=os.environ.get("HF_TOKEN"),
+            )
         
-        pipe.to("cpu")
-        pipe.enable_attention_slicing()
-        logger.info(f"Pipeline '{llm_name}' loaded successfully.")
-        pipes[llm_name] = pipe
+        pipe.to(device)
+        
+        if device == "cuda":
+            try:
+                pipe.enable_xformers_memory_efficient_attention()
+            except:
+                pipe.enable_attention_slicing()
+        else:
+            pipe.enable_attention_slicing()
+            
+        logger.info(f"Pipeline '{llm_name}' ({pipeline_type}) ready (Cached components: {shared_components is not None})")
+        pipes[cache_key] = pipe
     except Exception as e:
-        logger.error(f"Error loading model '{llm_name}': {e}")
+        logger.error(f"Error loading model '{llm_name}' ({pipeline_type}): {e}")
         return None
-    return pipes[llm_name]
+    return pipes[cache_key]
+
+def get_compute_settings():
+    conn = get_db()
+    if not conn: return {"compute_mode": "cpu"}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM app_settings")
+            rows = cur.fetchall()
+            return {row[0]: row[1] if isinstance(row[1], dict) else json.loads(row[1]) for row in rows}
+    except Exception as e:
+        logger.error(f"Error fetching settings in worker: {e}")
+        return {"compute_mode": "cpu"}
+    finally: conn.close()
 
 def get_db():
     if not DB_URL:
@@ -226,6 +270,20 @@ def update_task_record(task_id: str, file_path: str = None, duration_ms: float =
                     )
     except Exception as e:
         logger.error(f"Could not update record {task_id}: {e}")
+    finally:
+        conn.close()
+
+def get_core_image_path(parent_id: int):
+    conn = get_db()
+    if not conn: return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT file_path FROM sprite_images WHERE id = %s", (parent_id,))
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Error fetching core image path: {e}")
+        return None
     finally:
         conn.close()
 
@@ -300,13 +358,13 @@ def generate_sprite_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-tu
     
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
-    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
+    negative = "multiple characters, two characters, group, horde, crowd, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
 
     clean_prompt = prompt
     for t, _ in DIRECTIONS:
         clean_prompt = clean_prompt.replace(t, "").strip().lstrip(",").strip()
     
-    full_prompt_base = f"single standalone {clean_prompt}, one centered character, no duplicates, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"single standalone {clean_prompt}, one centered character, no duplicates, high quality pixel art, sharp focus"
+    full_prompt_base = f"solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, high quality pixel art, sharp focus"
 
     strips = []
     start_time = time.time()
@@ -378,12 +436,12 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
 
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
-    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
+    negative = "multiple characters, two characters, group, horde, crowd, twins, clones, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
 
     clean_prompt = prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     
     # Strictly aligned prefix: "PixelartFSS, idle front,"
-    full_prompt = f"PixelartFSS, idle front, single standalone {clean_prompt}, one centered character, no duplicates, flat solid transparent background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, single standalone {clean_prompt}, one centered character, no duplicates, high quality pixel art, sharp focus"
+    full_prompt = f"PixelartFSS, idle front, solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, flat solid transparent background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, high quality pixel art, sharp focus"
 
     start_time = time.time()
     
@@ -491,77 +549,110 @@ def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "st
 @celery_app.task(name="tasks.generate_action_strip_task", bind=True)
 def generate_action_strip_task(self, main_task_id: str, action: str, action_index: int, total_actions: int, parent_id: int, parent_prompt: str, parent_seed: int, llm_name: str, frame_width: int = 128, frame_height: int = 128):
     logger.info(f"Sub-task {self.request.id} starting action '{action}' ({action_index+1}/{total_actions}) for main task {main_task_id}")
-    p = get_pipeline(llm_name)
     
+    # Use Img2Img pipeline for Stage 2
+    p = get_pipeline(llm_name, pipeline_type="img2img")
+    
+    # 0. Fetch Core Image for Img2Img
+    core_path = get_core_image_path(parent_id)
+    core_img = None
+    if core_path and os.path.exists(core_path):
+        core_img = Image.open(core_path).convert("RGB")
+        logger.info(f"Loaded core image from {core_path} for Img2Img.")
+    else:
+        logger.warning(f"Core image not found at {core_path}. Falling back to Text2Img.")
+        p = get_pipeline(llm_name, pipeline_type="text2img")
+
     clean_prompt = parent_prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     base_prompt = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
     negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
     
-    # Dynamic parameters based on model type
-    is_turbo = "turbo" in llm_name.lower()
-    num_steps = 4 if is_turbo else 35
-    guidance = 1.0 if is_turbo else 9.0
-    is_vlm = isinstance(p, LLMProxyPipeline)
+    # Optimized settings for SDXL-Turbo Img2Img
+    num_steps = 4 
+    guidance = 0.0 # Turbo usually works best with 0 or 1 guidance in Img2Img
+    
+    # 1. Map triggers and identify if this is a movement/dynamic action
+    action_lower = action.lower()
+    is_dynamic = any(kw in action_lower for kw in ["move", "walk", "attack", "damage", "burning"])
+    strength = 0.75 if is_dynamic else 0.5
+    
+    trigger = ""
+    if "move right" in action_lower: 
+        trigger = "side view profile, walking right, character facing right, dynamic legs moving"
+    elif "move left" in action_lower: 
+        trigger = "side view profile, walking left, character facing left, dynamic legs moving"
+    elif "move down" in action_lower: 
+        trigger = "walking front, character facing forward, legs moving"
+    elif "move up" in action_lower: 
+        trigger = "walking back, character facing away, legs moving"
+    elif "idle" in action_lower: 
+        trigger = "idle standing"
+    elif "attack" in action_lower: 
+        trigger = "dramatic action pose, fast strike attack, swinging arms"
+    elif "got damage" in action_lower: 
+        trigger = "taking damage, hurt posture, recoiling"
+    elif "burning" in action_lower: 
+        trigger = "in flames burning, expressive movement"
+    else: 
+        trigger = action
 
-    # 1. Get 4 Frame descriptions
+    # 2. Get 4 Frame descriptions
+    is_vlm = isinstance(p, LLMProxyPipeline)
     frame_descriptions = []
     if is_vlm:
-        frame_descriptions = p.enhance_animation(action, base_prompt)
+        vlm_poses = p.enhance_animation(trigger, base_prompt)
+        frame_descriptions = [f"{pose}, {base_prompt}" for pose in vlm_poses]
     else:
-        action_lower = action.lower()
-        trigger = ""
-        if "move right" in action_lower: trigger = "walk right"
-        elif "move left" in action_lower: trigger = "walk left"
-        elif "move down" in action_lower: trigger = "walk front"
-        elif "move up" in action_lower: trigger = "walk back"
-        elif "idle" in action_lower: trigger = "idle standing"
-        elif "attack" in action_lower: trigger = "fast strike attack"
-        elif "got damage" in action_lower: trigger = "taking damage"
-        elif "burning" in action_lower: trigger = "in flames burning"
-        else: trigger = action
-        
         frame_descriptions = [
             f"Frame 1 of {trigger} animation, {base_prompt}",
-            f"Frame 2 of {trigger} animation, movement sequence, {base_prompt}",
-            f"Frame 3 of {trigger} animation, movement sequence, {base_prompt}",
+            f"Frame 2 of {trigger} animation, movement sequence, stride, {base_prompt}",
+            f"Frame 3 of {trigger} animation, movement sequence, stride, {base_prompt}",
             f"Frame 4 of {trigger} animation, finish pose, {base_prompt}"
         ]
 
     # 2. Generate 4 frames
+    settings = get_compute_settings()
+    device = "cuda" if torch.cuda.is_available() and settings.get("compute_mode") == "cuda" else "cpu"
+    
     action_frames = []
     for f_idx, frame_prompt in enumerate(frame_descriptions):
-        generator = torch.Generator("cpu").manual_seed(parent_seed + f_idx)
+        generator = torch.Generator(device).manual_seed(parent_seed + f_idx)
         
-        # Note: In a distributed system, we don't update the MAIN task progress here 
-        # unless we want to do complex accumulation. For now, we log to stdout.
         logger.info(f"Worker {self.request.id} Generating Frame {f_idx+1}/4 for '{action}'")
         
-        # Define per-frame progress callback for distributed awareness
         def frame_progress_callback(step, timestep, latents):
+            # Update every step for Stage 2 (since it only has 4 steps total)
             if step % 1 == 0:
-                frame_pct = (step / num_steps)
-                # Global Progress = (Actions Done / Total) + (This Action Progress / Total)
-                global_pct = int(((action_index / total_actions) + (frame_pct / 4 / total_actions)) * 100)
-                # Ensure we don't hit 100% until the finalizer finishes
-                safe_pct = min(global_pct, 95)
-                update_task_record(main_task_id, progress_pct=safe_pct, progress_msg=f"{action}: {int(frame_pct*100)}%")
+                frame_pct = (step / (num_steps - 1)) if num_steps > 1 else 1.0
+                global_pct = int(((action_index / total_actions) + ((f_idx + frame_pct) / 4 / total_actions)) * 100)
+                safe_pct = min(global_pct, 98)
+                update_task_record(main_task_id, progress_pct=safe_pct, progress_msg=f"Sheet: {action} ({f_idx+1}/4) {int(frame_pct*100)}%")
                 self.update_state(state="PROGRESS", meta={"pct": safe_pct, "msg": f"{action} F{f_idx+1}"})
 
-        img = p(
-            prompt=frame_prompt,
-            negative_prompt=negative,
-            height=512,
-            width=512,
-            num_inference_steps=num_steps,
-            guidance_scale=guidance,
-            generator=generator,
-            callback=frame_progress_callback,
-            callback_steps=1
-        ).images[0]
+        # Pipeline Call (Switches based on core_img availability)
+        pipe_args = {
+            "prompt": frame_prompt,
+            "negative_prompt": negative,
+            "height": 512,
+            "width": 512,
+            "num_inference_steps": num_steps,
+            "guidance_scale": guidance,
+            "generator": generator,
+            "callback": frame_progress_callback,
+            "callback_steps": 1
+        }
+        
+        if core_img:
+            pipe_args["image"] = core_img
+            pipe_args["strength"] = strength
+            # Remove height/width for Img2Img as it takes from source or defaults
+            pipe_args.pop("height")
+            pipe_args.pop("width")
+        
+        img = p(**pipe_args).images[0]
         
         img_transparent = remove_background(img)
         
-        # Resize to requested frame dimensions
         if img_transparent.width != frame_width or img_transparent.height != frame_height:
             img_transparent = img_transparent.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
             

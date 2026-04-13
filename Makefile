@@ -1,4 +1,10 @@
+# Detection: Check if nvidia-smi exists to determine if we should use CUDA overrides
+HAS_GPU := $(shell which nvidia-smi > /dev/null 2>&1 && echo yes || echo no)
 COMPOSE_FILE := compose/develop/docker-compose.yml
+ifeq ($(HAS_GPU),yes)
+  COMPOSE_FILE += -f compose/develop/docker-compose.cuda.yml
+endif
+
 ENV_FILE := compose/develop/.env
 SERVICE_NAME := collector
 DB_PASSWORD ?= password

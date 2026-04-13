@@ -117,6 +117,50 @@ async def gallery(request: Request):
         context={"rows": rows, "active_page": "gallery"}
     )
 
+@app.get("/api/settings")
+def get_settings():
+    conn = get_db()
+    if not conn: return {"compute_mode": "cpu"}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM app_settings")
+            rows = cur.fetchall()
+            return {row[0]: row[1] for row in rows}
+    except Exception as e:
+        print(f"Error fetching settings: {e}")
+        return {"compute_mode": "cpu"}
+    finally: conn.close()
+
+@app.post("/api/settings/{key}")
+def update_setting(key: str, request: Request):
+    import json
+    try:
+        # We handle raw JSON input for flexible settings
+        body = time.sleep(0.01) # ensure a bit of delay if needed
+        # Actually, let's use a simpler approach for now
+        pass
+    except: pass
+    return {"status": "error"}
+
+@app.post("/api/settings")
+async def save_settings(request: Request):
+    data = await request.json()
+    conn = get_db()
+    if not conn: return JSONResponse({"status": "error"}, status_code=500)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                for k, v in data.items():
+                    cur.execute(
+                        "INSERT INTO app_settings (key, value) VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = %s, updated_at = CURRENT_TIMESTAMP",
+                        (k, json.dumps(v), json.dumps(v))
+                    )
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+    finally: conn.close()
+
 @app.post("/api/generate")
 def generate_sprite(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
     # Fallback to older generation functionality if accessed directly

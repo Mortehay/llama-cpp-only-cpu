@@ -17,5 +17,5 @@ llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF gemma-4-E4B-it-uncensored-hereti
 # New Multimodal Spritesheet Builders (GGUF)
 rafacost/DreamOmni2-7.6B-GGUF DreamOmni2-Vlm-Model-7.6B-Q4_K_M.gguf
 rafacost/DreamOmni2-7.6B-GGUF mmproj-DreamOmni2-7.6B-GGUF-f16.gguf
-Aakash010/MedGemma_FineTuned medgemma-Q4_K_M.gguf
-Aakash010/MedGemma_FineTuned mmproj-fp16.gguf
+bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf
+bartowski/Qwen2-VL-7B-Instruct-GGUF mmproj-Qwen2-VL-7B-Instruct-f16.gguf

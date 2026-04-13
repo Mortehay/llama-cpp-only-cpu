@@ -4,8 +4,7 @@ python-multipart
 psycopg2-binary
 celery[redis]
 redis
-# Use CPU wheels for pytorch to keep image size small
---extra-index-url https://download.pytorch.org/whl/cpu
+# Use standard wheels to allow CUDA support
 torch
 diffusers
 transformers

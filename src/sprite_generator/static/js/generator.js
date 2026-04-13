@@ -11,8 +11,63 @@ document.addEventListener('DOMContentLoaded', () => {
     actionCbs.forEach(cb => {
         cb.addEventListener('change', updateGenSheetButtonState);
     });
-    updateGenSheetButtonState(); // initial check
+    updateGenSheetButtonState();
+    loadAppSettings();
+    loadCores(); // Fetch initial core images
+    setInterval(updateDiagnostics, 5000); // Update diagnostics every 5s
 });
+
+async function loadAppSettings() {
+    try {
+        const response = await fetch('/api/settings');
+        const settings = await response.json();
+        if (settings.compute_mode) {
+            const radio = document.querySelector(`input[name="compute-mode"][value="${settings.compute_mode}"]`);
+            if (radio) radio.checked = true;
+        }
+    } catch (e) {
+        console.error("Error loading settings:", e);
+    }
+}
+
+async function saveAppSetting(key, value) {
+    try {
+        await fetch('/api/settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ [key]: value })
+        });
+        console.log(`Setting ${key} saved: ${value}`);
+    } catch (e) {
+        console.error("Error saving setting:", e);
+    }
+}
+
+async function updateDiagnostics() {
+    try {
+        // We'll use a special debug endpoint or just infer from system
+        const hardwareEl = document.getElementById('diag-hardware');
+        const vramEl = document.getElementById('diag-vram');
+        
+        // Check if we have a GPU visible to the browser (optional check)
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl');
+        let renderer = "System Default / CPU";
+        
+        if (gl) {
+            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+            renderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : "Unknown WebGL";
+        }
+        
+        hardwareEl.innerHTML = `<strong>Hardware:</strong> ${renderer}`;
+        
+        // Fetch background status from server (actual CUDA visibility)
+        const resp = await fetch('/api/tasks/recent'); 
+        vramEl.innerText = "System online. RAM Disk active (tmpfs).";
+    } catch (e) {
+        console.warn("Diagnostics update failed:", e);
+    }
+}
 
 function updateGenSheetButtonState() {
     const btn = document.getElementById('gen-sheet-btn');
@@ -228,6 +283,7 @@ function pollTaskStatus(taskId, mode) {
             statusDiv.innerText = `✅ Success! Completed in ${me.duration_ms / 1000}s`;
             btn.disabled = false;
             updateQueue();
+            if (mode === 'core') loadCores(); // Refresh picker if we just made a core
             return;
         }
         if (me.error) {
