@@ -9,6 +9,8 @@ torch
 diffusers
 transformers
 accelerate
+peft
+torchsde
 rembg
 Pillow
 jinja2

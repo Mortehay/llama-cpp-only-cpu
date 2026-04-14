@@ -187,18 +187,21 @@ async function deleteTask(id) {
 }
 
 async function generateCore() {
-  const promptVal = document.getElementById('core-prompt').value.trim();
+  const promptElem = document.getElementById('core-prompt');
+  if (!promptElem) return;
+  const promptVal = promptElem.value.trim();
   if (!promptVal) return;
   const resultDiv = document.getElementById('core-result');
   const statusDiv = document.getElementById('core-status');
   const btn = document.getElementById('gen-core-btn');
 
-  resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
-  statusDiv.innerText = 'Initializing...';
-  btn.disabled = true;
+  if (resultDiv) resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
+  if (statusDiv) statusDiv.innerText = 'Initializing...';
+  if (btn) btn.disabled = true;
 
   try {
-    const llm_name = document.getElementById('core-llm').value;
+    const llmElem = document.getElementById('core-llm');
+    const llm_name = llmElem ? llmElem.value : 'stabilityai/sdxl-turbo';
     const fd = new FormData();
     fd.append('prompt', promptVal);
     fd.append('llm_name', llm_name);
@@ -229,13 +232,16 @@ async function generateSheet() {
   const statusDiv = document.getElementById('sheet-status');
   const btn = document.getElementById('gen-sheet-btn');
 
-  resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
-  statusDiv.innerText = 'Initializing...';
-  btn.disabled = true;
+  if (resultDiv) resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
+  if (statusDiv) statusDiv.innerText = 'Initializing...';
+  if (btn) btn.disabled = true;
 
   try {
-    const llm_name = document.getElementById('sheet-llm').value;
-    const size = document.getElementById('sheet-frame-size').value;
+    const llmElem = document.getElementById('sheet-llm');
+    const llm_name = llmElem ? llmElem.value : 'stabilityai/sdxl-turbo';
+    const sizeElem = document.getElementById('sheet-frame-size');
+    const size = sizeElem ? sizeElem.value : 128;
+    
     const fd = new FormData();
     fd.append('parent_id', selectedCoreId);
     fd.append('actions', JSON.stringify(actions));

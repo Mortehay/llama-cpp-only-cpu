@@ -11,20 +11,20 @@
   <div class="main-content">
     <h1>Pixel Art Generator</h1>
     <p class="sub">2-Step generation: create a core character, then build custom spritesheets.</p>
-    
+
     <div class="tabs">
       <div class="tab active" onclick="switchTab('core')">Core Generator</div>
       <div class="tab" onclick="switchTab('sheet')">Spritesheet Generator</div>
       <div class="tab" onclick="switchTab('settings')">Settings & Diagnostics</div>
     </div>
-    
+
     <div class="card tab-content active" id="tab-core">
       <label>Select Model</label>
       <select id="core-llm" class="select-field">
-          <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
-          <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
+        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
       </select>
-      
+
       <label for="core-prompt">Core Character Description</label>
       <textarea id="core-prompt" rows="3">green zombie, tattered clothes, solid transparent background</textarea>
       <button class="btn" id="gen-core-btn" onclick="generateCore()">⚡ Generate Core Sprite</button>
@@ -33,33 +33,40 @@
         <span class="preview-placeholder">Live preview will appear here.</span>
       </div>
     </div>
-    
+
     <div class="card tab-content" id="tab-sheet">
-      <!-- <label>Select Model</label>
+      <label>Select Animation Model</label>
       <select id="sheet-llm" class="select-field">
-          <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Sprite Grid)</option>
-          <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5 (Sprite Grid Default)</option>
-          <option value="Qwen/Qwen2-VL-7B-Instruct-GGUF" selected>Qwen2-VL (Spatial Sprite Guide)</option>
-          <option value="rafacost/DreamOmni2-7.6B-GGUF">DreamOmni2 7.6B (VLM Sprite Guide)</option>
-      </select> -->
-      
+        <option value="flux-2-klein-4b-Q8_0.gguf" selected>Flux.2 Klein 4B (One-Shot GGUF 2x2 Grid)</option>
+        <option value="stabilityai/sdxl-turbo">SDXL Turbo (Sequential)</option>
+        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+      </select>
+
       <label>Select Core Image</label>
       <div class="core-grid" id="core-picker">
         <span style="color:var(--muted); font-size: 13px;">Loading cores...</span>
       </div>
-      
+
       <label>Select Actions</label>
       <div class="actions-grid">
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move right" /> Move Right</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move left" /> Move Left</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move down" /> Move Down</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="move up" /> Move Up</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="attack" /> Attack</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="got damage" /> Get Damage</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="idle" /> Idle</label>
-          <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()" value="burning" /> Burning</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="move right" /> Move Right</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="move left" /> Move Left</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="move down" /> Move Down</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="move up" /> Move Up</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="attack" /> Attack</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="got damage" /> Get Damage</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="idle" /> Idle</label>
+        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
+            value="burning" /> Burning</label>
       </div>
-      
+
       <div style="display: flex; gap: 16px; margin-bottom: 16px;">
         <div style="flex: 1;">
           <label>Frame Size</label>
@@ -71,7 +78,7 @@
           </select>
         </div>
       </div>
-      
+
       <button class="btn" id="gen-sheet-btn" onclick="generateSheet()" disabled>⚡ Generate Spritesheet</button>
       <div class="status" id="sheet-status"></div>
       <div class="preview" id="sheet-result">
@@ -84,11 +91,12 @@
         <label>Compute Mode</label>
         <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="radio" name="compute-mode" value="cpu" checked onchange="saveAppSetting('compute_mode', 'cpu')"> 
+            <input type="radio" name="compute-mode" value="cpu" checked
+              onchange="saveAppSetting('compute_mode', 'cpu')">
             <span>Standard CPU Mode (Optimized for AMD APU)</span>
           </label>
           <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="radio" name="compute-mode" value="cuda" onchange="saveAppSetting('compute_mode', 'cuda')"> 
+            <input type="radio" name="compute-mode" value="cuda" onchange="saveAppSetting('compute_mode', 'cuda')">
             <span>Enable NVIDIA CUDA Acceleration (WSL2 / 3050)</span>
           </label>
         </div>
@@ -96,19 +104,23 @@
 
       <div style="margin-bottom: 24px;">
         <label>Resource Diagnostics & High-RAM Opts</label>
-        <div class="stats-panel" id="diag-panel" style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 8px; margin-top: 8px;">
-           <div id="diag-hardware">Detecting hardware profile...</div>
-           <div id="diag-vram" style="margin-top: 8px; color: var(--muted); font-size: 13px;">System online. RAM Disk active (tmpfs).</div>
+        <div class="stats-panel" id="diag-panel"
+          style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 8px; margin-top: 8px;">
+          <div id="diag-hardware">Detecting hardware profile...</div>
+          <div id="diag-vram" style="margin-top: 8px; color: var(--muted); font-size: 13px;">System online. RAM Disk
+            active (tmpfs).</div>
         </div>
       </div>
 
-      <div class="card-inner" style="background: rgba(255,107,0,0.1); border: 1px dashed var(--accent); padding: 12px; border-radius: 6px; font-size: 13px;">
-          <strong>Tip:</strong> You have 29GB of RAM. The system is configured to use a <strong>2GB RAM Disk (tmpfs)</strong> for intermediate sprites to eliminate SSD bottlenecking.
-      </div>
+      <div class="card-inner"
+        style="background: rgba(255,107,0,0.1); border: 1px dashed var(--accent); padding: 12px; border-radius: 6px; font-size: 13px;">
+        <strong>Tip:</strong> You have 29GB of RAM. The system is configured to use a <strong>2GB RAM Disk
+          (tmpfs)</strong> for intermediate sprites to eliminate SSD bottlenecking.
       </div>
     </div>
-    <div class="sidebar">
-    <div class="task-list-title"> 
+  </div>
+  <div class="sidebar">
+    <div class="task-list-title">
       <span>Live Tasks</span>
     </div>
     <div id="task-queue">
@@ -119,5 +131,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="/static/js/generator.js"></script>
+<script src="/static/js/generator.js?v={{ range(1, 1000000) | random }}"></script>
 {% endblock %}

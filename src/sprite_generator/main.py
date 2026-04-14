@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from migrations import run_migrations
 from celery.result import AsyncResult
-from tasks import celery_app, generate_sprite_task, generate_core_task, generate_sheet_task, remove_background
+from tasks import celery_app, generate_core_task, generate_sheet_task, remove_background
 
 DB_URL = os.environ.get("DB_URL")
 
@@ -161,22 +161,22 @@ async def save_settings(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
     finally: conn.close()
 
-@app.post("/api/generate")
-def generate_sprite(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
-    # Fallback to older generation functionality if accessed directly
-    task = generate_sprite_task.delay(prompt, llm_name)
-    conn = get_db()
-    if conn:
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
-                        (prompt, task.id, "Waiting in queue...", "spritesheet", llm_name)
-                    )
-        except Exception as e: print(f"Record error: {e}")
-        finally: conn.close()
-    return JSONResponse({"status": "queued", "task_id": task.id})
+# @app.post("/api/generate")
+# def generate_sprite(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
+#     # Fallback to older generation functionality if accessed directly
+#     task = generate_sprite_task.delay(prompt, llm_name)
+#     conn = get_db()
+#     if conn:
+#         try:
+#             with conn:
+#                 with conn.cursor() as cur:
+#                     cur.execute(
+#                         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
+#                         (prompt, task.id, "Waiting in queue...", "spritesheet", llm_name)
+#                     )
+#         except Exception as e: print(f"Record error: {e}")
+#         finally: conn.close()
+#     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.post("/api/generate_core")
 def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
@@ -339,11 +339,14 @@ def retry_task(id: int):
                         (prompt, task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(requested_actions), llm_actual, step_number)
                     )
                 else:
-                    task = generate_sprite_task.delay(prompt, llm_actual)
-                    cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
-                        (prompt, task.id, "Waiting in queue...", "spritesheet", llm_actual)
-                    )
+                    return {"status": "error", "message": "Invalid image type", "task_id": task.id, "image_type": image_type}
+                
+                # else:
+                #     task = generate_sprite_task.delay(prompt, llm_actual)
+                #     cur.execute(
+                #         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
+                #         (prompt, task.id, "Waiting in queue...", "spritesheet", llm_actual)
+                #     )
                     
                 return {"status": "queued", "task_id": task.id, "image_type": image_type}
     finally: conn.close()

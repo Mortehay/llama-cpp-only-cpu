@@ -4,6 +4,8 @@ set -e
 MODELS_FILE="/usr/local/bin/models.txt"
 MODELS_DIR="/models"
 
+echo "HF_TOKEN: $HF_TOKEN"
+
 echo "Reading models to download from ${MODELS_FILE}..."
 
 while IFS=' ' read -r repo_id file_name || [ -n "$repo_id" ]; do
@@ -22,7 +24,8 @@ while IFS=' ' read -r repo_id file_name || [ -n "$repo_id" ]; do
         echo "================================================================"
         
         hf download "$repo_id" "$file_name" \
-          --local-dir "$MODELS_DIR"
+          --local-dir "$MODELS_DIR" \
+          --token "$HF_TOKEN"
           
         echo -e "\n[SUCCESS] ${file_name} download complete!"
     else

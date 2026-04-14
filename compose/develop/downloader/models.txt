@@ -12,10 +12,6 @@ llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF gemma-4-E4B-it-uncensored-hereti
 
 
 # SD Sprite Generation Model (Auto-downloaded by diffusers backend to /models):
-# Onodofthenorth/SD_PixelArt_SpriteSheet_Generator
-
-# New Multimodal Spritesheet Builders (GGUF)
-#rafacost/DreamOmni2-7.6B-GGUF DreamOmni2-Vlm-Model-7.6B-Q4_K_M.gguf
-#rafacost/DreamOmni2-7.6B-GGUF mmproj-DreamOmni2-7.6B-GGUF-f16.gguf
-#bartowski/Qwen2-VL-7B-Instruct-GGUF Qwen2-VL-7B-Instruct-Q4_K_M.gguf
-#bartowski/Qwen2-VL-7B-Instruct-GGUF mmproj-Qwen2-VL-7B-Instruct-f16.gguf
+# One-Shot Spritesheet Models (April 2026)
+unsloth/FLUX.2-klein-4B-GGUF flux-2-klein-4b-Q8_0.gguf
+fal/flux-2-klein-4b-spritesheet-lora flux2_klein_spritesheet_lora.safetensors
