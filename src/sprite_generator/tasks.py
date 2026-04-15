@@ -360,18 +360,20 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     start_time = time.time()
     
     # Dynamic parameters based on model type
-    is_turbo = "turbo" in llm_name.lower()
-    num_steps = 6
-    guidance = 1.0 if is_turbo else 9.0
+    is_turbo = "turbo" in llm_name.lower() or "schnell" in llm_name.lower()
+    num_steps = 4 if is_turbo else 35
+    guidance = 0.0 if is_turbo else 9.0
 
     try:
         update_task_record(task_id, progress_pct=0, progress_msg="Generating core image...", seed=seed)
 
-        def progress_callback(step, timestep, latents):
-            if step % 1 == 0:
-                pct = int((step / num_steps) * 100)
+        def progress_callback(pipe, i, t, callback_kwargs):
+            pct = int((i / num_steps) * 100)
+            logger.info(f"  > Core generation progress: {pct}%")
+            if i % 1 == 0:
                 update_task_record(task_id, progress_pct=pct, progress_msg=f"Generating: {int(pct)}%")
                 self.update_state(state="PROGRESS", meta={"pct": pct, "msg": "Generating core image"})
+            return callback_kwargs
 
         img = p(
             full_prompt,
@@ -381,8 +383,7 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
             num_inference_steps=num_steps,
             guidance_scale=guidance,
             generator=generator,
-            callback=progress_callback,
-            callback_steps=1
+            callback_on_step_end=progress_callback
         ).images[0]
             
     except Exception as e:
@@ -465,10 +466,10 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         if is_cancelled(task_id):
             return {"error": "Cancelled"}
         
+        logger.info(f"--- Action {i+1}/{total}: '{action}' ---")
         update_task_record(task_id, progress_pct=10 + int((i/total)*80), progress_msg=f"Generating {action}...")
         
         is_dynamic = any(kw in action.lower() for kw in ["move", "walk", "attack", "damage", "burning"])
-        strength = 0.85 if is_dynamic else 0.5
         
         action_lower = action.lower()
         trigger = action
@@ -487,38 +488,56 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         prompt = f"spritesheet, {trigger}, {base_prompt}, 1x{motion_steps} horizontal grid, {motion_steps} animation frames in a row"
         negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
         
+        # Optimization: FLUX.1-schnell is a 4-step model. 
+        # Reducing steps and setting guidance to 0 for massive speedup on CPU.
+        num_inf_steps = 4 
+        
+        def action_progress_callback(pipe, i, t, callback_kwargs):
+            pct = int((i / num_inf_steps) * 100)
+            logger.info(f"  > '{action}' progress: {pct}%")
+            # Update DB periodically
+            if i % 2 == 0:
+                update_task_record(task_id, progress_msg=f"{action}: {pct}%")
+            return callback_kwargs
+
         generator = torch.Generator("cpu").manual_seed(parent_seed + i)
         try:
             grid_img = p(
                 prompt=prompt,
                 image=core_img,
                 strength=strength,
-                num_inference_steps=25,
-                guidance_scale=4.5,
+                num_inference_steps=num_inf_steps,
+                guidance_scale=0.0,
                 generator=generator,
-                width=256 * motion_steps,
-                height=256
+                width=frame_width * motion_steps,
+                height=frame_height,
+                callback_on_step_end=action_progress_callback
             ).images[0]
             
             # Slice the generated horizontal grid
             grid_w, grid_h = grid_img.size
             qw = grid_w // motion_steps
             
+            logger.info(f"  > Action '{action}' complete. Removing background from grid...")
+            grid_img = remove_background(grid_img)
+            
+            logger.info(f"  > Slicing action strip: {grid_w}x{grid_h} into {motion_steps} frames...")
             action_strip = Image.new("RGBA", (frame_width * motion_steps, frame_height), (0,0,0,0))
             for f in range(motion_steps):
                 frame = grid_img.crop((f * qw, 0, (f + 1) * qw, grid_h))
-                frame = remove_background(frame)
                 if frame.width != frame_width or frame.height != frame_height:
                     frame = frame.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
                 action_strip.paste(frame, (f * frame_width, 0), frame)
             
             action_strips.append(action_strip)
+            logger.info(f"  > Action '{action}' processed successfully.")
         except Exception as e:
             logger.error(f"Action '{action}' generation failed: {e}")
             update_task_record(task_id, error_msg=f"Failed on {action}")
             return {"error": str(e)}
 
     # Stitch vertically
+    logger.info(f"Stitching {len(action_strips)} action strips into master sheet...")
     sheet_w = frame_width * motion_steps
     sheet_h = frame_height * len(action_strips)
     master = Image.new("RGBA", (sheet_w, sheet_h), (0,0,0,0))
