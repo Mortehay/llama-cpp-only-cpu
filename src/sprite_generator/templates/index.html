@@ -37,9 +37,7 @@
     <div class="card tab-content" id="tab-sheet">
       <label>Select Animation Model</label>
       <select id="sheet-llm" class="select-field">
-        <option value="flux-2-klein-4b-Q8_0.gguf" selected>Flux.2 Klein 4B (One-Shot GGUF 2x2 Grid)</option>
-        <option value="stabilityai/sdxl-turbo">SDXL Turbo (Sequential)</option>
-        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        <option value="flux-2-klein-4b-Q8_0.gguf" selected>Flux.2 Klein 4B (One-Shot GGUF Grid)</option>
       </select>
 
       <label>Select Core Image</label>
@@ -76,6 +74,10 @@
             <option value="256">256 x 256 px</option>
             <option value="512">512 x 512 px</option>
           </select>
+        </div>
+        <div style="flex: 1;">
+          <label>Motion Steps Counter</label>
+          <input type="number" id="sheet-motion-steps" class="select-field" value="4" min="1" max="16" style="width: 100%; border-radius: 4px; padding: 6px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border);">
         </div>
       </div>
 

@@ -23,9 +23,7 @@ while IFS=' ' read -r repo_id file_name || [ -n "$repo_id" ]; do
         echo "(Progress percentage will continuously print below)"
         echo "================================================================"
         
-        hf download "$repo_id" "$file_name" \
-          --local-dir "$MODELS_DIR" \
-          --token "$HF_TOKEN"
+        hf download "$repo_id" "$file_name" --local-dir "$MODELS_DIR" --token "$HF_TOKEN"
           
         echo -e "\n[SUCCESS] ${file_name} download complete!"
     else

@@ -4,6 +4,10 @@ import json
 import time
 import uuid
 import torch
+import diffusers.loaders.single_file_utils as sf_utils
+import diffusers.loaders.single_file_model as sf_model
+import sys
+
 from diffusers import (
     StableDiffusionXLImg2ImgPipeline, 
     StableDiffusionXLPipeline, 
@@ -11,7 +15,11 @@ from diffusers import (
     FluxPipeline, 
     StableDiffusionPipeline,
     FluxTransformer2DModel,
-    GGUFQuantizationConfig
+    GGUFQuantizationConfig,
+    StableDiffusionPipeline, 
+    StableDiffusionXLPipeline, 
+    StableDiffusionXLImg2ImgPipeline,
+    DPMSolverMultistepScheduler
 )
 import psycopg2
 import random
@@ -19,12 +27,7 @@ import logging
 import requests
 from collections import namedtuple
 from celery import Celery, chord, group
-from diffusers import (
-    StableDiffusionPipeline, 
-    StableDiffusionXLPipeline, 
-    StableDiffusionXLImg2ImgPipeline,
-    DPMSolverMultistepScheduler
-)
+
 from PIL import Image, ImageDraw
 import base64
 import io
@@ -46,111 +49,26 @@ IMAGES_DIR = "/app/images"
 
 celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL)
 
+# Redis client for cooperative cancellation flags
+import redis as _redis
+_redis_client = _redis.from_url(REDIS_URL, decode_responses=True)
+
+def set_cancel_flag(task_id: str):
+    """Mark a task for cooperative cancellation (expires in 10 min)."""
+    _redis_client.setex(f"cancel:{task_id}", 600, "1")
+
+def is_cancelled(task_id: str) -> bool:
+    """Check if a task has been flagged for cancellation."""
+    return _redis_client.exists(f"cancel:{task_id}") > 0
+
+def clear_cancel_flag(task_id: str):
+    """Remove the cancellation flag."""
+    _redis_client.delete(f"cancel:{task_id}")
+
 pipes = {}
 PipelineOutput = namedtuple("PipelineOutput", ["images"])
 
-class LLMProxyPipeline:
-    def __init__(self, model_name, fallback_pipeline=None):
-        self.model_name = model_name
-        self.endpoint = "http://llm_engine:8080/v1/chat/completions"
-        self.fallback_pipeline = fallback_pipeline
-        # Mapping for llama.cpp server model selection if needed
-        self.model_file_map = {
-            "Aakash010/MedGemma_FineTuned": "medgemma-Q4_K_M",
-            "rafacost/DreamOmni2-7.6B-GGUF": "DreamOmni2-Vlm-Model-7.6B-Q4_K_M",
-            "Qwen/Qwen2-VL-7B-Instruct-GGUF": "Qwen2-VL-7B-Instruct-Q4_K_M"
-        }
-
-    def _encode_image(self, image):
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        return base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-    def __call__(self, prompt, **kwargs):
-        logger.info(f"Proxying sprite generation to LLM server ({self.model_name})")
-        
-        # 1. Prepare Request to VLM
-        model_file = self.model_file_map.get(self.model_name, self.model_name)
-        messages = [
-            {"role": "system", "content": "You are a pixel art sprite expert. Analyze character images and describe their movement for animation frames. Be brief but highly descriptive of posture and specific limbs."},
-            {"role": "user", "content": f"Enhance this sprite generation prompt: {prompt}"}
-        ]
-        
-        try:
-            resp = requests.post(
-                self.endpoint,
-                json={
-                    "model": model_file,
-                    "messages": messages,
-                    "max_tokens": 150
-                },
-                timeout=30
-            )
-            if resp.status_code != 200:
-                logger.error(f"Proxy call failed ({resp.status_code}): {resp.text}")
-                return self.fallback_pipeline(prompt, **kwargs) if self.fallback_pipeline else PipelineOutput(images=[])
-            
-            enhanced = resp.json()['choices'][0]['message']['content'].strip()
-            # Clean up VLM output (sometimes they wrap in quotes or add 'Revised prompt:')
-            enhanced = enhanced.replace("Revised prompt:", "").replace('"', '').strip()
-            
-            # 2. Use Fallback SD Pipeline with Enhanced Prompt
-            if self.fallback_pipeline:
-                logger.info("Using fallback SD pipeline with VLM guidance...")
-                return self.fallback_pipeline(enhanced, **kwargs)
-            
-            return PipelineOutput(images=[])
-        except Exception as e:
-            logger.error(f"Proxy call exception: {e}")
-            if self.fallback_pipeline:
-                return self.fallback_pipeline(prompt, **kwargs)
-            raise e
-
-    def enhance_animation(self, action_label, base_prompt):
-        """Specifically useful for animation frames. Returns 4 descriptions."""
-        logger.info(f"VLM: Requesting 4-frame animation breakdown for '{action_label}'")
-        model_file = self.model_file_map.get(self.model_name, self.model_name)
-        
-        prompt_text = (
-            f"Describe 4 sequential movement poses for a character performing: {action_label}. "
-            f"The character looks like: {base_prompt}. "
-            "Respond ONLY in exactly 4 lines, one for each pose. Each line must be a concise visual description of posture and limb placement. "
-            "Do NOT mention 'frames', 'borders', 'grid', or 'layout'."
-        )
-        
-        messages = [
-            {"role": "system", "content": "You are a professional pixel art animator. Provide exactly 4 lines of visual descriptions for sequential animation poses. Focus on weight distribution and movement. Never describe the background or layout."},
-            {"role": "user", "content": prompt_text}
-        ]
-
-        try:
-            resp = requests.post(
-                self.endpoint,
-                json={
-                    "model": model_file,
-                    "messages": messages,
-                    "max_tokens": 300
-                },
-                timeout=45
-            )
-            if resp.status_code != 200:
-                logger.error(f"VLM enhance_animation failed ({resp.status_code}): {resp.text}")
-                return [f"Frame {i+1} of {action_label} animation" for i in range(4)]
-            
-            content = resp.json()['choices'][0]['message']['content'].strip()
-            lines = [line.strip() for line in content.split('\n') if line.strip()][:4]
-            
-            # Pad if less than 4
-            while len(lines) < 4:
-                lines.append(f"Frame {len(lines)+1} of {action_label}")
-            
-            logger.info(f"VLM Animation Guides: {lines}")
-            return lines
-        except Exception as e:
-            logger.error(f"VLM enhance_animation failed: {e}")
-            return [f"Frame {i+1} of {action_label}" for i in range(4)]
-
-def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str = "text2img"):
+def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str = "text2img"):
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
@@ -158,118 +76,134 @@ def get_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str = 
     cache_key = f"{llm_name}_{pipeline_type}"
     if cache_key in pipes:
         return pipes[cache_key]
-    
-    # Memory Optimization: Check for existing pipeline of the same model to share components
-    other_type = "img2img" if pipeline_type == "text2img" else "text2img"
-    other_key = f"{llm_name}_{other_type}"
-    shared_components = None
-    if other_key in pipes and not hasattr(pipes[other_key], "fallback_pipeline"):
-        logger.info(f"Memory Save: Sharing components from '{other_key}' to create '{cache_key}'")
-        shared_components = pipes[other_key].components
-
-    if "gguf" in llm_name.lower() or "medgemma" in llm_name.lower() or "dreamomni" in llm_name.lower() or "qwen" in llm_name.lower():
-        logger.info(f"Using LLMProxyPipeline for '{llm_name}' (Type: {pipeline_type})")
-        fallback = get_pipeline("stabilityai/sdxl-turbo", pipeline_type=pipeline_type)
-        pipes[cache_key] = LLMProxyPipeline(llm_name, fallback_pipeline=fallback)
-        return pipes[cache_key]
-
-    # Dynamic Hardware Detection
-    settings = get_compute_settings()
-    device = "cuda" if torch.cuda.is_available() and settings.get("compute_mode") == "cuda" else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-
-    logger.info(f"Loading '{llm_name}' ({pipeline_type}) on {device.upper()} ({dtype})...")
-    try:
-        from diffusers import StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline, FluxImg2ImgPipeline, FluxPipeline, StableDiffusionPipeline
         
-        is_flux = "flux" in llm_name.lower()
+    device = "cpu"
+    dtype = torch.float32
+
+    logger.info(f"Loading '{llm_name}' ({pipeline_type}) on CPU (FLOAT32)...")
+    try:
+        from diffusers import StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline, StableDiffusionPipeline
+        
         is_sdxl = "sdxl" in llm_name.lower() or "turbo" in llm_name.lower()
         
-        if shared_components:
-            if is_flux:
-                pipeline_class = FluxImg2ImgPipeline if pipeline_type == "img2img" else FluxPipeline
-            elif is_sdxl:
-                pipeline_class = StableDiffusionXLImg2ImgPipeline if pipeline_type == "img2img" else StableDiffusionXLPipeline
-            else:
-                pipeline_class = StableDiffusionPipeline
-            pipe = pipeline_class(**shared_components)
+        if is_sdxl:
+            pipeline_class = StableDiffusionXLImg2ImgPipeline if pipeline_type == "img2img" else StableDiffusionXLPipeline
         else:
-            if is_flux:
-                pipeline_class = FluxImg2ImgPipeline if pipeline_type == "img2img" else FluxPipeline
-            elif is_sdxl:
-                pipeline_class = StableDiffusionXLImg2ImgPipeline if pipeline_type == "img2img" else StableDiffusionXLPipeline
-            else:
-                pipeline_class = StableDiffusionPipeline
-                
-            if is_flux and llm_name.endswith('.gguf'):
-                # Handle GGUF Loading for Flux.2 Klein
-                logger.info(f"Detected GGUF format for '{llm_name}'. Using single-file transformer loader.")
-                gguf_path = os.path.join("/models", llm_name)
-                
-                transformer = FluxTransformer2DModel.from_single_file(
-                    gguf_path,
-                    quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
-                    torch_dtype=torch.bfloat16,
-                )
-                
-                # We use the standard repo for the other components
-                base_repo = "black-forest-labs/FLUX.2-klein-4B"
-                pipe = FluxPipeline.from_pretrained(
-                    base_repo,
-                    transformer=transformer,
-                    torch_dtype=dtype,
-                    token=os.environ.get("HF_TOKEN")
-                )
-            else:
-                pipe = pipeline_class.from_pretrained(
-                    llm_name, 
-                    torch_dtype=dtype,
-                    cache_dir="/models",
-                    token=os.environ.get("HF_TOKEN")
-                )
-        
-        # Load LoRAs for Flux-based One-Shot generation
-        if is_flux:
-            lora_path = "fal/flux-2-klein-4b-spritesheet-lora"
-            logger.info(f"Loading LoRA weights from {lora_path}...")
-            pipe.load_lora_weights(lora_path)
-            pipe.fuse_lora()
+            pipeline_class = StableDiffusionPipeline
             
-        if torch.cuda.is_available() and settings.get("compute_mode") == "cuda":
-            pipe.to("cuda")
-            logger.info(f"Pipeline '{llm_name}' moved to CUDA")
-        else:
-            pipe.to("cpu")
-            logger.info(f"Pipeline '{llm_name}' running on CPU")
+        pipe = pipeline_class.from_pretrained(
+            llm_name, 
+            torch_dtype=dtype,
+            cache_dir="/models",
+            token=os.environ.get("HF_TOKEN")
+        )
             
-        logger.info(f"Pipeline '{llm_name}' ({pipeline_type}) ready")
+        pipe.to("cpu")
         pipes[cache_key] = pipe
     except Exception as e:
         logger.error(f"Error loading model '{llm_name}' ({pipeline_type}): {e}")
         return None
     return pipes[cache_key]
 
-def get_compute_settings():
-    conn = get_db()
-    if not conn: return {"compute_mode": "cpu"}
+# Hot-patch for FLUX.2-klein GGUF support in diffusers
+def apply_klein_patch():
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT key, value FROM app_settings")
-            rows = cur.fetchall()
-            settings = {}
-            for key, value in rows:
-                if isinstance(value, dict):
-                    settings[key] = value
-                else:
-                    try:
-                        settings[key] = json.loads(value)
-                    except ValueError:
-                        settings[key] = value
-            return settings
+   
+        # Define the keys known to be missing in Klein/Pruned Flux models
+        KLEIN_MISSING_KEYS = {
+            "time_in.in_layer.bias": (256,),
+            "time_in.out_layer.bias": (3072,),
+            "vector_in.in_layer.weight": (256, 768),
+            "vector_in.in_layer.bias": (256,),
+            "guidance_in.in_layer.bias": (256,),
+            "guidance_in.out_layer.bias": (3072,),
+        }
+
+        orig_func = sf_utils.convert_flux_transformer_checkpoint_to_diffusers
+
+        def patched_convert(checkpoint, *args, **kwargs):
+            # Inject zeros for missing keys so checkpoint.pop() doesn't crash
+            for key, shape in KLEIN_MISSING_KEYS.items():
+                if key not in checkpoint:
+                    checkpoint[key] = torch.zeros(shape, dtype=torch.float32)
+            return orig_func(checkpoint, *args, **kwargs)
+
+        # Force the patch into the module
+        sf_utils.convert_flux_transformer_checkpoint_to_diffusers = patched_convert
+        print("FLUX.2-klein compatibility patch is now ACTIVE.", flush=True)
     except Exception as e:
-        logger.error(f"Error fetching settings in worker: {e}")
-        return {"compute_mode": "cpu"}
-    finally: conn.close()
+        print(f"Failed to apply FLUX.2-klein patch: {e}", flush=True)
+
+apply_klein_patch()
+
+def get_flux_pipeline(pipeline_type: str = "img2img"):
+    llm_name = "flux-2-klein-4b-Q8_0.gguf"
+    global pipes
+    
+    cache_key = f"flux_{pipeline_type}"
+    if cache_key in pipes:
+        return pipes[cache_key]
+        
+    device = "cpu"
+    dtype = torch.bfloat16  # float32 would need ~23GB; bfloat16 halves it to ~11.5GB
+
+    # Clear cache if memory is tight or model changes
+    if len(pipes) > 0:
+        logger.info("Clearing pipeline cache to free memory...")
+        pipes.clear()
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    # flux1-schnell.safetensors contains only the transformer weights.
+    # Load the transformer from local safetensors, then build the full pipeline
+    # using the cached HuggingFace snapshot for all other components (CLIP, T5, VAE, scheduler).
+    safetensors_path = "/models/flux1-schnell.safetensors"
+    base_repo = "black-forest-labs/FLUX.1-schnell"
+    hf_cache = "/models/models--black-forest-labs--FLUX.1-schnell/snapshots/741f7c3ce8b383c54771c7003378a50191e9efe9"
+    logger.info(f"Loading FLUX transformer from: {safetensors_path}")
+    try:
+        from diffusers import FluxImg2ImgPipeline, FluxPipeline, FluxTransformer2DModel
+
+        pipeline_class = FluxImg2ImgPipeline if pipeline_type == "img2img" else FluxPipeline
+
+        logger.info("Loading FluxTransformer2DModel from local safetensors...")
+        transformer = FluxTransformer2DModel.from_single_file(
+            safetensors_path,
+            torch_dtype=dtype,
+            config=hf_cache,
+            subfolder="transformer",
+        )
+
+        logger.info(f"Assembling full pipeline from cached HF snapshot: {hf_cache}")
+        pipe = pipeline_class.from_pretrained(
+            hf_cache,
+            transformer=transformer,
+            torch_dtype=dtype,
+            local_files_only=True,
+        )
+
+        lora_path = "/models/flux-spritesheet-lora.safetensors"
+        if os.path.exists(lora_path):
+            try:
+                logger.info(f"Loading LoRA weights from {lora_path}...")
+                pipe.load_lora_weights(lora_path)
+                pipe.fuse_lora()
+                logger.info("LoRA fused successfully.")
+            except Exception as lora_e:
+                logger.warning(f"LoRA loading failed, continuing without it: {lora_e}")
+
+        pipe.to("cpu")
+        pipes[cache_key] = pipe
+        logger.info("FLUX pipeline loaded and ready.")
+    except Exception as e:
+        logger.error(f"Error loading FLUX pipeline: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+    return pipes[cache_key]
+
 
 def get_db():
     if not DB_URL:
@@ -283,7 +217,7 @@ def get_db():
 def update_task_record(task_id: str, file_path: str = None, duration_ms: float = 0, 
                        error_msg: str = None, progress_pct: int = None, progress_msg: str = None,
                        image_type: str = None, parent_id: int = None, components: list = None,
-                       requested_actions: list = None, seed: int = None):
+                       requested_actions: list = None, seed: int = None, sub_task_ids: list = None):
     conn = get_db()
     if not conn:
         return
@@ -322,6 +256,9 @@ def update_task_record(task_id: str, file_path: str = None, duration_ms: float =
                 if seed is not None:
                     update_fields.append("seed = %s")
                     values.append(seed)
+                if sub_task_ids is not None:
+                    update_fields.append("sub_task_ids = %s")
+                    values.append(json.dumps(sub_task_ids))
                 
                 if update_fields:
                     values.append(task_id)
@@ -401,96 +338,12 @@ def remove_background(master):
         logger.error(f"BG removal failed: {e}")
         return master
 
-# @celery_app.task(name="tasks.generate_sprite_task", bind=True)
-# def generate_sprite_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turbo"):
-#     task_id = self.request.id
-#     logger.info(f"Task {task_id} generated sprite with llm {llm_name}")
-#     p = get_pipeline(llm_name)
-#     if not p:
-#         update_task_record(task_id, error_msg="Model failed to load on worker")
-#         return {"error": "Model failed to load"}
-
-#     DIRECTIONS = [
-#         ("PixelartFSS", "front"),
-#         ("PixelartBSS", "back"),
-#         ("PixelartLSS", "left"),
-#         ("PixelartRSS", "right"),
-#     ]
-    
-#     seed = random.randint(0, 10**9)
-#     generator = torch.Generator("cpu").manual_seed(seed)
-#     negative = "multiple characters, two characters, group, horde, crowd, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
-
-#     clean_prompt = prompt
-#     for trigger_token, _ in DIRECTIONS:
-#         clean_prompt = clean_prompt.replace(trigger_token, "").strip().lstrip(",").strip()
-    
-#     full_prompt_base = f"solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, high quality pixel art, sharp focus"
-
-#     strips = []
-#     start_time = time.time()
-#     num_steps = 35
-
-#     try:
-#         for i, (trigger, label) in enumerate(DIRECTIONS):
-#             current_prompt = f"{trigger}, {full_prompt_base}"
-#             logger.info(f"Generating {label} (Seed {seed}): {current_prompt}")
-#             update_task_record(task_id, progress_pct=int((i/4)*100), progress_msg=f"Pass {i+1}/4: {label}", seed=seed)
-
-#             def progress_callback(step, timestep, latents):
-#                 if step % 4 == 0:
-#                     step_pct = (step / num_steps)
-#                     total_pct = int(((i / 4) + (step_pct / 4)) * 100)
-#                     update_task_record(task_id, progress_pct=total_pct, progress_msg=f"Pass {i+1}/4 ({label}): {int(step_pct*100)}%")
-#                     self.update_state(state="PROGRESS", meta={"pct": total_pct, "msg": label})
-
-#             img = p(
-#                 current_prompt,
-#                 negative_prompt=negative,
-#                 height=512,
-#                 width=512,
-#                 num_inference_steps=num_steps,
-#                 guidance_scale=9.0,
-#                 generator=generator,
-#                 callback=progress_callback,
-#                 callback_steps=1
-#             ).images[0]
-#             strips.append(img)
-            
-#     except Exception as e:
-#         logger.error(f"Task {task_id} failed: {str(e)}", exc_info=True)
-#         update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
-#         return {"error": str(e)}
-
-#     end_time = time.time()
-#     total_duration_ms = (end_time - start_time) * 1000
-#     log_stats(task_id, llm_name, clean_prompt, num_steps * 4, start_time, end_time, total_duration_ms)
-
-#     update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Stitching...")
-
-#     total_height = sum(img.height for img in strips)
-#     master = Image.new("RGB", (strips[0].width, total_height))
-#     y = 0
-#     for img in strips:
-#         master.paste(img, (0, y))
-#         y += img.height
-
-#     master = remove_background(master)
-#     filename = f"sprite_{uuid.uuid4().hex[:12]}.png"
-#     filepath = os.path.join(IMAGES_DIR, filename)
-#     os.makedirs(IMAGES_DIR, exist_ok=True)
-#     master.save(filepath, format="PNG")
-
-#     update_task_record(task_id, file_path=filepath, duration_ms=total_duration_ms, 
-#                        error_msg=None, progress_pct=100, progress_msg="Complete", image_type="spritesheet", seed=seed)
-
-#     return {"status": "success", "url": f"/images/{filename}", "duration_ms": total_duration_ms }
 
 @celery_app.task(name="tasks.generate_core_task", bind=True)
 def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turbo"):
     task_id = self.request.id
     logger.info(f"Task {task_id} generated core with llm {llm_name}")
-    p = get_pipeline(llm_name)
+    p = get_sd_pipeline(llm_name)
     if not p:
         update_task_record(task_id, error_msg="Model failed to load on worker")
         return {"error": "Model failed to load"}
@@ -508,7 +361,7 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     
     # Dynamic parameters based on model type
     is_turbo = "turbo" in llm_name.lower()
-    num_steps = 4 if is_turbo else 35
+    num_steps = 6
     guidance = 1.0 if is_turbo else 9.0
 
     try:
@@ -566,277 +419,120 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
 
     return {"status": "success", "url": f"/images/{filename}", "duration_ms": total_duration_ms }
 
-@celery_app.task(name="tasks.generate_sheet_task", bind=True)
-def generate_sheet_task(self, parent_id: int, actions: list, llm_name: str = "stabilityai/sdxl-turbo", frame_width: int = 128, frame_height: int = 128):
-    
+@celery_app.task(name="tasks.generate_spritesheet_task", bind=True)
+def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str, frame_width: int, frame_height: int, motion_steps: int):
     task_id = self.request.id
-    logger.info(f"Orchestrating Distributed Sheet Task {task_id} with llm {llm_name}")
+    logger.info(f"Task {task_id} generating sheet with {llm_name}, actions: {actions}")
     
-    # 1. Fetch parent info for all sub-tasks
-    conn = get_db()
-    if not conn:
-        update_task_record(task_id, error_msg="DB connection failed")
-        return {"error": "DB connection failed"}
+    update_task_record(task_id, progress_pct=5, progress_msg="Loading context...")
     
-    parent_prompt = ""
-    parent_seed = None
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT prompt, seed FROM sprite_images WHERE id = %s", (parent_id,))
-                row = cur.fetchone()
-                if row:
-                    parent_prompt, parent_seed = row
-    except Exception as e:
-        logger.error(f"Error fetching parent: {e}")
-    finally:
-        conn.close()
-
-    if parent_seed is None: 
-        parent_seed = random.randint(0, 10**9)
-
-    # 2. Fire off the Chord
-    # Group of action generators -> Finalizer
-    header = [
-        generate_action_strip_task.s(task_id, action, i, len(actions), parent_id, parent_prompt, parent_seed, llm_name, frame_width, frame_height)
-        for i, action in enumerate(actions)
-    ]
-    
-    callback = finalize_sheet_task.s(task_id, parent_id, actions, parent_seed, llm_name)
-    
-    update_task_record(task_id, progress_pct=5, progress_msg="Distributed: Queuing sub-tasks...", requested_actions=actions)
-    
-    chord(header)(callback)
-    return {"status": "orchestrated", "task_id": task_id}
-
-def prepare_frame(img, target_w, target_h):
-    """Helper to remove background and resize a sliced frame."""
-    from .tasks import remove_background
-    img_transparent = remove_background(img)
-    if img_transparent.width != target_w or img_transparent.height != target_h:
-        img_transparent = img_transparent.resize((target_w, target_h), Image.Resampling.LANCZOS)
-    return img_transparent
-
-@celery_app.task(name="tasks.generate_action_strip_task", bind=True)
-def generate_action_strip_task(self, main_task_id: str, action: str, action_index: int, total_actions: int, parent_id: int, parent_prompt: str, parent_seed: int, llm_name: str, frame_width: int = 128, frame_height: int = 128):
-    logger.info(f"Sub-task {self.request.id} starting action '{action}' ({action_index+1}/{total_actions}) for main task {main_task_id}")
-    
-    # Use Img2Img pipeline for Stage 2
-    p = get_pipeline(llm_name, pipeline_type="img2img")
-    
-    # 0. Fetch Core Image for Img2Img
+    # Fetch Core Image
     core_path = get_core_image_path(parent_id)
     core_img = None
     if core_path and os.path.exists(core_path):
         core_img = Image.open(core_path).convert("RGB")
-        logger.info(f"Loaded core image from {core_path} for Img2Img.")
     else:
-        logger.warning(f"Core image not found at {core_path}. Falling back to Text2Img.")
-        p = get_pipeline(llm_name, pipeline_type="text2img")
+        err = "Parent core image not found"
+        logger.error(err)
+        update_task_record(task_id, error_msg=err)
+        return {"error": err}
+        
+    conn = get_db()
+    parent_prompt = ""
+    parent_seed = random.randint(0, 10**9)
+    if conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT prompt, seed FROM sprite_images WHERE id = %s", (parent_id,))
+            row = cur.fetchone()
+            if row:
+                parent_prompt, _seed = row
+                if _seed: parent_seed = _seed
+        conn.close()
 
     clean_prompt = parent_prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     base_prompt = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
-    negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
     
-    # Optimized settings for SDXL-Turbo Img2Img to force geometry changes
-    num_steps = 15 
-    guidance = 1.5
+    p = get_flux_pipeline(pipeline_type="img2img")
+    if not p:
+        update_task_record(task_id, error_msg="Pipeline load failed")
+        return {"error": "Pipeline load failed"}
+        
+    action_strips = []
     
-    # 1. Map triggers and identify if this is a movement/dynamic action
-    action_lower = action.lower()
-    is_dynamic = any(kw in action_lower for kw in ["move", "walk", "attack", "damage", "burning"])
-    strength = 0.85 if is_dynamic else 0.5
-    
-    trigger = ""
-    if "move right" in action_lower: 
-        trigger = "side view profile, walking right, character facing right, dynamic legs moving"
-    elif "move left" in action_lower: 
-        trigger = "side view profile, walking left, character facing left, dynamic legs moving"
-    elif "move down" in action_lower: 
-        trigger = "walking front, character facing forward, legs moving"
-    elif "move up" in action_lower: 
-        trigger = "walking back, character facing away, legs moving"
-    elif "idle" in action_lower: 
-        trigger = "idle standing"
-    elif "attack" in action_lower: 
-        trigger = "dramatic action pose, fast strike attack, swinging arms"
-    elif "got damage" in action_lower: 
-        trigger = "taking damage, hurt posture, recoiling"
-    elif "burning" in action_lower: 
-        trigger = "in flames burning, expressive movement"
-    else: 
+    # We loop each action sequentially. Flux Img2Img performs best this way.
+    total = len(actions)
+    for i, action in enumerate(actions):
+        if is_cancelled(task_id):
+            return {"error": "Cancelled"}
+        
+        update_task_record(task_id, progress_pct=10 + int((i/total)*80), progress_msg=f"Generating {action}...")
+        
+        is_dynamic = any(kw in action.lower() for kw in ["move", "walk", "attack", "damage", "burning"])
+        strength = 0.85 if is_dynamic else 0.5
+        
+        action_lower = action.lower()
         trigger = action
-
-    # 2. Sequential frame generation
-    frame_descriptions = [
-        f"Frame 1 of {trigger} animation, {base_prompt}",
-        f"Frame 2 of {trigger} animation, movement sequence, stride, {base_prompt}",
-        f"Frame 3 of {trigger} animation, movement sequence, stride, {base_prompt}",
-        f"Frame 4 of {trigger} animation, finish pose, {base_prompt}"
-    ]
-
-    settings = get_compute_settings()
-    device = "cuda" if torch.cuda.is_available() and settings.get("compute_mode") == "cuda" else "cpu"
-    
-    is_flux = "flux" in llm_name.lower()
-    is_one_shot = is_flux
-    
-    action_frames = []
-    
-    if is_one_shot:
-        # 2a. ONE-SHOT Generation (Flux/LoRA Layout Method)
-        generator = torch.Generator(device).manual_seed(parent_seed)
+        if "move right" in action_lower: trigger = "side view profile, walking right, character facing right, dynamic legs moving"
+        elif "move left" in action_lower: trigger = "side view profile, walking left, character facing left, dynamic legs moving"
+        elif "move down" in action_lower: trigger = "walking front, character facing forward, legs moving"
+        elif "move up" in action_lower: trigger = "walking back, character facing away, legs moving"
+        elif "idle" in action_lower: trigger = "idle standing"
+        elif "attack" in action_lower: trigger = "dramatic action pose, fast strike attack, swinging arms"
+        elif "got damage" in action_lower: trigger = "taking damage, hurt posture, recoiling"
+        elif "burning" in action_lower: trigger = "in flames burning, expressive movement"
         
-        # Prompt includes trigger words and requested framing
-        one_shot_prompt = f"spritesheet, {trigger}, {base_prompt}, 2x2 grid, 4 distinct viewpoints"
-        logger.info(f"Worker {self.request.id} using One-Shot Grid Generation for '{action}'")
+        # Increase strength to force adaptation to new movements
+        strength = 0.95 if is_dynamic else 0.70
         
-        def one_shot_callback(step, timestep, latents):
-            pct = int(((action_index / total_actions) + ((step / 25) / total_actions)) * 100)
-            update_task_record(main_task_id, progress_pct=pct, progress_msg=f"One-Shot Grid: {action} ({int((step/25)*100)}%)")
-
-        pipe_args = {
-            "prompt": one_shot_prompt,
-            "negative_prompt": negative,
-            "num_inference_steps": 25,
-            "guidance_scale": 4.5,
-            "generator": generator,
-            "callback": one_shot_callback,
-            "callback_steps": 1,
-            "width": 512, # Final 2x2 grid
-            "height": 512
-        }
+        prompt = f"spritesheet, {trigger}, {base_prompt}, 1x{motion_steps} horizontal grid, {motion_steps} animation frames in a row"
+        negative = "multiple characters, two characters, split screen, collage, grid, set, blurry, deformed, extra limbs, cropped, low quality, watermark, text, noise, messy pixels, artifacting, gradient, shadows on background"
         
-        if core_img:
-            pipe_args["image"] = core_img
-            pipe_args["strength"] = 0.85
+        generator = torch.Generator("cpu").manual_seed(parent_seed + i)
+        try:
+            grid_img = p(
+                prompt=prompt,
+                image=core_img,
+                strength=strength,
+                num_inference_steps=25,
+                guidance_scale=4.5,
+                generator=generator,
+                width=256 * motion_steps,
+                height=256
+            ).images[0]
             
-        grid_img = p(**pipe_args).images[0]
-        
-        # Slicing Logic: Cut the 2x2 grid into 4 quadrants
-        grid_w, grid_h = grid_img.size
-        qw = grid_w // 2
-        qh = grid_h // 2
-        
-        # Mapping: 0:TL, 1:TR, 2:BL, 3:BR
-        quads = [
-            (0, 0, qw, qh),       # TL
-            (qw, 0, grid_w, qh),  # TR
-            (0, qh, qw, grid_h),  # BL
-            (qw, qh, grid_w, grid_h) # BR
-        ]
-        
-        for i in range(4):
-            box = quads[i]
-            frame = grid_img.crop(box)
-            action_frames.append(prepare_frame(frame, frame_width, frame_height))
+            # Slice the generated horizontal grid
+            grid_w, grid_h = grid_img.size
+            qw = grid_w // motion_steps
             
-    else:
-        # 2b. SEQUENTIAL Generation (Legacy 4-Pass Method)
-        frame_descriptions = [
-            f"Frame 1 of {trigger} animation, {base_prompt}",
-            f"Frame 2 of {trigger} animation, movement sequence, stride, {base_prompt}",
-            f"Frame 3 of {trigger} animation, movement sequence, stride, {base_prompt}",
-            f"Frame 4 of {trigger} animation, finish pose, {base_prompt}"
-        ]
+            action_strip = Image.new("RGBA", (frame_width * motion_steps, frame_height), (0,0,0,0))
+            for f in range(motion_steps):
+                frame = grid_img.crop((f * qw, 0, (f + 1) * qw, grid_h))
+                frame = remove_background(frame)
+                if frame.width != frame_width or frame.height != frame_height:
+                    frame = frame.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
+                action_strip.paste(frame, (f * frame_width, 0), frame)
+            
+            action_strips.append(action_strip)
+        except Exception as e:
+            logger.error(f"Action '{action}' generation failed: {e}")
+            update_task_record(task_id, error_msg=f"Failed on {action}")
+            return {"error": str(e)}
 
-        for f_idx, frame_prompt in enumerate(frame_descriptions):
-            generator = torch.Generator(device).manual_seed(parent_seed + f_idx)
-            
-            logger.info(f"Worker {self.request.id} Generating Frame {f_idx+1}/4 for '{action}'")
-            
-            def frame_progress_callback(step, timestep, latents):
-                if step % 1 == 0:
-                    frame_pct = (step / (num_steps - 1)) if num_steps > 1 else 1.0
-                    global_pct = int(((action_index / total_actions) + ((f_idx + frame_pct) / 4 / total_actions)) * 100)
-                    safe_pct = min(global_pct, 98)
-                    update_task_record(main_task_id, progress_pct=safe_pct, progress_msg=f"Sheet: {action} ({f_idx+1}/4) {int(frame_pct*100)}%")
-                    self.update_state(state="PROGRESS", meta={"pct": safe_pct, "msg": f"{action} F{f_idx+1}"})
-
-            pipe_args = {
-                "prompt": frame_prompt,
-                "negative_prompt": negative,
-                "num_inference_steps": num_steps,
-                "guidance_scale": guidance,
-                "generator": generator,
-                "callback": frame_progress_callback,
-                "callback_steps": 1
-            }
-            
-            if core_img:
-                pipe_args["image"] = core_img
-                pipe_args["strength"] = strength
-            else:
-                pipe_args["height"] = 512
-                pipe_args["width"] = 512
-            
-            img = p(**pipe_args).images[0]
-            
-            img_transparent = remove_background(img)
-            
-            if img_transparent.width != frame_width or img_transparent.height != frame_height:
-                img_transparent = img_transparent.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
-                
-            action_frames.append(img_transparent)
-
-    # 3. Stitch Action Strip
-    action_strip = Image.new("RGBA", (frame_width * 4, frame_height), (0,0,0,0))
-    for x_idx, frame_img in enumerate(action_frames):
-        action_strip.paste(frame_img, (x_idx * frame_width, 0), frame_img)
-
-    # 4. Save intermediate
-    buf = io.BytesIO()
-    action_strip.save(buf, format="PNG")
-    b64_data = base64.b64encode(buf.getvalue()).decode('utf-8')
-    
-    logger.info(f"Sub-task {self.request.id} for action '{action}' COMPLETE")
-    return {"action": action, "image_b64": b64_data}
-
-@celery_app.task(name="tasks.finalize_sheet_task", bind=True)
-def finalize_sheet_task(self, results, main_task_id: str, parent_id: int, actions_order: list, parent_seed: int, llm_name: str):
-    logger.info(f"Finalizing distributed task {main_task_id}")
-    
-    # Sort results to match requested action order
-    results_map = {res['action']: res['image_b64'] for res in results}
-    
-    strips = []
-    component_files = []
-    
-    for action in actions_order:
-        if action in results_map:
-            # Reconstruct image from b64
-            img_data = base64.b64decode(results_map[action])
-            img = Image.open(io.BytesIO(img_data))
-            strips.append(img)
-            
-            # Save as persistent component
-            comp_filename = f"comp_{uuid.uuid4().hex[:12]}.png"
-            comp_filepath = os.path.join(IMAGES_DIR, comp_filename)
-            img.save(comp_filepath, format="PNG")
-            component_files.append(f"/images/{comp_filename}")
-
-    if not strips:
-        update_task_record(main_task_id, error_msg="Generation failed: No strips returned from workers.")
-        return {"error": "No strips returned"}
-
-    # Final vertical stitch
-    sheet_w = strips[0].width
-    sheet_h = sum(s.height for s in strips)
+    # Stitch vertically
+    sheet_w = frame_width * motion_steps
+    sheet_h = frame_height * len(action_strips)
     master = Image.new("RGBA", (sheet_w, sheet_h), (0,0,0,0))
+    
     y = 0
-    for action_strip in strips:
-        master.paste(action_strip, (0, y), action_strip)
-        y += action_strip.height
-
+    for s in action_strips:
+        master.paste(s, (0, y), s)
+        y += frame_height
+        
     filename = f"sheet_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
     os.makedirs(IMAGES_DIR, exist_ok=True)
     master.save(filepath, format="PNG")
-
-    # Update the MAIN task record
-    update_task_record(main_task_id, file_path=filepath, 
-                       error_msg=None, progress_pct=100, progress_msg="Complete", image_type="spritesheet",
-                       parent_id=parent_id, requested_actions=actions_order, components=component_files, seed=parent_seed)
-
-    logger.info(f"Master Sheet {filename} SAVED for task {main_task_id}")
+    
+    update_task_record(task_id, file_path=filepath, progress_pct=100, progress_msg="Complete", image_type="spritesheet", requested_actions=actions, parent_id=parent_id)
+    logger.info(f"Sheet generated {filepath}")
     return {"status": "success", "url": f"/images/{filename}"}

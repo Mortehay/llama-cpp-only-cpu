@@ -1,10 +1,11 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
 python-multipart
 psycopg2-binary
 celery[redis]
 redis
-# Use standard wheels to allow CUDA support
+# CPU Optimized torch and diffusers
 torch
 diffusers
 transformers
@@ -15,3 +16,4 @@ rembg
 Pillow
 jinja2
 requests
+gguf>=0.10.0

@@ -14,4 +14,5 @@ llmfan46/gemma-4-E4B-it-uncensored-heretic-GGUF gemma-4-E4B-it-uncensored-hereti
 # SD Sprite Generation Model (Auto-downloaded by diffusers backend to /models):
 # One-Shot Spritesheet Models (April 2026)
 unsloth/FLUX.2-klein-4B-GGUF flux-2-klein-4b-Q8_0.gguf
-fal/flux-2-klein-4b-spritesheet-lora flux2_klein_spritesheet_lora.safetensors
+# LoRA: Flux.2 Klein 4B Spritesheet (Must be fused into the pipeline)
+fal/flux-2-klein-4b-spritesheet-lora flux-spritesheet-lora.safetensors

@@ -14,7 +14,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from migrations import run_migrations
 from celery.result import AsyncResult
-from tasks import celery_app, generate_core_task, generate_sheet_task, remove_background
+from tasks import celery_app, generate_core_task, generate_spritesheet_task, remove_background, set_cancel_flag
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 DB_URL = os.environ.get("DB_URL")
 
@@ -161,22 +165,6 @@ async def save_settings(request: Request):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
     finally: conn.close()
 
-# @app.post("/api/generate")
-# def generate_sprite(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
-#     # Fallback to older generation functionality if accessed directly
-#     task = generate_sprite_task.delay(prompt, llm_name)
-#     conn = get_db()
-#     if conn:
-#         try:
-#             with conn:
-#                 with conn.cursor() as cur:
-#                     cur.execute(
-#                         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
-#                         (prompt, task.id, "Waiting in queue...", "spritesheet", llm_name)
-#                     )
-#         except Exception as e: print(f"Record error: {e}")
-#         finally: conn.close()
-#     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.post("/api/generate_core")
 def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
@@ -197,9 +185,10 @@ def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdx
 @app.post("/api/generate_sheet")
 def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), 
                    llm_name: str = Form("stabilityai/sdxl-turbo"),
-                   width: int = Form(128), height: int = Form(128)):
+                   width: int = Form(128), height: int = Form(128),
+                   motion_steps: int = Form(4)):
     actions_list = json.loads(actions)
-    task = generate_sheet_task.delay(parent_id, actions_list, llm_name, width, height)
+    task = generate_spritesheet_task.delay(parent_id, actions_list, llm_name, width, height, motion_steps)
     conn = get_db()
     if conn:
         try:
@@ -287,26 +276,55 @@ def delete_task(id: int):
     try:
         with conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT file_path, components, task_id FROM sprite_images WHERE id = %s", (id,))
+                cur.execute("SELECT file_path, components, task_id, sub_task_ids FROM sprite_images WHERE id = %s", (id,))
                 row = cur.fetchone()
                 if row:
                     filepath = row[0]
                     comps = row[1]
                     task_id_to_revoke = row[2]
-                    
+                    sub_task_ids_json = row[3] if len(row) > 3 else None
+                     # 1. Set cooperative cancel flags (stops inference callback loops)
+                    if task_id_to_revoke:
+                        try:
+                            set_cancel_flag(task_id_to_revoke)
+                        except Exception as e:
+                            print(f"Error setting cancel flag for {task_id_to_revoke}: {e}")
+
+                    if sub_task_ids_json:
+                        try:
+                            sub_ids = sub_task_ids_json if isinstance(sub_task_ids_json, list) else json.loads(sub_task_ids_json)
+                            if isinstance(sub_ids, list):
+                                for sid in sub_ids:
+                                    try:
+                                        set_cancel_flag(sid)
+                                    except Exception as e:
+                                        print(f"Error setting cancel flag for sub-task {sid}: {e}")
+                        except Exception as parse_e:
+                            print(f"Error parsing sub_task_ids: {parse_e}")
+
+                    # 2. Also send SIGTERM via Celery revoke (belt + suspenders)
+                    if sub_task_ids_json:
+                        try:
+                            sub_ids = sub_task_ids_json if isinstance(sub_task_ids_json, list) else json.loads(sub_task_ids_json)
+                            if isinstance(sub_ids, list):
+                                for sid in sub_ids:
+                                    try:
+                                        celery_app.control.revoke(sid, terminate=True)
+                                    except Exception as e:
+                                        print(f"Error revoking sub-task {sid}: {e}")
+                        except Exception:
+                            pass
+
+                    # 3. Revoke primary task
                     if task_id_to_revoke:
                         try:
                             celery_app.control.revoke(task_id_to_revoke, terminate=True)
                         except Exception as revoke_e:
-                            print(f"Revoke warning: {revoke_e}")
+                            print(f"Error revoking main task {task_id_to_revoke}: {revoke_e}")
 
-                    if filepath and os.path.exists(filepath):
-                        pass # Soft-delete protocol: retain file on disk
-                    if comps and isinstance(comps, list):
-                        for c in comps:
-                            c_path = c.replace("/images/", IMAGES_DIR + "/")
-                            if os.path.exists(c_path): pass
+                # 4. GUARANTEE database flag update
                 cur.execute("UPDATE sprite_images SET deleted = true WHERE id = %s", (id,))
+                logger.info(f"Task record {id} marked as deleted in DB.")
         return {"status": "deleted"}
     finally: conn.close()
 
@@ -333,7 +351,7 @@ def retry_task(id: int):
                         (prompt, task.id, "Waiting in queue...", "core", llm_actual, step_number)
                     )
                 elif image_type == "spritesheet":
-                    task = generate_sheet_task.delay(parent_id, requested_actions, llm_actual)
+                    task = generate_spritesheet_task.delay(parent_id, requested_actions, llm_actual, 128, 128, 4)
                     cur.execute(
                         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                         (prompt, task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(requested_actions), llm_actual, step_number)
@@ -341,12 +359,6 @@ def retry_task(id: int):
                 else:
                     return {"status": "error", "message": "Invalid image type", "task_id": task.id, "image_type": image_type}
                 
-                # else:
-                #     task = generate_sprite_task.delay(prompt, llm_actual)
-                #     cur.execute(
-                #         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name) VALUES (%s, %s, %s, %s, %s)",
-                #         (prompt, task.id, "Waiting in queue...", "spritesheet", llm_actual)
-                #     )
                     
                 return {"status": "queued", "task_id": task.id, "image_type": image_type}
     finally: conn.close()

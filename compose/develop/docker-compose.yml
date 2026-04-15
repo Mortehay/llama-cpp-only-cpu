@@ -15,6 +15,7 @@ services:
       - .env
     environment:
       - HF_TOKEN=${HF_TOKEN}
+      - HF_DEBUG=1
     command: ["-c", "/usr/local/bin/download_models.sh && tail -f /dev/null"]
 
   # 2. Multi-Model LLM Engine

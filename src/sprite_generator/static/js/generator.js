@@ -241,6 +241,8 @@ async function generateSheet() {
     const llm_name = llmElem ? llmElem.value : 'stabilityai/sdxl-turbo';
     const sizeElem = document.getElementById('sheet-frame-size');
     const size = sizeElem ? sizeElem.value : 128;
+    const motionElem = document.getElementById('sheet-motion-steps');
+    const motion_steps = motionElem ? motionElem.value : 4;
     
     const fd = new FormData();
     fd.append('parent_id', selectedCoreId);
@@ -248,6 +250,7 @@ async function generateSheet() {
     fd.append('llm_name', llm_name);
     fd.append('width', size);
     fd.append('height', size);
+    fd.append('motion_steps', motion_steps);
     const req = await fetch('/api/generate_sheet', { method: 'POST', body: fd });
 
     if (req.ok) {
