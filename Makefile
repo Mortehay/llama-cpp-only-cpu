@@ -7,16 +7,21 @@ endif
 
 ENV_FILE := compose/develop/.env
 SERVICE_NAME := collector
+# Services `make up` blocks on. Deliberately excludes open-webui/grafana, whose
+# own healthchecks take minutes to settle and shouldn't fail a start.
+CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models
 
 # Start containers in the background
 up:
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
+	@echo "Waiting for db, redis and the sprite services to report healthy..."
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 
@@ -28,7 +33,17 @@ build:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
+	@echo "Waiting for db, redis and the sprite services to report healthy..."
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
+	@echo "Checking/applying database migrations..."
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
+
+# Rebuild the app containers from scratch without touching images.
+# Use this when sprite_generator/sprite_worker are "Running" but cannot resolve
+# db/redis — `up -d` treats them as satisfied, only a recreate re-wires DNS.
+recreate:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait --force-recreate sprite-generator sprite-worker
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 
@@ -57,7 +72,9 @@ rebuild-clean:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
+	@echo "Waiting for db, redis and the sprite services to report healthy..."
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 
@@ -66,7 +83,9 @@ rebuild:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
+	@echo "Waiting for db, redis and the sprite services to report healthy..."
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 

@@ -50,6 +50,12 @@ services:
       - ./db/data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   # 9. Redis (Celery Broker/Backend)
   redis:
@@ -57,6 +63,12 @@ services:
     container_name: redis_broker
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
 
   # 5. Open WebUI (Chat Interface)
   open-webui:
@@ -93,8 +105,10 @@ services:
       dockerfile: compose/develop/collector/Dockerfile
     container_name: stats_collector
     depends_on:
-      - llm-server
-      - db
+      llm-server:
+        condition: service_started
+      db:
+        condition: service_healthy
     volumes:
       - ../../src/collector:/app
     environment:
@@ -134,12 +148,28 @@ services:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
+      # Unbuffered stdout: without this, startup/migration errors sit in the
+      # buffer and only surface in `docker logs` minutes after the fact.
+      - PYTHONUNBUFFERED=1
     ports:
       - "8001:8001"
-    restart: unless-stopped
+    # No restart policy on purpose. A container that Docker *restarts* (at host
+    # boot, or after a kill) can re-attach to the compose network without working
+    # embedded DNS, leaving `db`/`redis` permanently unresolvable — and `make up`
+    # then reports it as "Running" and does nothing. Start it via `make up`.
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # -O /dev/null, not --spider: --spider sends HEAD and the route is GET-only (405).
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8001/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Importing torch/diffusers takes ~25s before uvicorn serves.
+      start_period: 120s
     tmpfs:
       - /app/images/temp:size=2G,mode=1777
 
@@ -158,10 +188,14 @@ services:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
-    restart: unless-stopped
+      - PYTHONUNBUFFERED=1
+    # No restart policy — see the note on sprite-generator above.
     depends_on:
-      - db
-      - redis
-      - downloader
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      downloader:
+        condition: service_started
     tmpfs:
       - /app/images/temp:size=2G,mode=1777

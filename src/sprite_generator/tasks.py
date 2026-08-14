@@ -33,15 +33,15 @@ import base64
 import io
 import multiprocessing
 
-# Maximize CPU utilization based on user request (set to 70% of available logical cores)
-cpu_limit = max(1, int(multiprocessing.cpu_count() * 0.70))
+# Maximize CPU utilization based on user request (set to 100% of available logical cores)
+cpu_limit = multiprocessing.cpu_count()
 os.environ["OMP_NUM_THREADS"] = str(cpu_limit)
 os.environ["MKL_NUM_THREADS"] = str(cpu_limit)
 torch.set_num_threads(cpu_limit)
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-logger.info(f"PyTorch CPU inference threads set to {cpu_limit} (Targeting 70% of host capacity).")
+logger.info(f"PyTorch CPU inference threads set to {cpu_limit} (Full Host Capacity).")
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DB_URL = os.environ.get("DB_URL")
@@ -123,9 +123,10 @@ def apply_klein_patch():
 
         def patched_convert(checkpoint, *args, **kwargs):
             # Inject zeros for missing keys so checkpoint.pop() doesn't crash
+            # Use bfloat16 as it's the primary inference dtype for FLUX on CPU
             for key, shape in KLEIN_MISSING_KEYS.items():
                 if key not in checkpoint:
-                    checkpoint[key] = torch.zeros(shape, dtype=torch.float32)
+                    checkpoint[key] = torch.zeros(shape, dtype=torch.bfloat16)
             return orig_func(checkpoint, *args, **kwargs)
 
         # Force the patch into the module
@@ -177,25 +178,59 @@ def get_flux_pipeline(pipeline_type: str = "img2img"):
         )
 
         logger.info(f"Assembling full pipeline from cached HF snapshot: {hf_cache}")
-        pipe = pipeline_class.from_pretrained(
-            hf_cache,
-            transformer=transformer,
-            torch_dtype=dtype,
-            local_files_only=True,
-        )
-
+        if pipeline_type == "img2img":
+            p = FluxImg2ImgPipeline.from_pretrained(
+                hf_cache,
+                transformer=transformer,
+                torch_dtype=dtype,
+                local_files_only=True,
+            )
+        else:
+            p = FluxPipeline.from_pretrained(
+                hf_cache,
+                transformer=transformer,
+                torch_dtype=dtype,
+                local_files_only=True,
+            )
+        
+        # Stability: Enable tiling and slicing for CPU VAE
+        logger.info("Stabilizing VAE for CPU (bfloat16 + tiling + slicing)...")
+        p.vae.to(dtype=dtype)
+        p.vae.enable_tiling()
+        p.vae.enable_slicing()
+        
+        # CPU Dtype Alignment: Force the ENTIRE pipeline to match the target dtype
+        logger.info(f"Strict alignment: Moving entire pipeline to {dtype}...")
+        p.transformer.to(dtype=dtype)
+        p.text_encoder.to(dtype=dtype)
+        if hasattr(p, "text_encoder_2") and p.text_encoder_2:
+            p.text_encoder_2.to(dtype=dtype)
+        
+        # Diagnostic: Verify dtypes of major components
+        def get_mod_dtype(mod):
+            try:
+                # Check first parameter for dtype
+                return next(mod.parameters()).dtype
+            except:
+                return "unknown"
+        
+        logger.info(f"DIAGNOSTIC - Transformer: {get_mod_dtype(p.transformer)}, "
+                    f"VAE: {get_mod_dtype(p.vae)}, "
+                    f"TextEncoder1: {get_mod_dtype(p.text_encoder)}")
+        
+        # LoRA Loading Logic
         lora_path = "/models/flux-spritesheet-lora.safetensors"
         if os.path.exists(lora_path):
             try:
                 logger.info(f"Loading LoRA weights from {lora_path}...")
-                pipe.load_lora_weights(lora_path)
-                pipe.fuse_lora()
-                logger.info("LoRA fused successfully.")
+                p.load_lora_weights(lora_path)
+                # p.fuse_lora() # Optional: Fuse for a slight speedup if stable
+                logger.info("LoRA loaded successfully.")
             except Exception as lora_e:
                 logger.warning(f"LoRA loading failed, continuing without it: {lora_e}")
 
-        pipe.to("cpu")
-        pipes[cache_key] = pipe
+        p.to("cpu")
+        pipes[cache_key] = p
         logger.info("FLUX pipeline loaded and ready.")
     except Exception as e:
         logger.error(f"Error loading FLUX pipeline: {e}")
@@ -453,6 +488,10 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     clean_prompt = parent_prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     base_prompt = f"{clean_prompt}, flat solid white background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"{clean_prompt}, high quality pixel art, sharp focus"
     
+    # Threading Optimization: Ensure task uses all cores
+    torch.set_num_threads(12)
+    logger.info(f"Task started. Unlocking CPU threads: {torch.get_num_threads()} cores active.")
+    
     p = get_flux_pipeline(pipeline_type="img2img")
     if not p:
         update_task_record(task_id, error_msg="Pipeline load failed")
@@ -501,40 +540,50 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
             return callback_kwargs
 
         generator = torch.Generator("cpu").manual_seed(parent_seed + i)
-        try:
-            grid_img = p(
-                prompt=prompt,
-                image=core_img,
-                strength=strength,
-                num_inference_steps=num_inf_steps,
-                guidance_scale=0.0,
-                generator=generator,
-                width=frame_width * motion_steps,
-                height=frame_height,
-                callback_on_step_end=action_progress_callback
-            ).images[0]
-            
-            # Slice the generated horizontal grid
-            grid_w, grid_h = grid_img.size
-            qw = grid_w // motion_steps
-            
-            logger.info(f"  > Action '{action}' complete. Removing background from grid...")
-            grid_img = remove_background(grid_img)
-            
-            logger.info(f"  > Slicing action strip: {grid_w}x{grid_h} into {motion_steps} frames...")
-            action_strip = Image.new("RGBA", (frame_width * motion_steps, frame_height), (0,0,0,0))
-            for f in range(motion_steps):
-                frame = grid_img.crop((f * qw, 0, (f + 1) * qw, grid_h))
-                if frame.width != frame_width or frame.height != frame_height:
-                    frame = frame.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
-                action_strip.paste(frame, (f * frame_width, 0), frame)
-            
-            action_strips.append(action_strip)
-            logger.info(f"  > Action '{action}' processed successfully.")
-        except Exception as e:
-            logger.error(f"Action '{action}' generation failed: {e}")
-            update_task_record(task_id, error_msg=f"Failed on {action}")
-            return {"error": str(e)}
+        #try:
+        logger.info(f"  > Executing Flux Img2Img for '{action}'...")
+        import sys
+        sys.stdout.flush()
+        
+        grid_img = p(
+            prompt=prompt,
+            image=core_img,
+            strength=strength,
+            num_inference_steps=num_inf_steps,
+            guidance_scale=0.0,
+            generator=generator,
+            width=frame_width * motion_steps,
+            height=frame_height,
+            callback_on_step_end=action_progress_callback
+        ).images[0]
+        
+        logger.info(f"  > Pipeline call returned for '{action}'. Image size: {grid_img.size}")
+        sys.stdout.flush()
+        
+        # Slice the generated horizontal grid
+        grid_w, grid_h = grid_img.size
+        qw = grid_w // motion_steps
+        
+        logger.info(f"  > Action '{action}' complete. Removing background from grid...")
+        sys.stdout.flush()
+        grid_img = remove_background(grid_img)
+        
+        logger.info(f"  > Slicing action strip: {grid_w}x{grid_h} into {motion_steps} frames...")
+        action_strip = Image.new("RGBA", (frame_width * motion_steps, frame_height), (0,0,0,0))
+        for f in range(motion_steps):
+            logger.info(f"    - Processing frame {f+1}/{motion_steps}...")
+            frame = grid_img.crop((f * qw, 0, (f + 1) * qw, grid_h))
+            if frame.width != frame_width or frame.height != frame_height:
+                frame = frame.resize((frame_width, frame_height), Image.Resampling.LANCZOS)
+            action_strip.paste(frame, (f * frame_width, 0), frame)
+        
+        action_strips.append(action_strip)
+        logger.info(f"  > Action '{action}' processed successfully.")
+        sys.stdout.flush()
+        # except Exception as e:
+        #     logger.error(f"Action '{action}' generation failed: {e}")
+        #     update_task_record(task_id, error_msg=f"Failed on {action}")
+        #     return {"error": str(e)}
 
     # Stitch vertically
     logger.info(f"Stitching {len(action_strips)} action strips into master sheet...")

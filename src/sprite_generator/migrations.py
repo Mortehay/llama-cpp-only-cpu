@@ -11,36 +11,39 @@ MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 def run_migrations(db_url: str) -> None:
     """Apply all .sql files in the migrations directory in alphanumeric order."""
     if not db_url:
-        print("[migrations] DB_URL not set — skipping migrations.")
+        print("[migrations] DB_URL not set — skipping migrations.", flush=True)
         return
 
     if not os.path.exists(MIGRATIONS_DIR):
-        print(f"[migrations] Migrations directory '{MIGRATIONS_DIR}' not found.")
+        print(f"[migrations] Migrations directory '{MIGRATIONS_DIR}' not found.", flush=True)
         return
 
     # List .sql files, sort them to ensure order (e.g., 001_, 002_, ...)
     sql_files = sorted([f for f in os.listdir(MIGRATIONS_DIR) if f.endswith(".sql")])
     if not sql_files:
-        print("[migrations] No .sql migration files found.")
+        print("[migrations] No .sql migration files found.", flush=True)
         return
 
     import time
     conn = None
-    max_retries = 5
+    max_retries = 30
     retry_delay = 2
 
     for i in range(max_retries):
         try:
             conn = psycopg2.connect(db_url)
-            print(f"[migrations] Connected to database on attempt {i+1}.")
+            print(f"[migrations] Connected to database on attempt {i+1}.", flush=True)
             break
         except Exception as e:
             if i < max_retries - 1:
-                print(f"[migrations] Connection attempt {i+1} failed ({e}). Retrying in {retry_delay}s…")
+                print(f"[migrations] Connection attempt {i+1}/{max_retries} failed ({e}). Retrying in {retry_delay}s…", flush=True)
                 time.sleep(retry_delay)
             else:
-                print(f"[migrations] ERROR — could not connect to database after {max_retries} attempts: {e}")
-                return
+                # Raise rather than return: a caller that starts anyway would serve
+                # traffic against an unmigrated schema and look healthy doing it.
+                raise RuntimeError(
+                    f"[migrations] could not connect to database after {max_retries} attempts: {e}"
+                ) from e
 
     try:
         # 1. Ensure the migrations tracking table exists
@@ -60,7 +63,7 @@ def run_migrations(db_url: str) -> None:
                 applied_migrations = {row[0] for row in cur.fetchall()}
         
         if applied_migrations:
-            print(f"[migrations] Found {len(applied_migrations)} already applied migrations.")
+            print(f"[migrations] Found {len(applied_migrations)} already applied migrations.", flush=True)
 
         # 3. Apply new migrations
         applied_any = False
@@ -69,7 +72,7 @@ def run_migrations(db_url: str) -> None:
                 # Do NOT print anything for already applied migrations
                 continue
 
-            print(f"[migrations] Applying new migration: {filename}…")
+            print(f"[migrations] Applying new migration: {filename}…", flush=True)
             filepath = os.path.join(MIGRATIONS_DIR, filename)
             with open(filepath, "r") as f:
                 sql_content = f.read()
@@ -84,26 +87,31 @@ def run_migrations(db_url: str) -> None:
                             'INSERT INTO schema_migrations (filename) VALUES (%s)',
                             (filename,)
                         )
-                print(f"[migrations] Migration {filename} applied successfully.")
+                print(f"[migrations] Migration {filename} applied successfully.", flush=True)
                 applied_any = True
             except Exception as e:
-                print(f"[migrations] ERROR while applying {filename}: {e}")
-                # We stop execution on first error to prevent out-of-order migrations
-                break
+                # Stop on the first error to prevent out-of-order migrations, and
+                # raise so the caller cannot proceed on a half-migrated schema.
+                print(f"[migrations] ERROR while applying {filename}: {e}", flush=True)
+                raise RuntimeError(f"[migrations] failed applying {filename}: {e}") from e
 
         conn.close()
-        
+
         if applied_any:
-            print("[migrations] Pending migrations completed.")
+            print("[migrations] Pending migrations completed.", flush=True)
         else:
-            print("[migrations] Database is up to date.")
-            
+            print("[migrations] Database is up to date.", flush=True)
+
     except Exception as exc:
-        print(f"[migrations] ERROR — could not apply migrations: {exc}")
+        print(f"[migrations] ERROR — could not apply migrations: {exc}", flush=True)
+        raise
+    finally:
+        if not conn.closed:
+            conn.close()
 
 if __name__ == "__main__":
     db_url = os.environ.get("DB_URL")
     if not db_url:
-        print("[migrations] Error: DB_URL environment variable is required when running independently.")
+        print("[migrations] Error: DB_URL environment variable is required when running independently.", flush=True)
         exit(1)
     run_migrations(db_url)

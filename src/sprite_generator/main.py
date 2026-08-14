@@ -6,6 +6,7 @@ import requests
 import psycopg2
 import uuid
 import random
+from urllib.parse import urlparse
 from PIL import Image
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -41,13 +42,24 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # Mount static files for serving saved images
 app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
 
+def _db_target():
+    """Host:port/name from DB_URL, without the credentials — safe to log."""
+    if not DB_URL:
+        return "<unset>"
+    parsed = urlparse(DB_URL)
+    return f"{parsed.hostname}:{parsed.port}{parsed.path}"
+
+
 def get_db():
     if not DB_URL:
+        logger.error("DB_URL is not set — gallery and task history are unavailable.")
         return None
     try:
         return psycopg2.connect(DB_URL)
     except Exception as e:
-        print(f"DB connection failed: {e}")
+        # The callers degrade to an empty gallery, which is indistinguishable from
+        # "no sprites yet" in the UI — so name the target the connection failed to.
+        logger.error(f"DB connection to {_db_target()} failed: {e}")
         return None
 
 def fetch_gallery_rows(limit=None):
