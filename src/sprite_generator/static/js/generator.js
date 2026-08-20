@@ -12,23 +12,12 @@ document.addEventListener('DOMContentLoaded', () => {
         cb.addEventListener('change', updateGenSheetButtonState);
     });
     updateGenSheetButtonState();
-    loadAppSettings();
     loadCores(); // Fetch initial core images
-    setInterval(updateDiagnostics, 5000); // Update diagnostics every 5s
+    updateDiagnostics();
+    // 15s, not 5s: each call is a Celery round-trip to the inference worker, and
+    // polling it three times a minute is plenty for a static device readout.
+    setInterval(updateDiagnostics, 15000);
 });
-
-async function loadAppSettings() {
-    try {
-        const response = await fetch('/api/settings');
-        const settings = await response.json();
-        if (settings.compute_mode) {
-            const radio = document.querySelector(`input[name="compute-mode"][value="${settings.compute_mode}"]`);
-            if (radio) radio.checked = true;
-        }
-    } catch (e) {
-        console.error("Error loading settings:", e);
-    }
-}
 
 async function saveAppSetting(key, value) {
     try {
@@ -43,29 +32,49 @@ async function saveAppSetting(key, value) {
     }
 }
 
+// Report the WORKER's compute device.
+//
+// The previous version of this read the browser's WebGL renderer and labelled
+// it "Hardware" — that reports the machine viewing the page, which tells you
+// nothing about where inference runs and reads as confirmation when it is not.
+// /api/compute-info round-trips through Celery to the process that actually
+// owns the GPU.
 async function updateDiagnostics() {
+    const deviceEl = document.getElementById('compute-device');
+    const detailEl = document.getElementById('compute-detail');
+    if (!deviceEl) return;
+
     try {
-        // We'll use a special debug endpoint or just infer from system
-        const hardwareEl = document.getElementById('diag-hardware');
-        const vramEl = document.getElementById('diag-vram');
-        
-        // Check if we have a GPU visible to the browser (optional check)
-        const canvas = document.createElement('canvas');
-        const gl = canvas.getContext('webgl');
-        let renderer = "System Default / CPU";
-        
-        if (gl) {
-            const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
-            renderer = debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : "Unknown WebGL";
+        const resp = await fetch('/api/compute-info');
+        const info = await resp.json();
+
+        if (!resp.ok || info.error) {
+            deviceEl.innerHTML = `<strong style="color:#e06c5a;">Worker unreachable</strong>`;
+            detailEl.innerText = info.error || `HTTP ${resp.status}`;
+            return;
         }
-        
-        hardwareEl.innerHTML = `<strong>Hardware:</strong> ${renderer}`;
-        
-        // Fetch background status from server (actual CUDA visibility)
-        const resp = await fetch('/api/tasks/recent'); 
-        vramEl.innerText = "System online. RAM Disk active (tmpfs).";
+
+        if (info.device === 'cuda') {
+            deviceEl.innerHTML = `<strong style="color:#5ac37d;">CUDA</strong> — ${info.gpu_name || 'GPU'}`;
+            const used = info.vram_reserved_gb ?? 0;
+            detailEl.innerText =
+                `${used} / ${info.vram_total_gb} GiB VRAM reserved · ${info.dtype}` +
+                ` · torch ${info.torch_version} (CUDA ${info.torch_cuda_build})` +
+                (info.loaded_pipelines?.length
+                    ? ` · loaded: ${info.loaded_pipelines.join(', ')}`
+                    : ' · no pipeline loaded yet');
+        } else {
+            // Flag this rather than showing it neutrally: on this host CPU means
+            // something is misconfigured, not that a slower mode was chosen.
+            deviceEl.innerHTML = `<strong style="color:#e0a45a;">CPU</strong> — GPU not in use`;
+            detailEl.innerText =
+                `torch ${info.torch_version} (CUDA build: ${info.torch_cuda_build || 'none'})` +
+                ` · cuda_available=${info.cuda_available}` +
+                ` — check nvidia-container-toolkit and COMPUTE_DEVICE, then run \`make gpu-check\`.`;
+        }
     } catch (e) {
-        console.warn("Diagnostics update failed:", e);
+        deviceEl.innerHTML = `<strong style="color:#e06c5a;">Diagnostics failed</strong>`;
+        detailEl.innerText = String(e);
     }
 }
 

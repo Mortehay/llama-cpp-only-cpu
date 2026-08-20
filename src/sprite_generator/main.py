@@ -15,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from migrations import run_migrations
 from celery.result import AsyncResult
-from tasks import celery_app, generate_core_task, generate_spritesheet_task, remove_background, set_cancel_flag
+from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
+                   remove_background, set_cancel_flag, describe_device,
+                   warm_model_task)
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +32,11 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+
+# Automatic1111-compatible routes, so something2's admin can register this
+# service as a stock A1111 provider with no code changes on its side.
+from a1111 import router as a1111_router
+app.include_router(a1111_router)
 
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
@@ -133,6 +140,37 @@ async def gallery(request: Request):
         context={"rows": rows, "active_page": "gallery"}
     )
 
+@app.post("/api/warm")
+def warm_model(model: str = Form("stabilityai/sdxl-turbo")):
+    """Queue a model download+load. Returns immediately with a task id.
+
+    Non-blocking on purpose: warming an uncached checkpoint can take far longer
+    than any sane HTTP timeout, which is the whole reason this endpoint exists.
+    Poll /api/task-status/{task_id} for completion.
+    """
+    task = warm_model_task.delay(model)
+    return JSONResponse({"status": "queued", "task_id": task.id, "model": model})
+
+
+@app.get("/api/compute-info")
+def compute_info():
+    """Report the worker's real compute device, for the diagnostics panel.
+
+    Deliberately round-trips through Celery rather than reading DEVICE here:
+    this process is pinned to COMPUTE_DEVICE=cpu so it never competes for VRAM,
+    so a local readout would always report "cpu" and mislead.
+    """
+    try:
+        return describe_device.delay().get(timeout=10)
+    except Exception as e:
+        # A dead worker is the most common cause, and the panel should say so
+        # rather than rendering a blank box.
+        return JSONResponse(
+            {"error": f"Worker did not respond: {e}", "device": "unknown"},
+            status_code=503,
+        )
+
+
 @app.get("/api/settings")
 def get_settings():
     conn = get_db()
@@ -146,17 +184,6 @@ def get_settings():
         print(f"Error fetching settings: {e}")
         return {"compute_mode": "cpu"}
     finally: conn.close()
-
-@app.post("/api/settings/{key}")
-def update_setting(key: str, request: Request):
-    import json
-    try:
-        # We handle raw JSON input for flexible settings
-        body = time.sleep(0.01) # ensure a bit of delay if needed
-        # Actually, let's use a simpler approach for now
-        pass
-    except: pass
-    return {"status": "error"}
 
 @app.post("/api/settings")
 async def save_settings(request: Request):

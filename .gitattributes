@@ -1,0 +1,20 @@
+# Normalise line endings. These files are consumed by POSIX shells inside Linux
+# containers; a CRLF checkout breaks them in ways that are hard to read:
+# download_models.sh's `read` kept the trailing \r, which was URL-encoded into
+# every model path as %0D and 404'd every single download.
+* text=auto eol=lf
+
+*.sh            text eol=lf
+models.txt      text eol=lf
+Makefile        text eol=lf
+*.yml           text eol=lf
+*.sql           text eol=lf
+
+# PowerShell runs on the Windows side. Windows PowerShell 5.1 also reads .ps1 as
+# ANSI unless the file has a BOM, so keep these ASCII-only (see scripts/*.ps1).
+*.ps1           text eol=crlf
+
+*.png           binary
+*.ico           binary
+*.safetensors   binary
+*.gguf          binary

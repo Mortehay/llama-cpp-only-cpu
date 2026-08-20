@@ -4,7 +4,7 @@ models/*
 *.pyc
 __pycache__/*
 .env
-.env.example
+!compose/develop/.env.example
 .venv
 compose/develop/db/data/
 !images

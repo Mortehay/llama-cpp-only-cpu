@@ -1,20 +1,19 @@
---extra-index-url https://download.pytorch.org/whl/cpu
+# GPU build. Mirrors requirements.txt, MINUS torch and with no index override.
+#
+# torch is installed separately in Dockerfile.cuda so it lands in its own cached
+# layer (it is large and changes rarely, unlike the packages below).
+#
+# Note there is no --extra-index-url here, unlike the CPU requirements.txt.
+# PyPI's default torch is a current-CUDA build, which the host driver runs
+# natively. See Dockerfile.cuda for what to do if the driver is downgraded.
 fastapi
 uvicorn
 python-multipart
 psycopg2-binary
 celery[redis]
 redis
-# CPU Optimized torch and diffusers
-torch
 diffusers
 transformers
-# torchvision: without it transformers falls back to PIL-based image processors
-# ("CLIPImageProcessor requires torchvision ... falling back to
-# CLIPImageProcessorPil"). Harmless for plain txt2img, but img2img and any
-# vision/image-to-text model expects the real backend. Comes from the same
-# index as torch, so it tracks the installed CUDA build automatically.
-torchvision
 accelerate
 peft
 torchsde

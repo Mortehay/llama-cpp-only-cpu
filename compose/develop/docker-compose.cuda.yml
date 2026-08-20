@@ -1,0 +1,60 @@
+# GPU override, layered on top of docker-compose.yml.
+#
+# The Makefile appends this file automatically when `nvidia-smi` is on PATH:
+#   docker compose -f docker-compose.yml -f docker-compose.cuda.yml ...
+# Until now that reference pointed at a file that did not exist, so *every*
+# make target failed on a GPU host. This is that file.
+#
+# Host prerequisite: nvidia-container-toolkit. Verify before using:
+#   docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+# or `make gpu-check`.
+
+services:
+  # Inference lives here and nowhere else. Concurrency stays at 1 (set in the
+  # base file): a second worker would double-load pipelines into 12GB of VRAM.
+  sprite-worker:
+    build:
+      dockerfile: compose/develop/sprite_generator/Dockerfile.cuda
+    # --pool=solo: run tasks in the main process instead of forked children.
+    #
+    # Celery's default prefork pool forks after importing tasks.py. If ANYTHING
+    # has initialized a CUDA context in the parent by then, every child dies with
+    # "Cannot re-initialize CUDA in forked subprocess" — CUDA contexts do not
+    # survive fork(). tasks.py is careful not to touch CUDA at import, but that
+    # is a property one stray diagnostic line can silently destroy (and did).
+    #
+    # Concurrency is 1 regardless, because a second worker would double-load
+    # pipelines into 12GB of VRAM — so the prefork pool buys nothing here.
+    #
+    # Trade-off: `celery revoke(terminate=True)` cannot kill an in-flight task
+    # without a child to signal. Cancellation still works through the
+    # cooperative Redis flag that the progress callbacks poll (is_cancelled).
+    command: ["celery", "-A", "tasks", "worker", "--loglevel=info",
+              "--concurrency=1", "--pool=solo"]
+    environment:
+      - COMPUTE_DEVICE=cuda
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      # Long-lived worker + repeated pipeline loads fragments the caching
+      # allocator badly on a 12GB card; expandable_segments reclaims it.
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  sprite-generator:
+    build:
+      dockerfile: compose/develop/sprite_generator/Dockerfile.cuda
+    environment:
+      # The API process imports tasks.py (and therefore torch) but never runs
+      # inference. Pin it to CPU so it cannot reserve VRAM the worker needs.
+      - COMPUTE_DEVICE=cpu
+
+  # llm-server stays on the CPU llama.cpp image on purpose. On a single 12GB
+  # card a resident GGUF LLM competes directly with the diffusion pipeline,
+  # and diffusion is the bottleneck. Switch to ghcr.io/ggml-org/llama.cpp:full-cuda
+  # with its own device reservation only once VRAM budgeting is deliberate.

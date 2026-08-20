@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1
+# GPU variant of compose/develop/sprite_generator/Dockerfile.
+#
+# Deliberately NOT based on an nvidia/cuda image: the PyTorch CUDA wheels vendor
+# their own CUDA runtime libraries, so the container only needs the host driver
+# exposed by nvidia-container-toolkit. That keeps this image close to the CPU one
+# and avoids a ~3GB CUDA base layer.
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# libgl1/libglib2.0-0 are required by rembg's OpenCV dependency.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# torch in its own layer: it is large and changes rarely, unlike the app deps
+# below. The pip cache mount means a rebuild never re-downloads it.
+#
+# No index gymnastics. PyPI's default torch is a current-CUDA build, which the
+# host driver (610.88 / CUDA 13.3) runs natively.
+#
+# HISTORY, so nobody "fixes" this back: under the previous driver (551.86 /
+# CUDA 12.4) this had to be pinned to cu124, and neither pip index flag worked
+# alone -- `--extra-index-url` unpinned silently installed a too-new CUDA build
+# that reported torch.cuda.is_available() == False, while exclusive
+# `--index-url` broke dependency resolution (typing_extensions name mismatch ->
+# sdist fallback -> missing flit_core). If the driver is ever DOWNGRADED, pin
+# with `--extra-index-url <torch-index> torch==<ver>+cuXXX`; the +cuXXX local
+# version tag exists only on the PyTorch index, so it forces that exact wheel
+# while ordinary dependencies still resolve from PyPI.
+# See .ai/decisions/0001-gpu-pivot-and-engine-choice.md
+#
+# torchvision is installed HERE, in the same command as torch, not in
+# requirements.cuda.txt. Resolving it in a later layer lets pip pick a
+# torchvision built against a different torch and quietly reinstall torch to
+# match — which would undo the CUDA build this layer just established.
+# Without torchvision, transformers falls back to PIL image processors
+# ("CLIPImageProcessor requires torchvision"); fine for plain txt2img, but
+# img2img and image-to-text models expect the real backend.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch torchvision
+
+COPY compose/develop/sprite_generator/requirements.cuda.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# Fail the BUILD rather than shipping an image that silently runs on CPU.
+# torch.version.cuda is None for a CPU-only wheel. Actual device visibility
+# needs --gpus at run time and is covered by `make gpu-check`.
+RUN python -c "import torch, sys; \
+    v = torch.version.cuda; \
+    print('torch', torch.__version__, 'built for CUDA', v); \
+    sys.exit(0 if v else 1)"
+
+COPY src/sprite_generator/ .
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]

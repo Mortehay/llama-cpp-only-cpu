@@ -37,7 +37,19 @@
     <div class="card tab-content" id="tab-sheet">
       <label>Select Animation Model</label>
       <select id="sheet-llm" class="select-field">
-        <option value="flux-2-klein-4b-Q8_0.gguf" selected>Flux.2 Klein 4B (One-Shot GGUF Grid)</option>
+        <!--
+          The Flux.2 Klein option was removed: tasks.py expected
+          flux1-schnell.safetensors plus a hardcoded snapshot hash, while
+          models.txt downloaded a GGUF that was never loaded, so it could not
+          run at all. The pixel-art model is measured at ~7s for a consistent
+          4-frame row, which is what this step needs.
+        -->
+        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator" selected>
+          Pixel Art SpriteSheet (SD1.5) - consistent frames
+        </option>
+        <option value="stabilityai/sdxl-turbo">
+          SDXL Turbo - faster, weaker frame consistency
+        </option>
       </select>
 
       <label>Select Core Image</label>
@@ -90,33 +102,34 @@
 
     <div class="card tab-content" id="tab-settings" style="display:none;">
       <div style="margin-bottom: 24px;">
-        <label>Compute Mode</label>
-        <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 8px;">
-          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="radio" name="compute-mode" value="cpu" checked
-              onchange="saveAppSetting('compute_mode', 'cpu')">
-            <span>Standard CPU Mode (Optimized for AMD APU)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 10px; cursor: pointer;">
-            <input type="radio" name="compute-mode" value="cuda" onchange="saveAppSetting('compute_mode', 'cuda')">
-            <span>Enable NVIDIA CUDA Acceleration (WSL2 / 3050)</span>
-          </label>
+        <label>Compute Device (worker)</label>
+        <!--
+          Read-only on purpose. This used to be a CPU/CUDA radio pair writing to
+          app_settings, but nothing ever read that value and the device is now
+          resolved once from COMPUTE_DEVICE when the worker imports tasks.py.
+          A control that cannot change anything is worse than no control, so
+          this reports what the worker is actually doing instead.
+          To switch devices, set COMPUTE_DEVICE in compose and restart the worker.
+        -->
+        <div class="stats-panel" id="compute-panel"
+          style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 8px; margin-top: 8px;">
+          <div id="compute-device">Querying worker…</div>
+          <div id="compute-detail" style="margin-top: 8px; color: var(--muted); font-size: 13px;"></div>
         </div>
       </div>
 
       <div style="margin-bottom: 24px;">
-        <label>Resource Diagnostics & High-RAM Opts</label>
+        <label>Resource Diagnostics</label>
         <div class="stats-panel" id="diag-panel"
           style="background: rgba(0,0,0,0.2); padding: 16px; border-radius: 8px; margin-top: 8px;">
-          <div id="diag-hardware">Detecting hardware profile...</div>
-          <div id="diag-vram" style="margin-top: 8px; color: var(--muted); font-size: 13px;">System online. RAM Disk
-            active (tmpfs).</div>
+          <div id="diag-vram" style="color: var(--muted); font-size: 13px;">RAM disk (tmpfs) active for intermediate
+            frames.</div>
         </div>
       </div>
 
       <div class="card-inner"
         style="background: rgba(255,107,0,0.1); border: 1px dashed var(--accent); padding: 12px; border-radius: 6px; font-size: 13px;">
-        <strong>Tip:</strong> You have 29GB of RAM. The system is configured to use a <strong>2GB RAM Disk
+        <strong>Tip:</strong> WSL is allocated 11GB of RAM. The system uses a <strong>2GB RAM Disk
           (tmpfs)</strong> for intermediate sprites to eliminate SSD bottlenecking.
       </div>
     </div>

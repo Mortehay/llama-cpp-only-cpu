@@ -9,14 +9,22 @@ services:
     container_name: model_downloader
     platform: linux/amd64
     volumes:
-      - ../../models:/models
+      - ${MODELS_DIR:-../../models}:/models
       - ./downloader/models.txt:/usr/local/bin/models.txt
     env_file:
       - .env
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - HF_DEBUG=1
-    command: ["-c", "/usr/local/bin/download_models.sh && tail -f /dev/null"]
+    # Idle only — do NOT download on startup.
+    #
+    # The Makefile already runs `docker compose run --rm downloader
+    # download_models.sh` so progress is visible interactively. Having the
+    # service ALSO download meant two containers hit the same /models cache at
+    # once and deadlocked on HuggingFace's file locks:
+    #   Still waiting to acquire lock on /models/.cache/huggingface/download/...
+    # This container stays up purely so `make download` has something to exec into.
+    command: ["-c", "tail -f /dev/null"]
 
   # 2. Multi-Model LLM Engine
   llm-server:
@@ -27,7 +35,7 @@ services:
       downloader:
         condition: service_started
     volumes:
-      - ../../models:/models
+      - ${MODELS_DIR:-../../models}:/models
     command: >
       --server --host 0.0.0.0 --port 8080
       --models-dir /models
@@ -47,7 +55,11 @@ services:
       POSTGRES_DB: ${DB_NAME}
     volumes:
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - ./db/data:/var/lib/postgresql/data
+      # Must NOT sit on a Windows /mnt/c bind mount: initdb needs POSIX ownership
+      # that DrvFs/9p cannot provide ("could not change permissions of directory"),
+      # and 9p fsync semantics are not safe for a database. Defaults to the old
+      # in-repo path only so a non-WSL checkout still works.
+      - ${DB_DATA_DIR:-./db/data}:/var/lib/postgresql/data
     ports:
       - "5432:5432"
     healthcheck:
@@ -124,7 +136,7 @@ services:
       dockerfile: compose/develop/orchestrator/Dockerfile
     container_name: model_orchestrator
     volumes:
-      - ../../models:/models
+      - ${MODELS_DIR:-../../models}:/models
       - ../../src/orchestrator:/app
     environment:
       - HF_TOKEN=${HF_TOKEN}
@@ -141,9 +153,9 @@ services:
       dockerfile: compose/develop/sprite_generator/Dockerfile
     container_name: sprite_generator
     volumes:
-      - ../../models:/models
+      - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
-      - ../../images:/app/images
+      - ${IMAGES_DIR:-../../images}:/app/images
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -151,6 +163,8 @@ services:
       # Unbuffered stdout: without this, startup/migration errors sit in the
       # buffer and only surface in `docker logs` minutes after the fact.
       - PYTHONUNBUFFERED=1
+      - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
+      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
     ports:
       - "8001:8001"
     # No restart policy on purpose. A container that Docker *restarts* (at host
@@ -181,14 +195,16 @@ services:
     container_name: sprite_worker
     command: ["celery", "-A", "tasks", "worker", "--loglevel=info", "--concurrency=1"]
     volumes:
-      - ../../models:/models
+      - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
-      - ../../images:/app/images
+      - ${IMAGES_DIR:-../../images}:/app/images
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
+      - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
+      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
     # No restart policy — see the note on sprite-generator above.
     depends_on:
       db:

@@ -13,10 +13,47 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models gpu-check env warm smoke test-flow
+
+# Create compose/develop/.env from the example if it is missing. Every target
+# below passes --env-file, and compose aborts outright when the file is absent.
+env:
+	@if [ ! -f $(ENV_FILE) ]; then \
+		cp compose/develop/.env.example $(ENV_FILE); \
+		echo "Created $(ENV_FILE) from .env.example — set HF_TOKEN before downloading gated models."; \
+	fi
+
+# Verify the GPU is actually reachable *from inside a container*. `nvidia-smi`
+# on the host passing proves nothing: the Makefile picks the CUDA override off
+# the host binary, but inference runs in a container and needs
+# nvidia-container-toolkit installed on the Docker host.
+gpu-check:
+	@echo "Host GPU detected by Makefile: $(HAS_GPU)"
+	@echo "Compose files in use: $(COMPOSE_FILE)"
+	@echo "--- Running nvidia-smi inside a container ---"
+	@docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi \
+		|| (echo ""; \
+		    echo "GPU is NOT visible to Docker. Install nvidia-container-toolkit on the"; \
+		    echo "Docker host (inside WSL2 Ubuntu), then: sudo nvidia-ctk runtime configure"; \
+		    echo "--runtime=docker && sudo service docker restart"; exit 1)
+
+# Load models into VRAM out-of-band. A cold checkpoint takes minutes to fetch
+# and load, which blows past any HTTP client's timeout -- including something2's
+# 5 minute cap. Run this after `up`, before pointing anything at the API.
+warm:
+	./scripts/warm-models.sh
+
+# Verify the API contract: GPU in use, model discovery, txt2img round-trip.
+# Pass HOST=<lan-ip> to test what other machines see rather than localhost.
+smoke:
+	./scripts/smoke-test.sh $(HOST)
+
+# Verify the full core -> spritesheet workflow the browser UI drives.
+test-flow:
+	./scripts/two-step-test.sh $(HOST)
 
 # Start containers in the background
-up:
+up: env
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
