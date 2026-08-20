@@ -1,6 +1,8 @@
 compose/develop/.env
-models/*
-!models
+# `models` is a SYMLINK to the ext4 cache on this machine (scripts/link-models.ps1),
+# not a directory in the repo. Ignore the entry itself, or git tracks a symlink
+# pointing at a path that exists on exactly one machine.
+/models
 *.pyc
 __pycache__/*
 .env

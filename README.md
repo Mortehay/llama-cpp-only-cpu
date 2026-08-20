@@ -198,7 +198,40 @@ The split is deliberate and measured on this host:
   that DrvFs/9p cannot provide (`could not change permissions of directory`),
   and 9p fsync semantics are not safe for a database.
 
-To browse the ext4 side from Windows, open this in Explorer (pin it for
+### Seeing the models in the project tree
+
+Weights used to sit in `<repo>/models`; the compose mount still defaults to it
+(`${MODELS_DIR:-../../models}`) and only `.env` redirects it to ext4. Moving
+them was a speed decision, and it cost the visibility that having them in the
+repo gave. You can have both — link the cache back into the project instead of
+moving it:
+
+```powershell
+# ELEVATED PowerShell. Windows requires elevation for symlinks, and a junction
+# (mklink /J, no privilege needed) cannot target a UNC path, which is what a
+# WSL path is from the Windows side. There is no unprivileged route.
+powershell -ExecutionPolicy Bypass -File .\scripts\link-models.ps1
+
+# Undo (removes the link only — the weights are never touched):
+powershell -ExecutionPolicy Bypass -File .\scripts\link-models.ps1 -Remove
+```
+
+`models\` then appears at the repo root and browses normally in Explorer, VS
+Code and the project tree, while every read still goes through ext4. Docker is
+unaffected: it bind-mounts `MODELS_DIR` directly and never sees the link. The
+script reads the target from `MODELS_DIR`, so it keeps working if that changes,
+and it says so and exits if `MODELS_DIR` is already repo-relative.
+
+`models` is gitignored as a single entry rather than `models/*` — otherwise git
+tracks a symlink pointing at a path that exists on exactly one machine.
+
+**If you would rather have the real files in the repo**, set
+`MODELS_DIR=../../models` in `compose/develop/.env` and move the cache across.
+It works. Expect a cold SDXL-Turbo load to go from ~2 s to ~160 s, the HF cache
+to lose its blob symlinks, and something2's 300 s no-polling cap to become
+reachable on a cold model.
+
+To browse the whole ext4 side from Windows, open this in Explorer (pin it for
 convenience) or add it as a folder in your IDE:
 
 ```
