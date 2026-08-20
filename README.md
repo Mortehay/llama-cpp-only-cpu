@@ -67,6 +67,81 @@ Then open **http://localhost:8001**.
 
 ---
 
+## Starting the stack (after every reboot)
+
+Nothing here survives a reboot on its own. Run these in order — steps 1 and 4
+are the two that get forgotten, and both fail in ways that do not look like
+their cause.
+
+```powershell
+# --- Windows PowerShell -------------------------------------------------
+
+# 1. Keep the distro alive. Do this FIRST. Without it WSL2 tears the distro
+#    down as soon as no wsl.exe client is attached, and every container dies
+#    with a clean exit code and nothing wrong in its logs.
+powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1
+```
+
+```bash
+# --- inside WSL (Ubuntu) ------------------------------------------------
+
+# 2. Docker does not auto-start in WSL2 - there is no boot sequence to hook.
+sudo service docker start
+
+# 3. Bring the stack up. `make up` waits for db, redis and the sprite
+#    services to report healthy, then applies migrations.
+cd /path/to/llama-cpp-only-cpu
+make up
+
+# 5. Load a checkpoint into VRAM before anything calls the API. A cold model
+#    takes minutes to fetch and load, which blows past every client timeout -
+#    including something2's 5 minute cap, which cannot poll.
+make warm
+```
+
+```powershell
+# --- back in an ELEVATED Windows PowerShell -----------------------------
+
+# 4. Re-publish the ports. REQUIRED after every reboot: WSL2 gets a new IP
+#    each boot, the portproxy entries persist pointing at the OLD one, and
+#    they fail silently - LAN clients just hang. See "Home-network exposure".
+powershell -ExecutionPolicy Bypass -File .\scripts\lan-expose.ps1
+```
+
+Then check it actually works, rather than assuming:
+
+```bash
+make smoke                                    # GPU in use, models listed, txt2img round-trip
+./scripts/verify-something2-contract.sh <lan-ip>   # what something2 will see
+```
+
+### If WSL will not start at all
+
+```
+WSL2 is unable to start since virtualization is not enabled on this machine.
+Error code: Wsl/Service/CreateInstance/CreateVm/HCS/HCS_E_HYPERV_NOT_INSTALLED
+```
+
+Virtualization is off at the firmware level. Confirm from Windows:
+
+```powershell
+(Get-CimInstance Win32_ComputerSystem).HypervisorPresent          # expect True
+(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled   # expect True
+```
+
+Enable **Intel VT-x** (or AMD **SVM**) in BIOS/UEFI, then **fully power off and
+on** — a warm restart does not always re-read the setting. If it is already on
+in firmware, the Windows components are missing; from an elevated prompt:
+
+```powershell
+wsl.exe --install --no-distribution     # re-enables Virtual Machine Platform + WSL
+```
+
+Reboot again afterwards.
+
+
+---
+
 ## GPU configuration
 
 The Makefile detects `nvidia-smi` and layers `compose/develop/docker-compose.cuda.yml`
@@ -219,8 +294,20 @@ Notes:
 - `uptime` inside WSL is misleading here: it reports the VM, which stays up
   while the distro cycles. Check `journalctl` for repeated "Startup finished"
   lines instead.
-- The keepalive dies at logoff/reboot. Re-run it, or register it as a logon
-  scheduled task — the command is in the script's header comment.
+- The keepalive dies at logoff/reboot. Register it as a logon task so you stop
+  having to remember (normal PowerShell, **no** elevation needed):
+
+  ```powershell
+  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument `
+       ('-WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+        (Join-Path $PWD 'scripts\wsl-keepalive.ps1') + '"')
+  $t = New-ScheduledTaskTrigger -AtLogOn
+  Register-ScheduledTask -TaskName 'WSL keepalive' -Action $a -Trigger $t
+  ```
+
+  This does **not** cover `lan-expose.ps1`, which needs elevation and so cannot
+  be triggered the same way without a task configured to run with highest
+  privileges.
 - Keeping any interactive WSL terminal open has the same effect.
 
 ---
