@@ -44,12 +44,21 @@ _requested_device = os.environ.get("COMPUTE_DEVICE", "auto").lower()
 if _requested_device == "auto":
     DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 elif _requested_device == "cuda" and not torch.cuda.is_available():
-    # Silently running on CPU here would look like a 100x perf regression with
-    # no error, so say it loudly and name the usual cause.
-    logger.warning("COMPUTE_DEVICE=cuda but torch.cuda.is_available() is False — "
-                   "falling back to CPU. Check nvidia-container-toolkit on the host "
-                   "(`make gpu-check`).")
-    DEVICE = "cpu"
+    # Refuse to start. This used to warn and fall back to CPU, which was the
+    # wrong call: the worker came up "healthy", accepted jobs, and produced the
+    # same sprites two orders of magnitude slower, with one WARNING line buried
+    # in a log nobody reads. A container that cannot do the one thing it exists
+    # to do should not report itself ready.
+    #
+    # The usual cause is nvidia-container-toolkit missing or unconfigured on the
+    # Docker host inside WSL, not a missing card. `make gpu-check` distinguishes
+    # them: it runs nvidia-smi INSIDE a container.
+    raise RuntimeError(
+        "COMPUTE_DEVICE=cuda but torch.cuda.is_available() is False. This "
+        "service is GPU-only. Check nvidia-container-toolkit on the Docker "
+        "host with `make gpu-check`; set COMPUTE_DEVICE=cpu only for the API "
+        "process, which never runs inference."
+    )
 else:
     DEVICE = _requested_device
 

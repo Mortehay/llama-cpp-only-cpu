@@ -1,9 +1,14 @@
-# Detection: Check if nvidia-smi exists to determine if we should use CUDA overrides
+# The CUDA overlay is NOT optional. This stack targets an NVIDIA card and every
+# service is configured for one.
+#
+# It used to be applied only when `which nvidia-smi` succeeded, and silently
+# dropped otherwise - which meant a failed check did not stop anything, it just
+# ran the whole stack on CPU. The check fails for reasons that have nothing to
+# do with the card being absent: a WSL restart before the driver shim is
+# mounted, a different PATH under sudo. The symptom was a stack that came up
+# fine and was ~50x slower, with nothing in any log saying why.
+COMPOSE_FILE := compose/develop/docker-compose.yml -f compose/develop/docker-compose.cuda.yml
 HAS_GPU := $(shell which nvidia-smi > /dev/null 2>&1 && echo yes || echo no)
-COMPOSE_FILE := compose/develop/docker-compose.yml
-ifeq ($(HAS_GPU),yes)
-  COMPOSE_FILE += -f compose/develop/docker-compose.cuda.yml
-endif
 
 ENV_FILE := compose/develop/.env
 SERVICE_NAME := collector
@@ -13,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models gpu-check env warm smoke test-flow
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models gpu-check env warm smoke test-flow require-gpu
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -52,8 +57,20 @@ smoke:
 test-flow:
 	./scripts/two-step-test.sh $(HOST)
 
+# Refuse to start without a GPU, rather than quietly running on CPU.
+require-gpu:
+	@if [ "$(HAS_GPU)" != "yes" ]; then \
+	  echo "nvidia-smi not found on PATH. This stack is GPU-only."; \
+	  echo ""; \
+	  echo "Run make from INSIDE the WSL distro, where the NVIDIA driver shim is"; \
+	  echo "mounted - not from Windows PowerShell or Git Bash."; \
+	  echo "If you are already inside WSL, the distro may have restarted without"; \
+	  echo "the shim; confirm container access with: make gpu-check"; \
+	  exit 1; \
+	fi
+
 # Start containers in the background
-up: env
+up: env require-gpu
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
@@ -63,7 +80,7 @@ up: env
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 
 # Force a rebuild of the images and start
-build:
+build: env require-gpu
 	docker compose -f $(COMPOSE_FILE) build
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
@@ -105,7 +122,7 @@ shell:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec ${SERVICE_NAME} sh
 
 # Force a total rebuild from scratch (no cache)
-rebuild-clean:
+rebuild-clean: require-gpu
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
@@ -116,7 +133,7 @@ rebuild-clean:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
 
 # Rebuild
-rebuild:
+rebuild: require-gpu
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
 	@echo "Running model downloader interactively to show progress..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh

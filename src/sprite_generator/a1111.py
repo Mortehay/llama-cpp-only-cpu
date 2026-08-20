@@ -63,9 +63,16 @@ KNOWN_MODELS = [
     "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
     # Non-distilled. Turbo and friends run at guidance 0, so the negative_prompt
     # something2 sends is a silent no-op; these honour it at 20-30 steps.
-    "John6666/super-pixelart-xl-m-v1-v10-sdxl",
+    # Measured 2026-08-21, same prompt and seed across all four - see
+    # .ai/decisions/0002. Best real pixel art of the set, 3.0s at 20 steps:
     "PublicPrompts/All-In-One-Pixel-Model",
     "kohbanye/pixel-art-style",
+    # NOT SERVED: "John6666/super-pixelart-xl-m-v1-v10-sdxl" loads without error
+    # and returns pure RGB noise - undenoised latents, 25 steps at cfg 7, 1024px.
+    # Not the fp16-VAE black-image failure documented in the README; something
+    # about the checkpoint's scheduler/prediction config does not survive this
+    # diffusers version. Left out rather than handing something2 a model that
+    # fails silently with a 200.
 ]
 
 

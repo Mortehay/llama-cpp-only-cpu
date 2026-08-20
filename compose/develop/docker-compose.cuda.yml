@@ -54,7 +54,49 @@ services:
       # inference. Pin it to CPU so it cannot reserve VRAM the worker needs.
       - COMPUTE_DEVICE=cpu
 
-  # llm-server stays on the CPU llama.cpp image on purpose. On a single 12GB
-  # card a resident GGUF LLM competes directly with the diffusion pipeline,
-  # and diffusion is the bottleneck. Switch to ghcr.io/ggml-org/llama.cpp:full-cuda
-  # with its own device reservation only once VRAM budgeting is deliberate.
+  # llm-server on the GPU. This reverses an earlier decision to leave it on CPU;
+  # the reasoning there was that a resident GGUF competes with the diffusion
+  # pipeline on a single 12GB card. That is still true, so the budget is now
+  # explicit rather than the service being kept off the GPU entirely.
+  #
+  # THREE things are required, and any one alone does nothing:
+  #   1. the -cuda image. The plain `full` tag is a CPU-only build.
+  #   2. a device reservation. Without it the container cannot see the card.
+  #   3. -ngl. llama.cpp offloads ZERO layers by default, so a CUDA build with
+  #      a visible GPU still runs entirely on the CPU - which is exactly what
+  #      the running stack was doing: 99% CPU, 93% RAM, GPU idle at 15%.
+  #
+  # VRAM BUDGET. The chat models are now 8-9GB GGUFs fully offloaded, plus
+  # ~0.5-1GB of KV cache. That is most of a 12GB card, and it does NOT leave
+  # room for a diffusion pipeline (~2-4GB for SD1.5+ControlNet, ~7GB for
+  # SDXL-Turbo). The two services cannot both hold the card at once.
+  #
+  # --sleep-idle-seconds is what makes them share it anyway: the router puts the
+  # model to sleep and releases the GPU after two minutes with no requests, so
+  # a sprite job started while nobody is chatting gets a free card. The cost is
+  # a reload (seconds, from the local cache) on the next message. It defaults to
+  # -1, meaning never sleep, which on this hardware would mean sprite generation
+  # simply OOMs whenever a chat model has been used since boot.
+  #
+  # --models-max 1 because two 8-9GB models resident is not survivable here,
+  # regardless of how many are listed in models.txt.
+  llm-server:
+    image: ghcr.io/ggml-org/llama.cpp:full-cuda
+    command: >
+      --server --host 0.0.0.0 --port 8080
+      --models-dir /models
+      --models-max 1
+      -ctk q8_0 -ctv q8_0
+      --threads 4
+      -ngl 99
+      --sleep-idle-seconds 120
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

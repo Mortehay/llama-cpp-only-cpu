@@ -19,8 +19,18 @@ API for the home network and as a browser tool for iterating on prompts.
 > **Run every `make` target from inside WSL**, not from Windows PowerShell or
 > Git Bash. The Docker daemon lives in the distro.
 
-A CPU-only fallback still works: without `nvidia-smi` on PATH the Makefile skips
-the CUDA overlay. Expect it to be slow to the point of impracticality.
+**This stack is GPU-only, and now says so.** The CUDA overlay used to be applied
+only when `which nvidia-smi` succeeded and was silently dropped otherwise, so a
+failed check did not stop anything — it ran everything on CPU, came up healthy,
+and was ~50x slower with nothing in any log explaining why. The check fails for
+reasons unrelated to the card being absent (a WSL restart before the driver shim
+is mounted, a different PATH under `sudo`).
+
+`make up` and `make build` now refuse to start without `nvidia-smi`, and
+`sprite-worker` raises on import if `COMPUTE_DEVICE=cuda` but CUDA is
+unavailable, rather than reporting itself ready and quietly doing the job
+wrong. `COMPUTE_DEVICE=cpu` survives in exactly one place — the API process,
+which imports torch but never runs inference and must not hold VRAM.
 
 
 ---
@@ -152,9 +162,37 @@ over the base compose file automatically. That overlay:
 
 - builds from `Dockerfile.cuda`, which installs torch from the
   PyPI default (current CUDA), matching driver 610.88;
-- reserves the GPU for **`sprite-worker` only**;
+- reserves the GPU for **`sprite-worker`** (diffusion) and **`llm-server`**
+  (llama.cpp);
 - sets `COMPUTE_DEVICE=cuda` on the worker and `COMPUTE_DEVICE=cpu` on the API
   process, which imports torch but never runs inference and must not hold VRAM.
+
+### llama.cpp on the GPU
+
+Open WebUI's chat models run through `llm-server`. Getting them onto the card
+takes **three** changes, and any one alone does nothing:
+
+| | why |
+|---|---|
+| `ghcr.io/ggml-org/llama.cpp:full-cuda` | the plain `full` tag is a CPU-only build |
+| device reservation | without it the container cannot see the card |
+| `-ngl 99` | **llama.cpp offloads zero layers by default** |
+
+That last one is the trap. A CUDA build with a visible GPU and no `-ngl` still
+runs entirely on the CPU, and nothing reports a problem — which is exactly what
+this stack did for a while: 99% CPU, 93% RAM, GPU idle at 15%. `--mlock` is
+also dropped on the GPU path; pinning weights into RAM is pointless once they
+live in VRAM, and it was a large part of that memory pressure.
+
+**VRAM budget.** One 12GB card now serves both. `sprite-worker` keeps exactly
+one diffusion pipeline resident (~2–4 GB for SD1.5 + ControlNet, ~7 GB for
+SDXL-Turbo), so `--models-max 1` holds llama.cpp to a single model rather than
+the four the CPU build could afford. A 1–3B Q4 GGUF is roughly 1–2.5 GB and
+coexists fine. A large GGUF *plus* SDXL-Turbo will exhaust the card — if you
+want big chat models and diffusion at once, this is the thing that breaks.
+
+To put llama.cpp back on the CPU, delete the `llm-server` block from
+`docker-compose.cuda.yml`; the base file's CPU definition takes over.
 
 `src/sprite_generator/tasks.py` resolves `DEVICE`/`DTYPE` once at import.
 `COMPUTE_DEVICE=auto` (the default when unset) autodetects. If you set `cuda`

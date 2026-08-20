@@ -33,11 +33,22 @@
           it through img2img and supplies the style. It has to produce one clean,
           centred character.
         -->
-        <option value="John6666/super-pixelart-xl-m-v1-v10-sdxl">
-          Super Pixelart XL (SDXL) - CFG on, negatives work
-        </option>
+        <!--
+          Benched 2026-08-21, same subject and seed across four models. This one
+          was the only one that produced real pixel art: hard grid, bounded
+          palette, one character, 3.0s at 20 steps / cfg 7.5. It is SD1.5, so it
+          is also ControlNet-compatible and can serve step 2 as well.
+
+          It needs its trigger word 'pixelsprite' in the prompt. Note that
+          generate_core_task currently prepends 'PixelartFSS' instead, which is
+          Onodofthenorth's "Front Sprite Sheet" trigger and asks for a 4-up
+          sheet - see .ai/decisions/0002.
+
+          John6666/super-pixelart-xl-m-v1-v10-sdxl was tried and removed: it
+          loads cleanly and returns pure RGB noise.
+        -->
         <option value="PublicPrompts/All-In-One-Pixel-Model">
-          All-In-One Pixel (SD1.5) - CFG on, trigger 'pixelsprite'
+          All-In-One Pixel (SD1.5) - best benched, trigger 'pixelsprite'
         </option>
       </select>
 

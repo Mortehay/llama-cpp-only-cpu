@@ -128,3 +128,62 @@ Each candidate has its own trigger (`pixelsprite`, `pixelartstyle`). Benchmarkin
 checkpoints without moving the trigger with the model tests them with their
 finetune barely engaged, and the comparison is not meaningful. **Unfixed** - the
 model swap was requested without code changes.
+
+## Measured results (2026-08-21)
+
+Four models, identical subject and seed (112233), each given **its own trigger
+word**, through `POST /sdapi/v1/txt2img`. That route matters: `generate_raw_task`
+does no prompt rewriting, so each checkpoint could be tested with its correct
+trigger without editing `tasks.py`.
+
+| Model | Prompt prefix | Result | Gen |
+|---|---|---|---|
+| `stabilityai/sdxl-turbo` | - | One character, but continuous-tone: anti-aliased outlines, soft shading, no pixel grid. Ground shadow present. | 26.6s |
+| `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator` | `PixelartFSS` | **Four characters in a row** on grey | 3.9s |
+| `John6666/super-pixelart-xl-m-v1-v10-sdxl` | `pixel art sprite` | **Pure RGB noise** | 19.8s |
+| `PublicPrompts/All-In-One-Pixel-Model` | `pixelsprite` | **Real pixel art**: hard grid, bounded palette, one character | **3.0s** |
+
+Images: `images/raw_86069c1d91fc.png`, `raw_196cfdd00816.png`,
+`raw_0dd2e0ac2cf9.png`, `raw_1ddcbc59ddf7.png` respectively.
+
+### Decision: `PublicPrompts/All-In-One-Pixel-Model` for both steps
+
+The only candidate that produced genuine pixel art, and it is SD1.5, so it is
+also ControlNet-compatible and satisfies the step 2 constraint in decision 2.
+One model can serve both steps with pose conditioning intact. Trigger word is
+`pixelsprite` (sprites) / `16bitscene` (scenes).
+
+### `super-pixelart-xl` is not usable and is no longer served
+
+It loads without error and returns undenoised latents. This is **not** the fp16
+SDXL VAE failure the README documents - that produces solid black, not noise.
+Most likely a scheduler or prediction-type mismatch against this diffusers
+version. Removed from `KNOWN_MODELS` rather than left to fail silently with a
+200 to something2. Recommending it on HuggingFace file listings alone was wrong;
+only the bench caught it.
+
+### Correction: guidance 0 is not the whole duplicate-character story
+
+Decision 0001 and the README attribute duplicated characters in step 1 to
+SDXL-Turbo running at guidance 0, which makes negative prompts inert, and
+`_isolate_largest_sprite` exists as a geometry workaround for it.
+
+Measured here: Onodofthenorth at **cfg 7.5** - classifier-free guidance fully on
+- with `multiple characters, group, crowd, twins, clones` in the negative prompt
+still returned four characters in a row.
+
+`PixelartFSS` expands to **"Front Sprite Sheet"**. The trigger *is* a request for
+a sheet, and no guidance setting overrides what the finetune was trained to do.
+So `generate_core_task` prepending `PixelartFSS` - in a step whose entire job is
+to produce exactly one character - is not merely inert on SDXL as previously
+recorded. On any SD1.5 pixel checkpoint it actively asks for the defect that
+`_isolate_largest_sprite` then removes.
+
+Unfixed; the model swap was requested without code changes. It is a one-string
+change in `generate_core_task` and it is the highest-value one left.
+
+### Latency is a non-issue
+
+3.0s and 3.9s for the SD1.5 models at 20 steps, 19.8s for SDXL at 1024px/25
+steps, against a 240s façade budget. Non-distilled sampling costs nothing that
+matters here. The 26.6s for SDXL-Turbo was first-load warmup, not sampling.
