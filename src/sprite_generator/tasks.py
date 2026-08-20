@@ -124,6 +124,26 @@ PipelineOutput = namedtuple("PipelineOutput", ["images"])
 # steps with classifier-free guidance switched off; conventional settings
 # (20 steps / cfg 7) do not error, they just produce over-guided, washed-out
 # images — which is worse, because it looks like a prompt problem.
+import poses
+
+# Sampling for pose-conditioned frames. Kept as constants because they are the
+# two knobs worth sweeping when output quality drifts:
+#   POSED_STRENGTH   how much of the core img2img may overwrite. Higher than
+#                    the unposed 0.55 because ControlNet, not the init image,
+#                    is holding the pose now.
+#   CONTROLNET_SCALE how hard the skeleton is enforced. Near 1.0 follows the
+#                    pose closely at the cost of style; too low and the pose
+#                    is a suggestion the model ignores.
+# Swept on a clean core, 4-frame walk. mean inter-frame difference /
+# max difference from frame 0 / mean difference from the core (0-255):
+#   0.50  1.3 / 1.5 / 14.2   barely moves
+#   0.60  3.6 / 3.9 / 16.6   moves, character intact      <- chosen
+#   0.70  9.1 / 9.7 / 20.2   silhouette starts breaking up
+# 0.75 was a guess and it was wrong: it returned a different character in
+# different clothes. Conditioning scale 1.0 beat 0.6 at every strength.
+POSED_STRENGTH = 0.60
+CONTROLNET_SCALE = 1.0
+
 DISTILLED_MARKERS = ("turbo", "schnell", "lightning", "lcm")
 
 # Shared quality exclusions. Applies to both generation steps.
@@ -143,17 +163,20 @@ NEGATIVE_SINGLE = (
 # 1 - plus terms against the design drifting between frames. The old
 # NEGATIVE_SHEET deliberately allowed grids, because step 2 used to ask the
 # model for a whole row; it no longer does.
+# MUST fit in 77 CLIP tokens. Everything past that is silently discarded -
+# no error, no warning from diffusers, just a shorter prompt than written.
+# This list reached 89 tokens and the dropped tail was the ENTIRE ground-shadow
+# clause plus the end of the quality terms, so an earlier "fix" for the shadow
+# under every sprite had literally never been applied. Keep it terse, keep the
+# most important terms first, and check with check_prompt_length().
+#
+# Ordered by what actually goes wrong here: duplicates, then layout, then the
+# ground shadow (connected to the feet, so it survives both the background key
+# and _isolate_largest_sprite), then generic quality.
 NEGATIVE_FRAME = (
-    "multiple characters, two characters, group, crowd, twins, clones, "
-    "sprite sheet, multiple poses, grid, set, split screen, collage, "
-    "different character, changing outfit, changing colors, "
-    # The model draws a ground shadow under the character. It is connected to
-    # the feet, so it is part of the sprite's own blob and survives both the
-    # background key and _isolate_largest_sprite - a green ellipse rides along
-    # under every frame. Guidance is active on this checkpoint (cfg 8), so
-    # unlike step 1 these terms actually do something.
-    "ground shadow, drop shadow, cast shadow, floor, ground, grass, platform, "
-    + _NEGATIVE_QUALITY
+    "multiple characters, crowd, clones, sprite sheet, grid, collage, "
+    "ground shadow, drop shadow, floor, grass, "
+    "blurry, deformed, extra limbs, cropped, low quality, watermark, text"
 )
 
 # Per-frame phase hints for a walk/action cycle. Each frame of a strip is
@@ -184,6 +207,34 @@ def fit_into_frame(img, box, frame_w, frame_h):
     # and centring vertically makes a walk cycle bob against its own baseline.
     frame.paste(crop, ((frame_w - crop.width) // 2, frame_h - crop.height), crop)
     return frame
+
+
+def check_prompt_length(pipe, text: str, label: str):
+    """Warn when a prompt will be silently truncated by CLIP.
+
+    diffusers does not raise on an over-long prompt and does not warn either -
+    transformers emits one line about "indexing errors" that is easy to miss in
+    a wall of progress bars. Everything past 77 tokens is simply dropped, so a
+    carefully worded exclusion at the end of a negative prompt can be absent
+    from every generation while looking present in the source. That happened
+    here: NEGATIVE_FRAME grew to 89 tokens and its ground-shadow clause never
+    reached the model.
+
+    Cheap enough to run per generation, but it is called once per sheet.
+    """
+    tok = getattr(pipe, "tokenizer", None)
+    if tok is None or not text:
+        return
+    try:
+        n = len(tok(text)["input_ids"])
+    except Exception:
+        return
+    limit = getattr(tok, "model_max_length", 77)
+    if n > limit:
+        logger.warning(
+            f"{label} is {n} tokens; CLIP keeps {limit}. The tail is being "
+            f"DISCARDED, not applied. Shorten it."
+        )
 
 
 def resolve_sampling_params(llm_name: str, steps: int, cfg: float, negative_prompt: str = ""):
@@ -219,12 +270,21 @@ def resolve_sampling_params(llm_name: str, steps: int, cfg: float, negative_prom
 
     return steps, cfg, negative_prompt
 
-def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str = "text2img"):
+# ControlNet checkpoint used to drive per-frame pose. SD1.5-family, so it
+# pairs with the pixel-art sheet model rather than SDXL.
+OPENPOSE_CONTROLNET = "lllyasviel/control_v11p_sd15_openpose"
+
+
+def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
+                    pipeline_type: str = "text2img", controlnet: str = None):
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
     
-    cache_key = f"{llm_name}_{pipeline_type}"
+    # The controlnet is part of the pipeline identity: the same checkpoint
+    # with and without one are different objects, and keying them the same
+    # hands back a plain img2img pipeline that rejects control_image.
+    cache_key = f"{llm_name}_{pipeline_type}_{controlnet or 'none'}"
     if cache_key in pipes:
         return pipes[cache_key]
         
@@ -252,13 +312,30 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str
     logger.info(f"Loading '{llm_name}' ({pipeline_type}) on {DEVICE.upper()} ({DTYPE})...")
     try:
         from diffusers import (StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline,
-                               StableDiffusionPipeline, StableDiffusionImg2ImgPipeline)
+                               StableDiffusionPipeline, StableDiffusionImg2ImgPipeline,
+                               StableDiffusionControlNetImg2ImgPipeline, ControlNetModel)
 
         is_sdxl = "sdxl" in llm_name.lower() or "turbo" in llm_name.lower()
         want_img2img = pipeline_type == "img2img"
 
+        # ControlNet is SD1.5-only here. The openpose checkpoint is trained
+        # against SD1.5's UNet and does not fit SDXL, so silently ignore the
+        # request rather than loading something that cannot condition.
+        cn_model = None
+        if controlnet and want_img2img and not is_sdxl:
+            logger.info(f"Loading ControlNet '{controlnet}'...")
+            cn_model = ControlNetModel.from_pretrained(
+                controlnet, torch_dtype=DTYPE, cache_dir="/models",
+                token=os.environ.get("HF_TOKEN") or None,
+            )
+        elif controlnet and is_sdxl:
+            logger.warning(f"Ignoring ControlNet '{controlnet}': '{llm_name}' is SDXL "
+                           "and the openpose checkpoint is SD1.5-only.")
+
         if is_sdxl:
             pipeline_class = StableDiffusionXLImg2ImgPipeline if want_img2img else StableDiffusionXLPipeline
+        elif cn_model is not None:
+            pipeline_class = StableDiffusionControlNetImg2ImgPipeline
         else:
             # The SD1.5 branch previously ignored pipeline_type and always built
             # a text2img pipeline, so asking for img2img silently returned the
@@ -275,6 +352,8 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo", pipeline_type: str
             # ungated and must work with no token.
             token=os.environ.get("HF_TOKEN") or None,
         )
+        if cn_model is not None:
+            common["controlnet"] = cn_model
 
         if not is_sdxl:
             # Disable SD1.5's safety checker.
@@ -712,7 +791,35 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     clean_prompt = prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
     
     # Strictly aligned prefix: "PixelartFSS, idle front,"
-    full_prompt = f"PixelartFSS, idle front, solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, flat solid transparent background, high quality pixel art, 16-bit, sharp focus" if "background" not in clean_prompt.lower() else f"PixelartFSS, idle front, solo individual {clean_prompt}, centered, lone character, no duplicates, one standalone character, high quality pixel art, sharp focus"
+    # Duplicate suppression lives HERE, in the positive prompt, and is worded
+    # as an assertion rather than a negation.
+    #
+    # This checkpoint is distilled and runs at guidance 0, so classifier-free
+    # guidance is off and the negative prompt does nothing whatsoever. The old
+    # prompt tried to compensate by stating the exclusions positively - "lone
+    # character, no duplicates, one standalone character" - and that backfired
+    # twice over. A text encoder cannot apply "no"; the token "duplicates"
+    # simply lands in the conditioning. And "PixelartFSS" is a trigger word for
+    # the SD1.5 sheet checkpoint, not for this one, where it reads as generic
+    # sprite-sheet flavouring and invites a grid.
+    #
+    # It produced cores that were a crowd: one large character ringed by five
+    # to nine smaller copies, sometimes touching it, which then defeated
+    # _isolate_largest_sprite too - a crowd that overlaps is one blob.
+    #
+    # Measured over three seeds, share of opaque pixels in the main figure:
+    #   old prompt   99.9 / 93.2 / 99.8 %, with up to 44 stray regions
+    #   this prompt  100 / 100 / 100 %, and clean across 8 varied subjects
+    #
+    # Raising guidance to 2.0-3.5 also fixes the duplication, by making the
+    # negative prompt work at all - but it visibly flattens the pixel art,
+    # posterising faces and detail, and costs 2-3x the steps. Not worth it when
+    # the prompt alone does the job at 4 steps.
+    background = ("" if "background" in clean_prompt.lower()
+                  else ", plain white background")
+    full_prompt = (f"a single {clean_prompt}, one character alone, full body, "
+                   f"standing, centered, pixel art sprite, 16-bit, sharp focus"
+                   f"{background}")
 
     start_time = time.time()
     
@@ -805,6 +912,14 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         # finished sheet came back 100% opaque with a black background, and
         # every frame was unusable as a sprite.
         core_img = Image.open(core_path)
+        # Keep the sprite's own alpha bounds before compositing flattens them.
+        # The pose skeleton is fitted to this box so it lands on the character
+        # rather than on the middle of the canvas; a skeleton centred while the
+        # sprite sits low and left conditions for a second, differently placed
+        # figure, and the frame comes back with two of them.
+        core_box = None
+        if core_img.mode in ("RGBA", "LA", "P"):
+            core_box = core_img.convert("RGBA").getbbox()
         if core_img.mode in ("RGBA", "LA", "P"):
             core_img = core_img.convert("RGBA")
             core_img = Image.alpha_composite(
@@ -847,10 +962,22 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     # renders the SAME character consistently across a 4-frame row in ~7s, which
     # is exactly what this step needs. Frame-to-frame identity is the hard part
     # of sprite animation, and SDXL-Turbo cannot do it.
-    p = get_sd_pipeline(llm_name, pipeline_type="img2img")
+    # One pipeline for the whole sheet, ControlNet included if ANY requested
+    # action has a pose cycle. Loading a posed and an unposed pipeline would
+    # make them evict each other on a 12GB card - see get_sd_pipeline - and a
+    # sheet of four actions would then reload the checkpoint four times.
+    # Unposed actions run through the same pipeline with a blank control image
+    # and conditioning scale 0, which is exactly plain img2img.
+    use_pose = any(poses.cycle_for(a) for a in actions)
+    if use_pose:
+        logger.info("Pose cycles found; loading ControlNet for per-frame pose.")
+    p = get_sd_pipeline(llm_name, pipeline_type="img2img",
+                        controlnet=OPENPOSE_CONTROLNET if use_pose else None)
     if not p:
         update_task_record(task_id, error_msg=f"Pipeline '{llm_name}' failed to load")
         return {"error": f"Pipeline '{llm_name}' failed to load"}
+
+    check_prompt_length(p, NEGATIVE_FRAME, "NEGATIVE_FRAME")
 
     # img2img derives output size from the input image; StableDiffusionImg2ImgPipeline
     # takes no width/height. Resize the core to the full strip up front so the
@@ -873,6 +1000,15 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     # art than asking the model for a tiny image.
     GEN_SIZE = 512
     core_frame = core_img.resize((GEN_SIZE, GEN_SIZE), Image.Resampling.LANCZOS)
+
+    # The alpha box was measured on the ORIGINAL core, which is not necessarily
+    # GEN_SIZE. Scale it, or the skeleton lands off the character.
+    pose_box = None
+    if use_pose and core_box:
+        sx, sy = GEN_SIZE / core_img.width, GEN_SIZE / core_img.height
+        pose_box = (core_box[0] * sx, core_box[1] * sy,
+                    core_box[2] * sx, core_box[3] * sy)
+    BLANK_CONTROL = Image.new("RGB", (GEN_SIZE, GEN_SIZE), (0, 0, 0))
     logger.info(f"Generating frames at {GEN_SIZE}x{GEN_SIZE} (model native), "
                 f"downscaling to {frame_width}x{frame_height} for the sheet.")
 
@@ -916,6 +1052,18 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         #   0.65 -> motion 8.0 / drift 10.1  design starts changing (a hat
         #                                    appeared halfway through the strip)
         strength = 0.55 if is_dynamic else 0.45
+
+        # Skeletons for this action, or None when it has no cycle.
+        frame_controls = (poses.control_images(action, motion_steps,
+                                               (GEN_SIZE, GEN_SIZE), pose_box)
+                          if use_pose else None)
+        if frame_controls:
+            # ControlNet now holds the pose, so strength no longer has to serve
+            # two masters. Without it, strength had to stay low to keep the
+            # character - which is exactly why the pose barely moved. Raise it
+            # and let the skeleton, not the init image, decide the posture.
+            strength = POSED_STRENGTH
+            logger.info(f"  > '{action}': pose-conditioned, strength {strength}")
         
         negative = NEGATIVE_FRAME
         
@@ -965,10 +1113,24 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
             for f in range(motion_steps):
                 if is_cancelled(task_id):
                     return {"error": "Cancelled"}
+                # The phase hint describes a walk contact/passing cycle. When
+                # a skeleton is driving the frame it already says all of that,
+                # more precisely, and the words then fight it - "leading leg
+                # extended" against a front-facing or attack skeleton is simply
+                # wrong. Use the hint only for unposed actions.
                 frame_prompt = (
+                    f"{trigger}, {base_prompt}, single character, full body, centered"
+                    if frame_controls else
                     f"{trigger}, {PHASE_HINTS[f % len(PHASE_HINTS)]}, {base_prompt}, "
                     "single character, full body, centered"
                 )
+                control_kwargs = {}
+                if use_pose:
+                    control_kwargs = {
+                        "control_image": frame_controls[f] if frame_controls else BLANK_CONTROL,
+                        "controlnet_conditioning_scale":
+                            CONTROLNET_SCALE if frame_controls else 0.0,
+                    }
                 img = p(
                     prompt=frame_prompt,
                     negative_prompt=negative or None,
@@ -982,6 +1144,7 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
                     # zombie than the 'move right' row. Pose differences come
                     # from the prompt, which is what it is good at.
                     generator=torch.Generator("cpu").manual_seed(parent_seed),
+                    **control_kwargs,
                 ).images[0]
                 # Key at full render resolution - the corner-colour match is far
                 # more reliable on a clean 512px image than a resampled one.

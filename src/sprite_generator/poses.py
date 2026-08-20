@@ -10,7 +10,7 @@ that trade never had a usable middle - see the step 2 section of the README.
 
 ControlNet breaks the tie by giving pose its own conditioning channel. Identity
 still comes from the core image through img2img; the pose comes from a skeleton
-drawn here. The two stop fighting over one parameter.
+drawn here. The two stop competing for one parameter.
 
 WHY THE SKELETONS ARE HAND-AUTHORED
 
@@ -20,6 +20,22 @@ sprite mid-walk, and a detector trained on photographs does poorly on a 64px
 stylised character with four-pixel limbs. Authoring the keypoints directly is
 deterministic, needs no extra model, costs nothing at runtime, and animation
 poses are a solved problem anyway - contact, passing, contact, passing.
+
+TWO THINGS THAT HAVE TO BE RIGHT
+
+*Proportion.* The skeleton sets the body plan the model draws to. A default
+OpenPose figure is roughly 7.5 heads tall; these pixel-art cores are roughly 4,
+with a big head and short legs. Conditioning a chibi sprite on an adult
+skeleton makes ControlNet and img2img pull in different directions, and the
+result is a stretched or doubled figure. `Y` below is the single place that
+proportion lives - retune it there if the art style changes.
+
+*Consistent limb length.* Elbows and knees are SOLVED from the endpoints rather
+than typed in, so every phase of a cycle has arms and legs of exactly the same
+length. Hand-placed mid-joints drift a few percent per frame, and a skeleton
+whose thigh grows between frame 2 and frame 3 conditions for a body that grows
+with it - which reads as the character morphing, the exact failure ControlNet
+was brought in to remove.
 
 FORMAT
 
@@ -34,6 +50,8 @@ Coordinates are normalised to the box the character occupies, 0..1, y down. A
 keypoint may be None, meaning "not visible" - the far ear in a side view, for
 instance - and is then skipped along with any limb that touches it.
 """
+
+import math
 
 from PIL import Image, ImageDraw
 
@@ -51,149 +69,182 @@ COLORS = [
     (255, 0, 255), (255, 0, 170), (255, 0, 85),
 ]
 
+# Vertical landmarks, as a fraction of the character's height. Tuned for the
+# chibi proportions the pixel-art cores actually have - big head, short legs,
+# roughly 4 heads tall - NOT the ~7.5-head adult figure an OpenPose skeleton
+# defaults to. This is the one place proportion is defined.
+Y = {
+    "eye": 0.15, "nose": 0.17, "ear": 0.17,
+    "neck": 0.30, "shoulder": 0.33,
+    "hip": 0.57, "ankle": 0.95,
+}
 
-def _torso(facing_side: bool):
-    """Keypoints shared by every phase of a cycle: head, neck, shoulders, hips.
+# Half-limb lengths, i.e. upper arm = forearm = ARM, thigh = shin = LEG.
+# Derived from the landmarks: a hanging arm reaches 2*ARM below the shoulder,
+# a straight leg spans hip to ankle.
+LEG = (Y["ankle"] - Y["hip"]) / 2      # 0.19
+ARM = 0.14
 
-    In a side view the shoulders and hips stack on one x, and the far ear is
-    hidden behind the head. Facing front they spread apart and both ears show.
+
+def _solve_joint(a, b, seg, bend):
+    """Place the mid-joint of a two-segment limb running from `a` to `b`.
+
+    Both segments are `seg` long, so the joint sits on the perpendicular
+    bisector of ab, offset by sqrt(seg^2 - (d/2)^2). Two solutions exist -
+    knee forward or knee backward - and `bend` (a direction hint) picks one.
+
+    When the endpoints are further apart than the limb can reach the limb is
+    simply straight, and the joint goes at the midpoint rather than raising a
+    domain error on a negative square root. That case means the pose data asks
+    for a stride longer than the leg; it is clamped instead of rejected so a
+    slightly over-reaching pose degrades to a straight leg instead of crashing
+    a generation job.
     """
-    if facing_side:
-        return {
-            0: (0.56, 0.10), 1: (0.50, 0.19),
-            2: (0.50, 0.21), 5: (0.50, 0.21),
-            8: (0.50, 0.50), 11: (0.50, 0.50),
-            14: (0.58, 0.09), 15: (0.55, 0.09),
-            16: (0.52, 0.10), 17: None,
-        }
-    return {
-        0: (0.50, 0.10), 1: (0.50, 0.19),
-        2: (0.40, 0.22), 5: (0.60, 0.22),
-        8: (0.44, 0.50), 11: (0.56, 0.50),
-        14: (0.47, 0.09), 15: (0.53, 0.09),
-        16: (0.43, 0.10), 17: (0.57, 0.10),
-    }
+    ax, ay = a
+    bx, by = b
+    dx, dy = bx - ax, by - ay
+    d = math.hypot(dx, dy)
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    if d < 1e-6 or d >= 2 * seg:
+        return (mx, my)
+
+    h = math.sqrt(seg * seg - (d / 2) ** 2)
+    # Unit perpendicular to ab.
+    px, py = -dy / d, dx / d
+    if px * bend[0] + py * bend[1] < 0:
+        px, py = -px, -py
+    return (mx + px * h, my + py * h)
 
 
-def _phase(base, limbs, lift=0.0):
-    """One frame: torso plus limb keypoints, optionally raised off the ground.
+def _head(facing_side, face_dir=1):
+    """Head and neck keypoints.
 
-    `lift` models the vertical bob of a walk cycle. The body is highest at the
-    passing pose and lowest at contact; without it a walk reads as a character
-    sliding along on rails.
+    In a side view the eyes and nose sit toward the facing direction and the
+    far ear is hidden behind the skull; head-on, both ears show.
     """
-    kp = dict(base)
-    kp.update(limbs)
+    if not facing_side:
+        return {0: (0.50, Y["nose"]), 14: (0.47, Y["eye"]), 15: (0.53, Y["eye"]),
+                16: (0.43, Y["ear"]), 17: (0.57, Y["ear"])}
+    # Only the NEAR eye, and the ear BEHIND it. This is the whole profile cue.
+    #
+    # Showing both eyes was enough to defeat the side view entirely: shoulders
+    # and hips already sit on one x, but a skeleton with two eyes and limbs
+    # spread symmetrically left and right is, as a 2D image, indistinguishable
+    # from a front view with the legs apart - and that is exactly what the
+    # model drew, every frame, for every strength and conditioning scale tried.
+    # One eye plus a trailing ear is what says "this figure is turned".
+    f = face_dir
+    return {0: (0.50 + 0.09 * f, Y["nose"]),
+            14: (0.50 + 0.07 * f, Y["eye"]), 15: None,
+            16: (0.50 - 0.02 * f, Y["ear"]), 17: None}
+
+
+def _build(side, wrists, ankles, lift=0.0, arm_bend=None, leg_bend=None):
+    """Assemble one frame from the four endpoints that actually vary.
+
+    Everything else - head, neck, shoulders, hips - is fixed by the body plan,
+    and the elbows and knees are solved. A phase therefore specifies only where
+    the hands and feet are, which is how animation is described anyway.
+
+    `lift` raises the whole body, modelling the vertical bob of a walk: highest
+    at the passing pose, lowest at contact. Without it a walk reads as a
+    character sliding along on rails.
+    """
+    if side:
+        sh_r = sh_l = (0.50, Y["shoulder"])
+        hip_r = hip_l = (0.50, Y["hip"])
+        arm_bend = arm_bend or ((-1, 0), (-1, 0))
+        leg_bend = leg_bend or ((1, 0), (1, 0))
+        head = _head(True)
+    else:
+        sh_r, sh_l = (0.40, Y["shoulder"]), (0.60, Y["shoulder"])
+        hip_r, hip_l = (0.45, Y["hip"]), (0.55, Y["hip"])
+        arm_bend = arm_bend or ((-1, 0), (1, 0))
+        leg_bend = leg_bend or ((-1, 0), (1, 0))
+        head = _head(False)
+
+    wr_r, wr_l = wrists
+    an_r, an_l = ankles
+
+    kp = dict(head)
+    kp[1] = (0.50, Y["neck"])
+    kp[2], kp[5] = sh_r, sh_l
+    kp[8], kp[11] = hip_r, hip_l
+    kp[4], kp[7] = wr_r, wr_l
+    kp[10], kp[13] = an_r, an_l
+    kp[3] = _solve_joint(sh_r, wr_r, ARM, arm_bend[0])
+    kp[6] = _solve_joint(sh_l, wr_l, ARM, arm_bend[1])
+    kp[9] = _solve_joint(hip_r, an_r, LEG, leg_bend[0])
+    kp[12] = _solve_joint(hip_l, an_l, LEG, leg_bend[1])
+
     if lift:
         kp = {i: (p[0], p[1] - lift) if p else None for i, p in kp.items()}
     return kp
 
 
-_SIDE = _torso(facing_side=True)
-_FRONT = _torso(facing_side=False)
-
-# Walk cycle, side view, facing right. Four phases: contact, passing, contact
-# mirrored, passing mirrored. Arms swing opposite the legs, which is what makes
-# a walk read as a walk rather than a shuffle.
+# Walk, side view, facing right. Contact / passing / contact / passing, with
+# arms swinging opposite the legs - which is what makes a walk read as a walk
+# rather than a shuffle. The forward foot rises as it reaches: at full stride a
+# foot planted flat at ankle height would be further from the hip than the leg
+# is long.
 WALK_SIDE = [
-    _phase(_SIDE, {
-        3: (0.44, 0.35), 4: (0.40, 0.47), 6: (0.56, 0.34), 7: (0.62, 0.45),
-        9: (0.58, 0.70), 10: (0.66, 0.93), 12: (0.44, 0.72), 13: (0.36, 0.93),
-    }),
-    _phase(_SIDE, {
-        3: (0.48, 0.35), 4: (0.48, 0.47), 6: (0.52, 0.35), 7: (0.53, 0.46),
-        9: (0.52, 0.70), 10: (0.52, 0.93), 12: (0.50, 0.69), 13: (0.46, 0.88),
-    }, lift=0.03),
-    _phase(_SIDE, {
-        3: (0.56, 0.34), 4: (0.62, 0.45), 6: (0.44, 0.35), 7: (0.40, 0.47),
-        9: (0.44, 0.72), 10: (0.36, 0.93), 12: (0.58, 0.70), 13: (0.66, 0.93),
-    }),
-    _phase(_SIDE, {
-        3: (0.52, 0.35), 4: (0.53, 0.46), 6: (0.48, 0.35), 7: (0.48, 0.47),
-        9: (0.50, 0.69), 10: (0.46, 0.88), 12: (0.52, 0.70), 13: (0.52, 0.93),
-    }, lift=0.03),
+    _build(True, ((0.38, 0.56), (0.62, 0.55)), ((0.64, 0.92), (0.38, 0.93))),
+    # The swing foot tucks up UNDER the body, ankle near 0.82 - not merely
+    # lowered to 0.85. With 0.19 segments a hip-to-ankle gap of only 0.28 puts
+    # the solved knee level with, or below, the ankle: a bird's leg. Lifting
+    # the foot properly swings the knee forward and up, which is what a passing
+    # pose actually looks like from the side.
+    _build(True, ((0.47, 0.60), (0.53, 0.58)), ((0.50, 0.95), (0.52, 0.82)), lift=0.025),
+    _build(True, ((0.62, 0.55), (0.38, 0.56)), ((0.38, 0.93), (0.64, 0.92))),
+    _build(True, ((0.53, 0.58), (0.47, 0.60)), ((0.52, 0.82), (0.50, 0.95)), lift=0.025),
 ]
 
-# Walk cycle seen head-on. The stride reads as one leg crossing in front of the
-# other, so the movement is mostly in x with a small lift.
+# Walk seen head-on. Deliberately shallow: a step toward the camera is
+# foreshortened, so its 2D segments get SHORTER, but the solver holds them
+# constant. Lifting a foot to 0.87 therefore threw the knee 0.12 out sideways -
+# a leg bent out at the hip rather than a leg stepping forward. Keep the feet
+# near the ground and let the body bob carry the movement, which is how a
+# front-facing walk is drawn in pixel art anyway.
 WALK_FRONT = [
-    _phase(_FRONT, {
-        3: (0.36, 0.36), 4: (0.34, 0.48), 6: (0.64, 0.36), 7: (0.66, 0.48),
-        9: (0.42, 0.71), 10: (0.40, 0.94), 12: (0.57, 0.72), 13: (0.58, 0.93),
-    }),
-    _phase(_FRONT, {
-        3: (0.37, 0.36), 4: (0.36, 0.48), 6: (0.63, 0.36), 7: (0.64, 0.48),
-        9: (0.45, 0.70), 10: (0.46, 0.90), 12: (0.55, 0.71), 13: (0.55, 0.94),
-    }, lift=0.03),
-    _phase(_FRONT, {
-        3: (0.35, 0.36), 4: (0.33, 0.48), 6: (0.65, 0.36), 7: (0.67, 0.48),
-        9: (0.43, 0.72), 10: (0.44, 0.93), 12: (0.56, 0.71), 13: (0.54, 0.94),
-    }),
-    _phase(_FRONT, {
-        3: (0.37, 0.36), 4: (0.36, 0.48), 6: (0.63, 0.36), 7: (0.64, 0.48),
-        9: (0.44, 0.71), 10: (0.44, 0.94), 12: (0.56, 0.70), 13: (0.57, 0.90),
-    }, lift=0.03),
+    _build(False, ((0.36, 0.59), (0.64, 0.59)), ((0.43, 0.94), (0.56, 0.93))),
+    _build(False, ((0.37, 0.60), (0.63, 0.60)), ((0.45, 0.95), (0.55, 0.90)), lift=0.025),
+    _build(False, ((0.36, 0.59), (0.64, 0.59)), ((0.44, 0.93), (0.56, 0.94))),
+    _build(False, ((0.37, 0.60), (0.63, 0.60)), ((0.45, 0.90), (0.55, 0.95)), lift=0.025),
 ]
 
 # Idle: a breathing loop. Deliberately tiny - an idle that moves as much as a
 # walk looks like a nervous tic.
 IDLE = [
-    _phase(_FRONT, {
-        3: (0.37, 0.36), 4: (0.36, 0.48), 6: (0.63, 0.36), 7: (0.64, 0.48),
-        9: (0.44, 0.72), 10: (0.44, 0.95), 12: (0.56, 0.72), 13: (0.56, 0.95),
-    }),
-    _phase(_FRONT, {
-        3: (0.37, 0.35), 4: (0.36, 0.47), 6: (0.63, 0.35), 7: (0.64, 0.47),
-        9: (0.44, 0.71), 10: (0.44, 0.95), 12: (0.56, 0.71), 13: (0.56, 0.95),
-    }, lift=0.012),
-    _phase(_FRONT, {
-        3: (0.38, 0.36), 4: (0.37, 0.48), 6: (0.62, 0.36), 7: (0.63, 0.48),
-        9: (0.44, 0.72), 10: (0.44, 0.95), 12: (0.56, 0.72), 13: (0.56, 0.95),
-    }),
-    _phase(_FRONT, {
-        3: (0.37, 0.35), 4: (0.36, 0.47), 6: (0.63, 0.35), 7: (0.64, 0.47),
-        9: (0.44, 0.71), 10: (0.44, 0.95), 12: (0.56, 0.71), 13: (0.56, 0.95),
-    }, lift=0.012),
+    _build(False, ((0.37, 0.60), (0.63, 0.60)), ((0.45, 0.95), (0.55, 0.95))),
+    _build(False, ((0.37, 0.59), (0.63, 0.59)), ((0.45, 0.95), (0.55, 0.95)), lift=0.012),
+    _build(False, ((0.38, 0.60), (0.62, 0.60)), ((0.45, 0.95), (0.55, 0.95))),
+    _build(False, ((0.37, 0.59), (0.63, 0.59)), ((0.45, 0.95), (0.55, 0.95)), lift=0.012),
 ]
 
-# Attack: wind up behind the head, then swing down and through.
+# Attack: wind the right arm up behind the head, then swing down and through.
+# Feet stay in a braced stance - the weight shifts, the stance does not walk.
 ATTACK = [
-    _phase(_SIDE, {
-        3: (0.42, 0.26), 4: (0.38, 0.16), 6: (0.52, 0.36), 7: (0.58, 0.42),
-        9: (0.46, 0.71), 10: (0.40, 0.94), 12: (0.56, 0.71), 13: (0.60, 0.94),
-    }),
-    _phase(_SIDE, {
-        3: (0.50, 0.24), 4: (0.58, 0.20), 6: (0.54, 0.36), 7: (0.60, 0.42),
-        9: (0.46, 0.71), 10: (0.40, 0.94), 12: (0.57, 0.70), 13: (0.62, 0.94),
-    }),
-    _phase(_SIDE, {
-        3: (0.60, 0.30), 4: (0.72, 0.34), 6: (0.56, 0.37), 7: (0.62, 0.44),
-        9: (0.48, 0.71), 10: (0.42, 0.94), 12: (0.58, 0.70), 13: (0.64, 0.93),
-    }),
-    _phase(_SIDE, {
-        3: (0.62, 0.42), 4: (0.70, 0.52), 6: (0.54, 0.38), 7: (0.58, 0.46),
-        9: (0.48, 0.72), 10: (0.42, 0.94), 12: (0.57, 0.71), 13: (0.62, 0.94),
-    }),
+    _build(True, ((0.36, 0.22), (0.57, 0.58)), ((0.40, 0.93), (0.60, 0.93))),
+    _build(True, ((0.55, 0.17), (0.58, 0.58)), ((0.40, 0.93), (0.60, 0.93))),
+    _build(True, ((0.74, 0.36), (0.60, 0.56)), ((0.42, 0.93), (0.61, 0.92))),
+    # 0.68/0.53, not 0.70/0.55: the further reach exceeded 2*ARM, so the solver
+    # clamped the arm straight and the follow-through lost its elbow.
+    _build(True, ((0.68, 0.53), (0.58, 0.58)), ((0.42, 0.94), (0.60, 0.93))),
 ]
 
-# Recoil: head and torso thrown back, arms up, weight onto the back foot.
+# Recoil: arms fly up, weight drives onto the back foot. Bending the elbows
+# outward and up is what separates "hit" from "surrender". Feet stay inside
+# leg reach - a stagger wide enough to over-extend gets clamped to a straight
+# leg, which reads as stiff at exactly the moment it should read as buckling.
 HURT = [
-    _phase(_SIDE, {
-        3: (0.44, 0.32), 4: (0.40, 0.24), 6: (0.56, 0.32), 7: (0.60, 0.24),
-        9: (0.48, 0.71), 10: (0.44, 0.94), 12: (0.56, 0.72), 13: (0.60, 0.94),
-    }),
-    _phase(_SIDE, {
-        3: (0.40, 0.30), 4: (0.34, 0.22), 6: (0.54, 0.30), 7: (0.58, 0.20),
-        9: (0.46, 0.72), 10: (0.38, 0.94), 12: (0.54, 0.73), 13: (0.58, 0.95),
-    }),
-    _phase(_SIDE, {
-        3: (0.38, 0.32), 4: (0.32, 0.26), 6: (0.52, 0.32), 7: (0.56, 0.24),
-        9: (0.44, 0.73), 10: (0.36, 0.95), 12: (0.53, 0.73), 13: (0.57, 0.95),
-    }),
-    _phase(_SIDE, {
-        3: (0.42, 0.33), 4: (0.37, 0.26), 6: (0.55, 0.33), 7: (0.59, 0.26),
-        9: (0.47, 0.72), 10: (0.42, 0.94), 12: (0.55, 0.72), 13: (0.59, 0.94),
-    }),
+    _build(True, ((0.40, 0.34), (0.60, 0.34)), ((0.44, 0.94), (0.58, 0.94)),
+           arm_bend=((0, -1), (0, -1))),
+    _build(True, ((0.34, 0.26), (0.56, 0.24)), ((0.41, 0.93), (0.56, 0.94)),
+           arm_bend=((0, -1), (0, -1))),
+    _build(True, ((0.31, 0.28), (0.53, 0.26)), ((0.40, 0.93), (0.55, 0.94)),
+           arm_bend=((0, -1), (0, -1))),
+    _build(True, ((0.37, 0.31), (0.57, 0.30)), ((0.42, 0.94), (0.57, 0.94)),
+           arm_bend=((0, -1), (0, -1))),
 ]
 
 
@@ -202,7 +253,8 @@ def _mirror(cycle):
 
     A character walking left is a character walking right, mirrored - there is
     no reason to author the coordinates twice, and a hand-authored mirror would
-    drift out of sync with its original on the first edit.
+    drift out of sync with its original on the first edit. Mirroring after the
+    joints are solved keeps the solved elbows and knees correct for free.
     """
     swap = {2: 5, 5: 2, 3: 6, 6: 3, 4: 7, 7: 4,
             8: 11, 11: 8, 9: 12, 12: 9, 10: 13, 13: 10,
@@ -216,7 +268,7 @@ def _mirror(cycle):
     return out
 
 
-# Matched against the action text in order, so put the specific entries first:
+# Matched against the action text in order, so the specific entries come first:
 # "move right" has to win before a bare "move" would.
 POSE_LIBRARY = [
     (("move right", "walk right", "run right"), WALK_SIDE),

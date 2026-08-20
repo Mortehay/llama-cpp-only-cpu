@@ -52,9 +52,20 @@ API_TOKEN = os.environ.get("SPRITE_API_TOKEN", "").strip()
 
 # text2img models this service will serve. `model_name` is the value clients
 # send back in override_settings.sd_model_checkpoint.
+#
+# Every entry must satisfy the `is_sdxl` NAME heuristic in get_sd_pipeline: the
+# pipeline class is chosen from whether the repo name contains "sdxl"/"turbo",
+# not from model_index.json. An SDXL repo named otherwise (e.g.
+# "…/pixel-art-diffusion-xl") is handed an SD1.5 pipeline class and fails to
+# load. See .ai/decisions/0002.
 KNOWN_MODELS = [
     "stabilityai/sdxl-turbo",
     "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
+    # Non-distilled. Turbo and friends run at guidance 0, so the negative_prompt
+    # something2 sends is a silent no-op; these honour it at 20-30 steps.
+    "John6666/super-pixelart-xl-m-v1-v10-sdxl",
+    "PublicPrompts/All-In-One-Pixel-Model",
+    "kohbanye/pixel-art-style",
 ]
 
 

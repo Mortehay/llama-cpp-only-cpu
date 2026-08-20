@@ -85,8 +85,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1
 ```bash
 # --- inside WSL (Ubuntu) ------------------------------------------------
 
-# 2. Docker does not auto-start in WSL2 - there is no boot sequence to hook.
-sudo service docker start
+# 2. Start Docker if it is not already running. With systemd enabled in WSL
+#    (`systemd=true` in /etc/wsl.conf) docker.service is enabled and comes up
+#    with the distro, so this is usually a no-op - check before assuming it
+#    is your problem.
+service docker status >/dev/null || sudo service docker start
 
 # 3. Bring the stack up. `make up` waits for db, redis and the sprite
 #    services to report healthy, then applies migrations.
@@ -457,11 +460,70 @@ separated. Frames also often keep the model's ground-shadow ellipse, which is
 connected to the feet and so survives both the background key and the
 largest-blob filter; negative prompting reduces it but does not clear it.
 
-Separating pose from identity needs a second conditioning channel, which means
-ControlNet (OpenPose). That is available in diffusers directly
-(`StableDiffusionControlNetImg2ImgPipeline` plus a ~1.4GB ControlNet
-checkpoint) — a much smaller step than the full ComfyUI migration this section
-used to recommend, and the natural next one.
+### ControlNet: what it fixed, and what it did not
+
+Pose now has its own conditioning channel —
+`StableDiffusionControlNetImg2ImgPipeline` with
+`lllyasviel/control_v11p_sd15_openpose`, driven by skeletons authored in
+[`poses.py`](src/sprite_generator/poses.py). Identity still comes from the core
+through img2img; posture comes from the skeleton.
+
+Two things came out of wiring it up, and the second was worth more than the
+first.
+
+**The cores were the real problem.** Step 2 output looked wrong because it was
+being handed a crowd. The core prompt asserted its constraints as negations —
+`lone character, no duplicates, one standalone character` — and a text encoder
+cannot apply "no": the token `duplicates` simply lands in the conditioning. It
+also carried `PixelartFSS`, a trigger word for the *other* checkpoint and a
+sheet-flavoured one at that. Cores came back as one large character ringed by
+five to nine smaller copies, sometimes overlapping it — and an overlapping
+crowd is a single connected blob, so `_isolate_largest_sprite` could not help
+either. Share of opaque pixels in the main figure, three seeds:
+
+| prompt | main figure | stray regions |
+|---|---|---|
+| old | 99.9 / 93.2 / 99.8 % | up to 44 |
+| current | 100 / 100 / 100 % | specks only |
+
+Raising guidance to 2.0–3.5 fixes the duplication too, by making the negative
+prompt work at all — but it visibly flattens the pixel art and costs 2–3× the
+steps. The prompt alone does it at 4 steps.
+
+**A 77-token wall had been silently eating prompts.** CLIP keeps 77 tokens and
+diffusers discards the rest without raising. `NEGATIVE_FRAME` had grown to 89,
+and the dropped tail was the entire ground-shadow clause — so an earlier "fix"
+for the shadow under every sprite had never once been applied. It is now 43
+tokens, and `check_prompt_length()` warns rather than letting it recur.
+
+**What ControlNet actually bought:** repeatable, named pose phases instead of
+whatever the sampler felt like, and enough headroom to raise strength from 0.55
+to 0.60 without losing the character. Swept on a clean core — mean inter-frame
+difference / drift from frame 0 / distance from the core:
+
+| strength | motion | drift | vs core | |
+|---|---|---|---|---|
+| 0.50 | 1.3 | 1.5 | 14.2 | barely moves |
+| 0.60 | 3.6 | 3.9 | 16.6 | **chosen** |
+| 0.70 | 9.1 | 9.7 | 20.2 | silhouette breaks up |
+
+Conditioning scale 1.0 beat 0.6 at every strength.
+
+**What it did not buy: a change of viewpoint.** Asking for "move right" still
+returns a front-facing character. The side-view skeleton was made unambiguous —
+one eye, trailing ear, shoulders and hips on a single x — and it still loses,
+because at strength 0.60 the front-facing *init image* dominates the
+composition, and raising strength far enough to overrule it discards the
+character along with the viewpoint.
+
+That is not a tuning problem. A front-facing sprite cannot be rotated by
+img2img while staying the same sprite. The fix is to stop trying: generate one
+**core per facing direction** and animate each from its own init image, or
+train a character LoRA so identity no longer has to come from an init image at
+all. Sprites also still keep the model's ground shadow.
+
+---
+
 ## Known issues
 
 - **The FLUX branch of step 2 cannot load on a clean machine.** `tasks.py`

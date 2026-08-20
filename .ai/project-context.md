@@ -100,8 +100,17 @@ ASCII-only.
 `src/sprite_generator/` is bind-mounted, so Python changes need no rebuild — but
 the two services behave differently:
 
-- **`sprite-generator` (API)** runs `uvicorn --reload` and picks up changes
-  automatically.
+- **`sprite-generator` (API)** runs `uvicorn --reload`, but **the reload does not
+  actually fire for Python edits made from Windows.** Measured 2026-08-20:
+  editing `a1111.py` produced no `WatchFiles detected changes` line and the old
+  module kept serving; a `docker restart sprite_generator` was required. The
+  repo lives on `/mnt/c`, and inotify events do not propagate across the 9p
+  bind mount, so the watcher never sees the write. Assume the API needs a
+  restart for `.py` changes, exactly like the worker.
+- **Jinja templates are the exception** and do reload: they are read from disk
+  per request, so `templates/*.html` edits take effect on the next page load
+  with no restart. This split is confusing in practice — an HTML change appears
+  instantly while the Python change beside it silently does not.
 - **`sprite-worker` (Celery) does NOT hot-reload.** After editing `tasks.py` you
   must restart it, or the worker keeps running the old module and rejects new
   tasks with `Received unregistered task of type '...'` — which looks like a
@@ -153,3 +162,36 @@ Their actual calling code has not been read.
 - `POST /api/settings/{key}` removed (was dead code that always errored).
 - The Settings UI compute toggle is now a read-only readout via
   `GET /api/compute-info` (was a dead toggle plus stale hardware copy).
+
+## Image model selection constraints
+
+Full reasoning in [decisions/0002](decisions/0002-image-model-selection.md). The
+parts worth having in context before touching model choice:
+
+- **Step 1 and step 2 are independent choices.** Step 2 re-renders the core
+  through img2img, so the core model does not need to be a pixel-art model — it
+  needs one clean, centred, single character. Step 2 supplies the style.
+- **Step 2 is locked to SD1.5.** `poses.py` authors COCO-18 skeletons against
+  `control_v11p_sd15_openpose`, and `get_sd_pipeline` refuses ControlNet on
+  SDXL. Pose conditioning works; moving step 2 off SD1.5 discards it.
+- **Prefer non-distilled checkpoints.** Anything matching `DISTILLED_MARKERS`
+  (`turbo`, `schnell`, `lightning`, `lcm`) runs at guidance 0, which disables
+  classifier-free guidance and makes every negative prompt a silent no-op. That
+  is the root cause behind `_isolate_largest_sprite`.
+- **Latency is not the constraint people assume.** The A1111 façade calls
+  `generate_raw_task` — a *single* txt2img, 240s budget.
+  `generate_spritesheet_task` is not exposed through the façade at all and runs
+  async through the browser UI with no cap.
+- **`is_sdxl` is a name heuristic, not a config read.** `get_sd_pipeline` picks
+  the pipeline class from whether the repo name contains `sdxl` or `turbo`. An
+  SDXL repo named otherwise (`…-diffusion-xl`,
+  `stabilityai/stable-diffusion-xl-base-1.0`) gets an SD1.5 pipeline class and
+  fails to load.
+- **No model-discovery endpoint exists.** A new checkpoint must be added to three
+  hardcoded lists: both dropdowns in `templates/index.html` and `KNOWN_MODELS`
+  in `a1111.py`.
+- **Trigger words are attached to the wrong models.** `generate_core_task`
+  injects `PixelartFSS` — Onodofthenorth's SD1.5 trigger — into prompts going to
+  SDXL-Turbo, where it is inert; step 2 strips it and runs Onodofthenorth
+  *without* its trigger. Comparing checkpoints without moving each model's own
+  trigger with it is not a fair test.

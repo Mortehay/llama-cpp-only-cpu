@@ -23,6 +23,22 @@
       <select id="core-llm" class="select-field">
         <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
         <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        <!--
+          Non-distilled alternatives. Turbo runs at guidance 0, so classifier-free
+          guidance is off and every negative prompt is a silent no-op - the root
+          cause behind _isolate_largest_sprite. These two restore it, at ~25-30
+          steps instead of 4. See .ai/decisions/0002.
+
+          The step 1 core does NOT have to be a pixel-art model: step 2 re-renders
+          it through img2img and supplies the style. It has to produce one clean,
+          centred character.
+        -->
+        <option value="John6666/super-pixelart-xl-m-v1-v10-sdxl">
+          Super Pixelart XL (SDXL) - CFG on, negatives work
+        </option>
+        <option value="PublicPrompts/All-In-One-Pixel-Model">
+          All-In-One Pixel (SD1.5) - CFG on, trigger 'pixelsprite'
+        </option>
       </select>
 
       <label for="core-prompt">Core Character Description</label>
@@ -49,6 +65,19 @@
         </option>
         <option value="stabilityai/sdxl-turbo">
           SDXL Turbo - faster, weaker frame consistency
+        </option>
+        <!--
+          SD1.5 alternatives ONLY. This dropdown is locked to the SD1.5 family:
+          poses.py authors COCO-18 skeletons against control_v11p_sd15_openpose,
+          and get_sd_pipeline refuses ControlNet on SDXL. Picking an SDXL entry
+          here silently drops pose conditioning and reverts step 2 to plain
+          img2img, where strength has to serve both identity and pose at once.
+        -->
+        <option value="PublicPrompts/All-In-One-Pixel-Model">
+          All-In-One Pixel (SD1.5) - ControlNet OK, trigger 'pixelsprite'
+        </option>
+        <option value="kohbanye/pixel-art-style">
+          Pixel Art Style (SD1.5) - ControlNet OK, trigger 'pixelartstyle'
         </option>
       </select>
 
