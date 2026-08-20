@@ -141,16 +141,55 @@ without touching the filesystem.
 `localhost` but *not* from other machines on the LAN. `networkingMode=mirrored`
 would fix this but needs Windows 11 22H2+; on Windows 10, forward explicitly:
 
-```powershell
-# From an ELEVATED PowerShell, on the Windows side:
-.\scripts\lan-expose.ps1
+This runs in **Windows PowerShell, as Administrator**. Not in WSL — `netsh
+portproxy` and the Windows firewall are Windows-side, and forwarding *into*
+WSL's NAT is the entire point.
 
-# To undo:
-.\scripts\lan-expose.ps1 -Remove
+Two separate things block it on a default Windows 10 install, and they need
+different fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `cannot be loaded because running scripts is disabled` | Execution policy is `Restricted` | Launch `powershell.exe` with `-ExecutionPolicy Bypass`. The flag cannot be applied to a session that is already running, so `.\scripts\lan-expose.ps1` on its own will always fail. |
+| `Must run as Administrator` | `netsh portproxy` and `New-NetFirewallRule` require elevation | Open the window with Win+X -> "Windows PowerShell (Admin)" |
+
+Open an elevated window, then:
+
+```powershell
+cd "C:\path\to\llama-cpp-only-cpu"
+powershell -ExecutionPolicy Bypass -File .\scripts\lan-expose.ps1
+
+# To undo everything it created:
+powershell -ExecutionPolicy Bypass -File .\scripts\lan-expose.ps1 -Remove
 ```
+
+Or, from a normal (non-elevated) PowerShell already sitting in the repo — this
+spawns the elevated window for you, via a UAC prompt:
+
+```powershell
+Start-Process powershell -Verb RunAs -ArgumentList `
+  "-NoExit -ExecutionPolicy Bypass -File `"$PWD\scripts\lan-expose.ps1`""
+```
+
+To stop passing the flag every time, `Set-ExecutionPolicy -Scope CurrentUser
+RemoteSigned` makes local scripts runnable permanently. The Administrator
+window is still required — that part is `netsh`, not policy.
+
+The script defaults to distro `Ubuntu`; pass `-Distro <name>` if `wsl -l -v`
+shows something else.
 
 **Re-run it after every WSL restart** — the WSL IP is assigned per boot, and
 stale portproxy entries fail silently.
+
+Then confirm the service is actually reachable from the network, not just from
+this machine:
+
+```bash
+./scripts/verify-something2-contract.sh <lan-ip>
+```
+
+`localhost` passing proves nothing about LAN reachability; this is the half
+that matters for something2.
 
 
 ---
