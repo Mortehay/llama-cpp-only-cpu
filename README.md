@@ -90,7 +90,7 @@ sudo service docker start
 
 # 3. Bring the stack up. `make up` waits for db, redis and the sprite
 #    services to report healthy, then applies migrations.
-cd /path/to/llama-cpp-only-cpu
+cd "$(find /mnt/c/Users -maxdepth 5 -type d -name llama-cpp-only-cpu -print -quit 2>/dev/null)"
 make up
 
 # 5. Load a checkpoint into VRAM before anything calls the API. A cold model
@@ -264,7 +264,7 @@ different fixes:
 Open an elevated window, then:
 
 ```powershell
-cd "C:\path\to\llama-cpp-only-cpu"
+cd (Get-ChildItem $HOME -Recurse -Depth 4 -Directory -Filter llama-cpp-only-cpu -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 powershell -ExecutionPolicy Bypass -File .\scripts\lan-expose.ps1
 
 # To undo everything it created:

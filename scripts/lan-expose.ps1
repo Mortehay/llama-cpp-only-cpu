@@ -45,9 +45,19 @@ if ($Remove) {
     return
 }
 
-# Ask WSL for its own address. `hostname -I` returns the eth0 address first.
-$wslIp = (wsl -d $Distro -- bash -lc "hostname -I | awk '{print `$1}'").Trim()
-if (-not $wslIp) { Write-Error "Could not determine the WSL IP for distro '$Distro'. Is it running?" }
+# Ask WSL for its own address. `hostname -I` returns the eth0 address first,
+# followed by the docker bridges (172.17.x, 172.18.x) once dockerd is up.
+#
+# Split it here rather than piping to awk inside the distro: the single quotes
+# around an awk program do not survive PowerShell's native-command argument
+# passing, so `awk '{print $1}'` arrives as `awk {print }`, which prints the
+# WHOLE line. netsh then accepts "172.22.1.1 172.17.0.1 172.18.0.1" verbatim as
+# a connectaddress and every LAN client hangs -- the exact silent failure this
+# script exists to prevent.
+$wslIp = ((wsl -d $Distro -- hostname -I) -split '\s+' | Where-Object { $_ })[0]
+if ($wslIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
+    Write-Error "Could not determine the WSL IP for distro '$Distro' (got '$wslIp'). Is it running?"
+}
 Write-Output "WSL ($Distro) address: $wslIp"
 
 foreach ($p in $Ports) {
