@@ -138,14 +138,22 @@ NEGATIVE_SINGLE = (
     "split screen, collage, grid, set, " + _NEGATIVE_QUALITY
 )
 
-# Step 2 (spritesheet): a horizontal ROW of frames is the goal, so the
-# anti-grid terms above must NOT be used here. Both steps previously shared one
-# list containing "grid, set, split screen", which told the model to avoid
-# producing exactly the layout the step exists to produce. Repetition of the
-# SAME character across frames is wanted; different characters are not.
-NEGATIVE_SHEET = (
-    "different characters, inconsistent character, changing outfit, "
-    "changing colors, " + _NEGATIVE_QUALITY
+# Step 2 (spritesheet): each FRAME is generated on its own and the strip is
+# composed in PIL, so a frame wants exactly one character - same rules as step
+# 1 - plus terms against the design drifting between frames. The old
+# NEGATIVE_SHEET deliberately allowed grids, because step 2 used to ask the
+# model for a whole row; it no longer does.
+NEGATIVE_FRAME = (
+    "multiple characters, two characters, group, crowd, twins, clones, "
+    "sprite sheet, multiple poses, grid, set, split screen, collage, "
+    "different character, changing outfit, changing colors, "
+    # The model draws a ground shadow under the character. It is connected to
+    # the feet, so it is part of the sprite's own blob and survives both the
+    # background key and _isolate_largest_sprite - a green ellipse rides along
+    # under every frame. Guidance is active on this checkpoint (cfg 8), so
+    # unlike step 1 these terms actually do something.
+    "ground shadow, drop shadow, cast shadow, floor, ground, grass, platform, "
+    + _NEGATIVE_QUALITY
 )
 
 # Per-frame phase hints for a walk/action cycle. Each frame of a strip is
@@ -158,40 +166,6 @@ PHASE_HINTS = (
     "contact pose mirrored, opposite leg extended",
     "passing pose mirrored, body settling down",
 )
-
-
-def split_row_by_alpha(img, count):
-    """Cut a rendered sprite ROW into `count` frames, trimmed to their contents.
-
-    The spritesheet model renders a row of characters inside one square image,
-    so the frames are not on a neat grid: each character sits somewhere within
-    its slice, surrounded by transparency. Slicing into equal rectangles and
-    rescaling them produces squashed sprites, because a 512x512 render cut into
-    four 128x512 columns is 1:4 per frame.
-
-    Cutting on the alpha channel instead gives each character its own bounding
-    box, which can then be fitted into a square frame with its proportions
-    intact. Falls back to equal slices when the alpha is uninformative.
-    """
-    import numpy as np
-
-    arr = np.array(img.convert("RGBA"))
-    alpha = arr[:, :, 3]
-    w = img.width
-    slice_w = w // count
-    boxes = []
-
-    for idx in range(count):
-        x0, x1 = idx * slice_w, (idx + 1) * slice_w if idx < count - 1 else w
-        sub = alpha[:, x0:x1]
-        cols = np.where(sub.any(axis=0))[0]
-        rows = np.where(sub.any(axis=1))[0]
-        if cols.size == 0 or rows.size == 0:
-            boxes.append((x0, 0, x1, img.height))       # empty slice, keep as-is
-        else:
-            boxes.append((x0 + int(cols[0]), int(rows[0]),
-                          x0 + int(cols[-1]) + 1, int(rows[-1]) + 1))
-    return boxes
 
 
 def fit_into_frame(img, box, frame_w, frame_h):
@@ -605,7 +579,40 @@ def log_stats(task_id, llm_name, clean_prompt, total_steps, start_time, end_time
     except Exception as e:
         logger.error(f"Could not log stats for {task_id}: {e}")
 
-def remove_background(master, tolerance: int = 22):
+def _isolate_largest_sprite(arr):
+    """Drop every opaque blob except the biggest one.
+
+    SDXL-Turbo runs at guidance 0, so classifier-free guidance is OFF and the
+    negative prompt - "multiple characters, group, crowd, twins, clones" and
+    all - has no effect whatsoever. It duplicates the subject anyway: a
+    generated core came back as one large character ringed by five small copies
+    of itself, and step 2 then faithfully carried all six into every animation
+    frame. Step-2 tuning was chasing a step-1 defect.
+
+    Prompting cannot fix this on a distilled checkpoint. Geometry can. A sprite
+    is one connected shape, so keep the largest connected opaque region and
+    delete the rest - deterministic, and independent of the sampler.
+
+    8-connectivity, so a limb or outline joined only diagonally is not severed
+    from its own body.
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    opaque = arr[:, :, 3] > 0
+    labels, n = ndimage.label(opaque, structure=np.ones((3, 3), dtype=bool))
+    if n <= 1:
+        return arr
+
+    sizes = ndimage.sum(opaque, labels, range(1, n + 1))
+    keep = int(np.argmax(sizes)) + 1
+    dropped = int(opaque.sum() - sizes[keep - 1])
+    arr[(labels != keep) & opaque] = (0, 0, 0, 0)
+    logger.info(f"Isolated main sprite: removed {n - 1} stray blob(s), {dropped} px.")
+    return arr
+
+
+def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
     """Make the background transparent, keeping interior detail intact.
 
     Only removes background-coloured regions **connected to the image border**.
@@ -621,11 +628,14 @@ def remove_background(master, tolerance: int = 22):
         corners = [(0,0), (master.width-1, 0), (0, master.height-1), (master.width-1, master.height-1)]
         bg_r, bg_g, bg_b = 255, 255, 255
 
-        for cx, cy in corners:
-            r, g, b, *_ = master.getpixel((cx, cy))
-            if r + g + b > 50:
-                bg_r, bg_g, bg_b = r, g, b
-                break
+        # Take the colour MOST corners agree on. The old rule took the
+        # first corner brighter than a fixed threshold, which silently
+        # refused to key a dark background: a black-backed frame fell
+        # through to the white default, matched nothing and stayed fully
+        # opaque. A majority vote also survives a sprite that happens to
+        # reach into one corner, which the first-match rule did not.
+        samples = [master.getpixel(c)[:3] for c in corners]
+        bg_r, bg_g, bg_b = max(set(samples), key=samples.count)
 
         # Vectorised with numpy. This was a per-pixel Python loop: 262k iterations
         # for a 512x512 image, running on every generated image and every action
@@ -676,6 +686,10 @@ def remove_background(master, tolerance: int = 22):
             )
 
         arr[mask] = (0, 0, 0, 0)
+
+        if keep_largest:
+            arr = _isolate_largest_sprite(arr)
+
         return Image.fromarray(arr.astype(np.uint8), mode="RGBA")
     except Exception as e:
         logger.error(f"BG removal failed: {e}")
@@ -745,7 +759,10 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     log_stats(task_id, llm_name, clean_prompt, num_steps, start_time, end_time, total_duration_ms)
 
     update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Removing background...")
-    img = remove_background(img)
+    # keep_largest: a core MUST be a single character. See the note in
+    # _isolate_largest_sprite - on a distilled checkpoint the negative
+    # prompt cannot enforce that, so the geometry does.
+    img = remove_background(img, keep_largest=True)
 
     # Smart Aspect Ratio Detection:
     # If the model natively generates a 4x1 animation sequence, strip out Frame 1.
@@ -780,7 +797,20 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     core_path = get_core_image_path(parent_id)
     core_img = None
     if core_path and os.path.exists(core_path):
-        core_img = Image.open(core_path).convert("RGB")
+        # Composite onto WHITE before dropping the alpha channel.
+        # .convert("RGB") on an RGBA sprite maps every transparent pixel to
+        # BLACK. img2img therefore started from a black-backed character,
+        # produced black-backed frames, and remove_background could not key
+        # them (it will not treat a dark corner as background) - so the
+        # finished sheet came back 100% opaque with a black background, and
+        # every frame was unusable as a sprite.
+        core_img = Image.open(core_path)
+        if core_img.mode in ("RGBA", "LA", "P"):
+            core_img = core_img.convert("RGBA")
+            core_img = Image.alpha_composite(
+                Image.new("RGBA", core_img.size, (255, 255, 255, 255)), core_img
+            )
+        core_img = core_img.convert("RGB")
     else:
         err = "Parent core image not found"
         logger.error(err)
@@ -878,10 +908,16 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         # being thrown away in the name of "more movement". Keep it low enough
         # that identity survives; the pose comes from the prompt, not from
         # destroying the input.
-        strength = 0.65 if is_dynamic else 0.50
+        # Measured on a 4-frame walk, shared seed, mean absolute
+        # inter-frame difference (0-255) / max difference from frame 0:
+        #   0.35 -> motion 1.7 / drift 2.1   barely moves
+        #   0.45 -> motion 3.0 / drift 3.7
+        #   0.55 -> motion 4.7 / drift 5.8   best motion still holding identity
+        #   0.65 -> motion 8.0 / drift 10.1  design starts changing (a hat
+        #                                    appeared halfway through the strip)
+        strength = 0.55 if is_dynamic else 0.45
         
-        prompt = f"spritesheet, {trigger}, {base_prompt}, 1x{motion_steps} horizontal grid, {motion_steps} animation frames in a row"
-        negative = NEGATIVE_SHEET
+        negative = NEGATIVE_FRAME
         
         # Was hardcoded to 4 steps / guidance 0 for FLUX-schnell. Now derived
         # from the selected checkpoint: distilled models get clamped back down
@@ -899,51 +935,76 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         # Seeding moved into the per-frame loop below: each frame needs its own
         # generator, derived from parent_seed so the sheet stays reproducible.
         try:
-            logger.info(f"  > Executing img2img for '{action}'...")
-
-            # No width/height: img2img takes its size from `image`, which was
-            # resized to the full strip above. Guidance is no longer hardcoded to
-            # 0.0 — that was a FLUX-schnell setting, and on a non-distilled
-            # checkpoint it disabled classifier-free guidance, silently voiding
-            # the negative prompt as well.
-            # Generate each frame separately from the undistorted core, then
-            # compose the strip. Previously one call produced the whole row and
-            # the row was sliced up — but that required feeding img2img a
-            # squashed core, which destroyed the character.
+            # ONE GENERATION PER FRAME, from the same undistorted core.
             #
-            # Every frame starts from the SAME core image, which is what keeps
-            # identity stable; only the seed and the phase hint change, which is
-            # what creates motion between frames.
-            # ONE generation per action, producing the whole row.
+            # Five earlier attempts all asked the model for the LAYOUT - "a row
+            # of N animation frames" - and hoped it complied. It does not do so
+            # reliably: the same prompt produced a row, a vertical stack and a
+            # 2x2 grid on consecutive runs, and no negative prompt fixed it.
+            # Layout is not something classifier-free guidance steers well.
             #
-            # This model is trained to render a row of animation frames inside a
-            # single square image — that is what "PixelartFSS" means, and left to
-            # do it, it keeps the character identical across the row. Generating
-            # frames individually fought that: each call re-rolled the design, so
-            # a four-frame walk cycle came back as four different characters.
-            # Let the model produce the row; slice it afterwards.
-            row_gen = torch.Generator("cpu").manual_seed(parent_seed + i)
-            row_img = p(
-                prompt=prompt,
-                negative_prompt=negative or None,
-                image=core_frame,
-                strength=strength,
-                num_inference_steps=num_inf_steps,
-                guidance_scale=sheet_guidance,
-                generator=row_gen,
-            ).images[0]
+            # So stop asking. Render one 512x512 single-character image per
+            # frame - which is exactly what step 1 already does reliably - and
+            # compose the strip here, where layout is arithmetic instead of a
+            # sample from a distribution.
+            #
+            # What keeps the frames the SAME character:
+            #   * every frame starts from the same core image (img2img)
+            #   * strength stays low, so the core is not overwritten
+            #   * every frame uses the SAME seed, so the added noise and the
+            #     denoising trajectory are identical; only the prompt differs
+            # What creates motion: the per-frame phase hint, and nothing else.
+            #
+            # Attempt 4 did generate per frame - but at strength 0.95 with a
+            # per-frame seed, breaking both of those at once, and returned four
+            # different characters. Measured inter-frame difference on the same
+            # walk: shared seed 4.7, per-frame seed 23.2. The seed is what holds
+            # identity; the approach was never the problem.
+            logger.info(f"  > Rendering {motion_steps} frames for '{action}'...")
+            frame_imgs = []
+            for f in range(motion_steps):
+                if is_cancelled(task_id):
+                    return {"error": "Cancelled"}
+                frame_prompt = (
+                    f"{trigger}, {PHASE_HINTS[f % len(PHASE_HINTS)]}, {base_prompt}, "
+                    "single character, full body, centered"
+                )
+                img = p(
+                    prompt=frame_prompt,
+                    negative_prompt=negative or None,
+                    image=core_frame,
+                    strength=strength,
+                    num_inference_steps=num_inf_steps,
+                    guidance_scale=sheet_guidance,
+                    # parent_seed, NOT parent_seed + i. The seed is what
+                    # holds the character together; varying it per action made
+                    # the 'idle' row a visibly different shade of the same
+                    # zombie than the 'move right' row. Pose differences come
+                    # from the prompt, which is what it is good at.
+                    generator=torch.Generator("cpu").manual_seed(parent_seed),
+                ).images[0]
+                # Key at full render resolution - the corner-colour match is far
+                # more reliable on a clean 512px image than a resampled one.
+                # keep_largest for the same reason as the core: one sprite.
+                frame_imgs.append(remove_background(img, keep_largest=True))
 
-            # Key at full render resolution — the corner-colour match is far more
-            # reliable on a clean 512px image than on a resampled one.
-            row_img = remove_background(row_img)
+            # ONE shared crop box for the whole strip, not one per frame.
+            # Fitting each frame to its own alpha bounds rescales every frame
+            # independently, so a walk cycle - where the silhouette genuinely
+            # widens and narrows - comes out pulsing in size. Union the bounds
+            # and apply the same crop and scale to every frame: relative motion
+            # survives, apparent size does not.
+            boxes = [b for b in (im.getbbox() for im in frame_imgs) if b]
+            union = ((min(b[0] for b in boxes), min(b[1] for b in boxes),
+                      max(b[2] for b in boxes), max(b[3] for b in boxes))
+                     if boxes else (0, 0, GEN_SIZE, GEN_SIZE))
 
-            boxes = split_row_by_alpha(row_img, motion_steps)
             action_strip = Image.new("RGBA", (frame_width * motion_steps, frame_height), (0, 0, 0, 0))
-            for f, box in enumerate(boxes):
-                frame_img = fit_into_frame(row_img, box, frame_width, frame_height)
+            for f, img in enumerate(frame_imgs):
+                frame_img = fit_into_frame(img, union, frame_width, frame_height)
                 action_strip.paste(frame_img, (f * frame_width, 0), frame_img)
 
-            logger.info(f"  > Action '{action}': row sliced into {motion_steps} frames "
+            logger.info(f"  > Action '{action}': {motion_steps} frames composed "
                         f"at {frame_width}x{frame_height}.")
             update_task_record(
                 task_id,

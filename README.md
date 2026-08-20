@@ -233,12 +233,11 @@ so it forces the exact wheel while dependencies still come from PyPI.
 ---
 
 
-### Step 2 (spritesheet) does not produce usable output
+### Step 2 (spritesheet): how it works, and what it still cannot do
 
-Step 1 (core sprite) works well. Step 2 does not, after four rewrites, and the
-reason is not a bug that one more fix will clear.
-
-What was tried, and what each attempt taught:
+Step 2 produces a usable sheet now — a transparent 512x256 sheet, one
+consistent character across all frames, in about 10 seconds per action. It took
+six attempts, and the last one only worked after a step-1 defect was found.
 
 | Attempt | Approach | Result |
 |---|---|---|
@@ -247,29 +246,77 @@ What was tried, and what each attempt taught:
 | 3 | Per-frame img2img at 128x128 | RGB static — SD1.5 cannot generate below ~512 |
 | 4 | Per-frame at 512, downscaled | Real sprites, but a different character per frame (strength 0.95 discarded the reference) and each frame held its own mini-row |
 | 5 | One row per action, alpha-sliced, strength 0.65 | Model rendered vertical stacks, not a row; slicer assumes a row |
+| 6 | Per-frame at 512, **shared seed**, strength 0.55, composed in PIL | Works |
 
-The core obstacle: **the model's output layout is not stable.** Given similar
-prompts it returns a horizontal row, a vertical stack, or a loose grid, so no
-fixed slicing rule holds. Solving it properly needs explicit spatial control
-(ControlNet pose per frame), identity conditioning (IP-Adapter), or a LoRA
-trained on the exact sheet layout wanted — all standard ComfyUI workflows, and
-all a poor fit for hand-rolling against diffusers.
+Three things had to be true at once, and every earlier attempt broke at least
+one of them.
 
-What is worth keeping regardless of engine: background removal
-(`remove_background`), alpha-based row slicing (`split_row_by_alpha`,
-`fit_into_frame`), sampling reconciliation (`resolve_sampling_params`), the
-sprite DB and history, the A1111 facade, and the whole test harness. Those are
-domain logic, not engine logic.
+**Stop asking the model for a layout.** Attempts 2, 4 and 5 all requested "a row
+of N frames" and hoped. The same prompt returns a row, a vertical stack or a
+loose grid on consecutive runs; layout is not something classifier-free guidance
+steers well. Step 1 already renders a single centred character reliably, so
+step 2 now renders one frame at a time and composes the strip in PIL, where
+layout is arithmetic instead of a sample from a distribution.
 
-**Recommendation:** ship step 1, which produces good single sprites in ~4s, and
-move step 2 onto ComfyUI (phase 3) rather than continuing to hand-tune it.
+**The seed is what holds identity, not the strength.** Attempt 4 was the right
+approach at the wrong settings. Measured on a 4-frame walk (mean absolute
+inter-frame difference, 0-255):
+
+| strength | motion | drift from frame 0 | |
+|---|---|---|---|
+| 0.35 | 1.7 | 2.1 | barely moves |
+| 0.45 | 3.0 | 3.7 | used for static actions |
+| 0.55 | 4.7 | 5.8 | used for dynamic actions |
+| 0.65 | 8.0 | 10.1 | design starts changing (a hat appeared mid-strip) |
+| 0.55, seed per frame | **23.2** | 24.2 | four different characters |
+
+Same strength, only the seed policy changed: 4.7 versus 23.2. Every frame now
+uses `parent_seed` — not `parent_seed + i` — so the noise and the denoising
+trajectory are identical and only the prompt differs.
+
+**The core was carrying stowaways.** The real reason step 2 output looked wrong
+for so long: SDXL-Turbo runs at guidance 0, which switches classifier-free
+guidance off entirely, which makes the negative prompt — including "multiple
+characters, group, crowd" — a no-op. Cores were coming out as one large
+character ringed by five small copies of itself, and step 2 faithfully carried
+all six into every frame. No prompt can fix that on a distilled checkpoint, so
+`_isolate_largest_sprite` keeps the largest connected opaque region and deletes
+the rest. Geometry, not prompting.
+
+A related bug hid behind it: the core was handed to img2img with a transparent
+background, `.convert("RGB")` turned that black, and `remove_background` refused
+to key a dark corner — so a finished sheet came back 100% opaque on a black
+backdrop while every colour-based check passed. The core is now composited onto
+white first, corner sampling takes a majority vote instead of a brightness
+threshold, and `make test-flow` fails a sheet under 5% transparent.
+
+**What it still cannot do.** Motion is a shift in posture and limb position, not
+a real walk cycle, and asking for a side profile does not turn the character
+around. That is inherent to img2img: it preserves composition, and pose *is*
+composition — the same knob controls both, so identity and pose cannot be
+separated. Frames also often keep the model's ground-shadow ellipse, which is
+connected to the feet and so survives both the background key and the
+largest-blob filter; negative prompting reduces it but does not clear it.
+
+Separating pose from identity needs a second conditioning channel, which means
+ControlNet (OpenPose). That is available in diffusers directly
+(`StableDiffusionControlNetImg2ImgPipeline` plus a ~1.4GB ControlNet
+checkpoint) — a much smaller step than the full ComfyUI migration this section
+used to recommend, and the natural next one.
 ## Known issues
 
-- **FLUX step 2 cannot load on a clean machine.** `tasks.py` expects
-  `/models/flux1-schnell.safetensors` plus a hardcoded HF snapshot hash, while
-  `models.txt` downloads `flux-2-klein-4b-Q8_0.gguf`. Neither is wired to the
-  other. Deliberately unfixed — the planned ComfyUI migration removes this code
-  path entirely. Until then, step 2 has no working pipeline.
+- **The FLUX branch of step 2 cannot load on a clean machine.** `tasks.py`
+  expects `/models/flux1-schnell.safetensors` plus a hardcoded HF snapshot hash,
+  while `models.txt` downloads `flux-2-klein-4b-Q8_0.gguf`. Neither is wired to
+  the other. Unfixed and low priority: step 2 runs on
+  `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator` (SD1.5), which works, and
+  FLUX is a worse fit for this job anyway — schnell is distilled, so guidance is
+  off and negative prompts do nothing, which is the exact trap that hid the
+  duplicate-character bug in step 1.
+
+- **Sprites keep the model's ground shadow.** A green ellipse under the feet,
+  connected to the sprite, so neither the background key nor the largest-blob
+  filter removes it. Cosmetic; see the step 2 section above.
 
 Fixed in the GPU pivot, listed here because they shaped the current code:
 

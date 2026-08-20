@@ -11,6 +11,20 @@ CORE_MODEL="stabilityai/sdxl-turbo"
 SHEET_MODEL="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
 FAILED=0
 
+# The daemon lives inside WSL, so `docker` is absent (or points at a dead
+# Docker Desktop pipe) when this script is run from Git Bash on the Windows
+# side. Reach it through wsl.exe instead of failing, because the step that
+# needs it is the pixel inspection — the only part of this test that can tell
+# a real sprite sheet from a blank one.
+if docker info >/dev/null 2>&1; then
+    DOCKER="docker"
+elif command -v wsl.exe >/dev/null 2>&1 && wsl.exe -- docker info >/dev/null 2>&1; then
+    DOCKER="wsl.exe -- docker"
+else
+    echo "No usable docker client; cannot inspect output. Run this inside WSL."
+    exit 1
+fi
+
 step() { echo; echo "=== $* ==="; }
 pass() { echo "  PASS  $*"; }
 fail() { echo "  FAIL  $*"; FAILED=1; }
@@ -66,10 +80,7 @@ step "4. Inspect the produced images"
 # downstream step processes it happily. An earlier version of this script
 # checked only task status and reported PASS on a 1-colour, 1142-byte sheet.
 # Verify pixels.
-docker compose -f compose/develop/docker-compose.yml \
-               -f compose/develop/docker-compose.cuda.yml \
-               --env-file compose/develop/.env \
-               exec -T sprite-worker python - <<'PY'
+$DOCKER exec -i sprite_worker python - <<'PY'
 import glob, os, sys
 import numpy as np
 from PIL import Image
@@ -91,8 +102,20 @@ for pattern, label in (("core_*.png", "core"), ("sheet_*.png", "sheet")):
         print("        Usual cause: the SD1.5 safety checker replaced it with a")
         print("        black image. Check `docker logs sprite_worker` for 'NSFW'.")
         bad = 1
+    elif transparent < 5.0:
+        # A fully opaque sheet is not a sprite sheet. This caught a real
+        # regression that the colour check waved through: the core was handed
+        # to img2img with a transparent background, .convert("RGB") turned that
+        # black, and the background key then refused to touch a dark corner. The
+        # result was a colourful, detailed, completely unusable 100%-opaque
+        # sheet with a black backdrop.
+        print(f"  FAIL  {label} is only {transparent:.1f}% transparent - the")
+        print("        background was not removed. A sprite needs an alpha hole")
+        print("        around it. Check `docker logs sprite_worker` for 'Safety")
+        print("        trigger' or 'BG removal failed'.")
+        bad = 1
     else:
-        print(f"  PASS  {label} contains real image data")
+        print(f"  PASS  {label} contains real image data on a transparent background")
 sys.exit(bad)
 PY
 [ $? -ne 0 ] && FAILED=1
