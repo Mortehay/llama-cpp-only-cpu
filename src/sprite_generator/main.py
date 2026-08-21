@@ -17,7 +17,8 @@ from migrations import run_migrations
 from celery.result import AsyncResult
 from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    remove_background, set_cancel_flag, describe_device,
-                   warm_model_task)
+                   warm_model_task, edit_image_task, EDIT_LORAS,
+                   EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -220,6 +221,69 @@ def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdx
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
+
+@app.get("/api/edit-capabilities")
+def edit_capabilities():
+    """What the editing model can be asked to do.
+
+    Each capability is a LoRA on one shared NF4 base, so adding another costs
+    ~0.5GB rather than another multi-GB model. `null` means the base model with
+    no adapter, which still follows general instructions.
+    """
+    return JSONResponse({
+        "model": "FLUX.1-Kontext-dev (NF4)",
+        "capabilities": [None] + sorted(EDIT_LORAS.keys()),
+        "note": "Editing is instruction-driven, unlike img2img: say what to "
+                "change ('remove the shield', 'show this character from the "
+                "side'), not how far to deviate. No capability LoRAs are "
+                "needed - Kontext does these from the prompt. One task at a "
+                "time: the NF4 transformer takes most of the card, so this "
+                "evicts any generation pipeline.",
+        "source_max_side": 512,
+        "guidance_range": [2.5, 4.0],
+    })
+
+
+@app.post("/api/edit")
+def edit_image(source: str = Form(...), instruction: str = Form(...),
+               capability: str = Form(None), steps: int = Form(20),
+               cfg_scale: float = Form(4.0), seed: int = Form(-1)):
+    """Apply a natural-language edit to an image already in IMAGES_DIR.
+
+    `source` is a filename, not a path: joining a caller-supplied path would let
+    any file on the worker be opened. Only the images directory is reachable.
+    """
+    if not EDIT_ENABLED:
+        # 503, not 500: the service is fine, this capability is not
+        # available on this hardware. Refuse before queueing, because
+        # the task would OOM-kill the worker and take generation with it.
+        return JSONResponse({"error": EDIT_UNAVAILABLE_REASON,
+                             "enable_with": "EDIT_ENABLED=1"}, status_code=503)
+
+    name = os.path.basename(source)
+    path = os.path.join("/app/images", name)
+    if not os.path.exists(path):
+        return JSONResponse({"error": f"No such image: {name}"}, status_code=404)
+    if capability and capability not in EDIT_LORAS:
+        return JSONResponse(
+            {"error": f"Unknown capability '{capability}'",
+             "available": sorted(EDIT_LORAS.keys())}, status_code=400)
+
+    task = edit_image_task.delay(path, instruction, capability, steps, cfg_scale, seed)
+    conn = get_db()
+    if conn:
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (instruction, task.id, "Waiting in queue...", "edit",
+                         f"qwen-image-edit-2511/{capability or 'base'}", 1)
+                    )
+        except Exception as e: print(f"Record error: {e}")
+        finally: conn.close()
+    return JSONResponse({"status": "queued", "task_id": task.id})
+
 
 @app.post("/api/generate_sheet")
 def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), 

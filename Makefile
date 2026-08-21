@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models gpu-check env warm smoke test-flow require-gpu
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -153,6 +153,12 @@ download:
 	docker exec -it model_downloader hf download "$(repo)" "$(file)" --local-dir /models
 	@echo "$(repo) $(file)" >> compose/develop/downloader/models.txt
 	@echo "Model appended to models.txt for future rebuilds."
+
+# Show what models are declared, what is on disk, and what is actually served.
+# Read-only, and the three answers routinely disagree - see the script header.
+# Pass HOST=<lan-ip> to query another machine's stack.
+models:
+	./scripts/list-models.sh $(HOST)
 
 # Check models.txt against the local directory and download any missing weights
 sync-models:

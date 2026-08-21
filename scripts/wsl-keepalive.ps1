@@ -16,12 +16,8 @@
   twice will not start a second one.
 
   NOTE: the keepalive dies when you log off or reboot. Re-run it after logging
-  back in, or register it as a logon scheduled task:
-
-    $a = New-ScheduledTaskAction -Execute 'powershell.exe' `
-         -Argument '-WindowStyle Hidden -ExecutionPolicy Bypass -File "<full path>\wsl-keepalive.ps1"'
-    $t = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName 'WSL keepalive' -Action $a -Trigger $t
+  back in, or register it as a logon task with -Install (needs Administrator --
+  the keepalive itself does not, only registering the task does).
 
 .EXAMPLE
   powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1
@@ -32,10 +28,66 @@
 #>
 param(
     [string] $Distro = "Ubuntu",
-    [switch] $Stop
+    [switch] $Stop,
+    [switch] $Install,
+    [switch] $Uninstall
 )
 
 $marker = "sprite-stack-keepalive"
+$taskName = "WSL keepalive"
+
+function Test-Elevated {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal($id)).IsInRole(
+        [Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if ($Install -or $Uninstall) {
+    # Register-ScheduledTask REQUIRES elevation on this machine.
+    #
+    # The comment-based help above used to say otherwise, copied from the
+    # README. Measured 2026-08-21: without elevation it fails with
+    #   Register-ScheduledTask : Access is denied.
+    #   HRESULT 0x80070005
+    # The keepalive itself still needs no elevation - only registering it as a
+    # logon task does.
+    if (-not (Test-Elevated)) {
+        Write-Error @"
+-Install/-Uninstall require Administrator. Register-ScheduledTask fails with
+"Access is denied" (HRESULT 0x80070005) otherwise.
+
+Open Win+X -> "Windows PowerShell (Admin)", then:
+  powershell -ExecutionPolicy Bypass -File "$PSCommandPath" -Install
+"@
+        return
+    }
+
+    if ($Uninstall) {
+        if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+            Write-Output "Removed the '$taskName' logon task."
+        } else {
+            Write-Output "No '$taskName' task registered."
+        }
+        return
+    }
+
+    $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+        -Argument ('-WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
+                   $PSCommandPath + '" -Distro ' + $Distro)
+    $trigger = New-ScheduledTaskTrigger -AtLogOn
+    # ExecutionTimeLimit 0 = never kill it. The default is 3 days, after which
+    # the task engine would stop the keepalive and every container would die
+    # exactly as if it had never been started.
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+        -Settings $settings -Force `
+        -Description "Holds the WSL2 distro open so Docker containers survive. See scripts/wsl-keepalive.ps1" | Out-Null
+    Write-Output "Registered '$taskName' to run at logon."
+    Write-Output "It starts on your NEXT logon; this session still needs the script run once."
+    return
+}
 
 function Get-Keepalive {
     Get-CimInstance Win32_Process -Filter "Name = 'wsl.exe'" -ErrorAction SilentlyContinue |

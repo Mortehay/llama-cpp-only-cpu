@@ -21,12 +21,34 @@
     <div class="card tab-content active" id="tab-core">
       <label>Select Model</label>
       <select id="core-llm" class="select-field">
-        <option value="stabilityai/sdxl-turbo" selected>SDXL Turbo (Default)</option>
-        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator">Pixel Art SD 1.5</option>
+        <!--
+          Default measured 2026-08-21. SDXL base with a pixel-art LoRA fused on
+          top is the only configuration that produced structurally real pixel
+          art: 86.6% of pixels from 32 colours, 74.7% blockiness, against
+          36.9%/25.2% for sdxl-turbo. The base supplies anatomy and prompt
+          adherence; the 0.32GB LoRA supplies the style. Put "pixel art" in the
+          prompt - that is the LoRA's trigger. ~21s at 25 steps, 1024px.
+
+          sdxl-turbo and kohbanye/pixel-art-style were removed from disk: turbo
+          is distilled (guidance 0, negative prompts inert) and lost the bench,
+          kohbanye was never used. See .ai/decisions/0002.
+        -->
+        <option value="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl" selected>
+          SDXL + pixel-art LoRA - best measured, prompt with "pixel art"
+        </option>
+        <option value="stabilityai/stable-diffusion-xl-base-1.0+Muapi/soft-pixel-art-xl">
+          SDXL + soft-pixel-art LoRA - untested, softer style
+        </option>
+        <option value="stabilityai/stable-diffusion-xl-base-1.0+ntc-ai/SDXL-LoRA-slider.pixel-art">
+          SDXL + pixel-art slider LoRA - untested, 0.08GB
+        </option>
+        <option value="stabilityai/stable-diffusion-xl-base-1.0">
+          SDXL base - no pixel style, use for non-sprite subjects
+        </option>
         <!--
           Non-distilled alternatives. Turbo runs at guidance 0, so classifier-free
           guidance is off and every negative prompt is a silent no-op - the root
-          cause behind _isolate_largest_sprite. These two restore it, at ~25-30
+          cause behind _isolate_largest_sprite. These restore it, at ~25-30
           steps instead of 4. See .ai/decisions/0002.
 
           The step 1 core does NOT have to be a pixel-art model: step 2 re-renders
@@ -71,24 +93,26 @@
           run at all. The pixel-art model is measured at ~7s for a consistent
           4-frame row, which is what this step needs.
         -->
-        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator" selected>
-          Pixel Art SpriteSheet (SD1.5) - consistent frames
-        </option>
-        <option value="stabilityai/sdxl-turbo">
-          SDXL Turbo - faster, weaker frame consistency
-        </option>
         <!--
-          SD1.5 alternatives ONLY. This dropdown is locked to the SD1.5 family:
-          poses.py authors COCO-18 skeletons against control_v11p_sd15_openpose,
-          and get_sd_pipeline refuses ControlNet on SDXL. Picking an SDXL entry
-          here silently drops pose conditioning and reverts step 2 to plain
-          img2img, where strength has to serve both identity and pose at once.
+          KEEP THIS DROPDOWN ON SD1.5. get_sd_pipeline can now drive ControlNet
+          on SDXL too, but the SDXL openpose checkpoint is measurably 3.6x weaker:
+          at POSED_STRENGTH 0.75, SD1.5 + control_v11p_sd15_openpose scores
+          motion 34.02, while SDXL + controlnet-openpose-sdxl-1.0 scores 9.57 -
+          the same as SD1.5 with conditioning switched off entirely.
+
+          So step 1 gets SDXL (best art) and step 2 gets SD1.5 (only working
+          pose). The cost is that step 2 re-renders the core in this model's
+          weaker style. See .ai/decisions/0002.
+
+          Onodofthenorth was removed: every trigger it ships is a SHEET trigger
+          (PixelartFSS = "Front Sprite Sheet") and it returns four characters in
+          a row even with guidance on.
         -->
-        <option value="PublicPrompts/All-In-One-Pixel-Model">
-          All-In-One Pixel (SD1.5) - ControlNet OK, trigger 'pixelsprite'
+        <option value="PublicPrompts/All-In-One-Pixel-Model" selected>
+          All-In-One Pixel (SD1.5) - pose works, trigger 'pixelsprite'
         </option>
-        <option value="kohbanye/pixel-art-style">
-          Pixel Art Style (SD1.5) - ControlNet OK, trigger 'pixelartstyle'
+        <option value="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl">
+          SDXL + pixel-art LoRA - better art, but pose barely moves
         </option>
       </select>
 

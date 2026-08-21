@@ -369,19 +369,37 @@ Notes:
   while the distro cycles. Check `journalctl` for repeated "Startup finished"
   lines instead.
 - The keepalive dies at logoff/reboot. Register it as a logon task so you stop
-  having to remember (normal PowerShell, **no** elevation needed):
+  having to remember — from an **elevated** PowerShell:
 
   ```powershell
-  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument `
-       ('-WindowStyle Hidden -ExecutionPolicy Bypass -File "' +
-        (Join-Path $PWD 'scripts\wsl-keepalive.ps1') + '"')
-  $t = New-ScheduledTaskTrigger -AtLogOn
-  Register-ScheduledTask -TaskName 'WSL keepalive' -Action $a -Trigger $t
+  powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1 -Install
+
+  # Undo:
+  powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1 -Uninstall
   ```
 
-  This does **not** cover `lan-expose.ps1`, which needs elevation and so cannot
-  be triggered the same way without a task configured to run with highest
-  privileges.
+  **This section previously said "normal PowerShell, no elevation needed".
+  That is wrong.** `Register-ScheduledTask` fails without Administrator:
+
+  ```
+  Register-ScheduledTask : Access is denied.
+  FullyQualifiedErrorId : HRESULT 0x80070005
+  ```
+
+  Only *registering* the task needs elevation; the keepalive itself does not,
+  so the plain `.\scripts\wsl-keepalive.ps1` stays unprivileged. `-Install`
+  checks and refuses with that instruction rather than failing obscurely.
+
+  The task sets `ExecutionTimeLimit` to zero deliberately. The default is three
+  days, after which the task engine stops the keepalive — and every container
+  then dies exactly as if it had never been started, which is the hardest
+  version of this bug to diagnose.
+
+  The task starts at your **next** logon; run the script once by hand for the
+  current session.
+
+  This does **not** cover `lan-expose.ps1`, which needs elevation at *run* time
+  and so would need a task configured to run with highest privileges.
 - Keeping any interactive WSL terminal open has the same effect.
 
 ---
@@ -403,6 +421,7 @@ Notes:
 | `make smoke` | Verify GPU, model discovery and a txt2img round-trip |
 | `make test-flow` | Verify the full core -> spritesheet workflow |
 | `make sync-models` | Download anything in `models.txt` that is missing |
+| `make models` | List models: declared in `models.txt`, on disk, and served right now |
 
 ### Changing the CUDA version
 

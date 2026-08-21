@@ -150,8 +150,31 @@ import poses
 #   0.70  9.1 / 9.7 / 20.2   silhouette starts breaking up
 # 0.75 was a guess and it was wrong: it returned a different character in
 # different clothes. Conditioning scale 1.0 beat 0.6 at every strength.
-POSED_STRENGTH = 0.60
+POSED_STRENGTH = 0.75
 CONTROLNET_SCALE = 1.0
+
+# Per-checkpoint trigger tokens for STEP 1 (one character, not a sheet).
+#
+# A DreamBooth finetune only activates its trained style when its own trigger
+# appears in the prompt, so running one of these without its trigger gets you
+# the base model wearing a thin coat of prompt wording. Measured 2026-08-21 with
+# identical subject and seed: All-In-One with "pixelsprite" produced the only
+# genuine pixel art of four candidates - hard grid, bounded palette, one
+# character, 3.0s - where the generic prompt gives soft continuous-tone output.
+#
+# A trigger belonging to a DIFFERENT checkpoint is inert at best. PixelartFSS is
+# worse than inert: it expands to "Front Sprite Sheet", and on Onodofthenorth it
+# returned FOUR characters in a row even at guidance 7.5 with "multiple
+# characters, group, crowd, twins, clones" in the negative prompt. Training
+# beats guidance. That checkpoint therefore has no usable step-1 trigger at all
+# - every trigger it ships (FSS/RSS/LSS/BSS) asks for a sheet, and step 1 wants
+# exactly one character - so it is deliberately absent from this map.
+#
+# Keys are lowercased repo ids; look-ups lowercase the incoming name.
+CORE_TRIGGERS = {
+    "publicprompts/all-in-one-pixel-model": "pixelsprite",
+    "kohbanye/pixel-art-style": "pixelartstyle",
+}
 
 DISTILLED_MARKERS = ("turbo", "schnell", "lightning", "lcm")
 
@@ -279,9 +302,51 @@ def resolve_sampling_params(llm_name: str, steps: int, cfg: float, negative_prom
 
     return steps, cfg, negative_prompt
 
-# ControlNet checkpoint used to drive per-frame pose. SD1.5-family, so it
-# pairs with the pixel-art sheet model rather than SDXL.
+# OpenPose ControlNet checkpoints, one per model family.
+#
+# A ControlNet is trained against a specific UNet and its blocks have that
+# UNet's dimensions, so the SD1.5 checkpoint cannot condition an SDXL model or
+# vice versa. Callers keep passing OPENPOSE_CONTROLNET; get_sd_pipeline
+# substitutes the SDXL one when the checkpoint turns out to be SDXL, so no call
+# site has to know which family it is driving.
+#
+# Both consume the same COCO-18 skeletons that poses.py renders - OpenPose
+# keypoint format is shared - so poses.py needs no change. Its `Y` proportions
+# may still want retuning if SDXL draws a different body plan.
 OPENPOSE_CONTROLNET = "lllyasviel/control_v11p_sd15_openpose"
+OPENPOSE_CONTROLNET_SDXL = "thibaud/controlnet-openpose-sdxl-1.0"
+
+
+def _is_sdxl_checkpoint(llm_name: str) -> bool:
+    """Decide the model family from the checkpoint's config, not its name.
+
+    The previous rule was `"sdxl" in name or "turbo" in name`, which is a guess
+    about how somebody chose to name a repo. It is wrong for at least two
+    checkpoints this project wants: `stabilityai/stable-diffusion-xl-base-1.0`
+    and `stablediffusionapi/pixel-art-diffusion-xl` are both SDXL and both fail
+    it, and are then handed an SD1.5 pipeline class that cannot load them.
+
+    `model_index.json` records the pipeline class the checkpoint was saved
+    with, which is the actual answer. The name heuristic stays as a fallback
+    for the case where the config cannot be read at all - offline with a cold
+    cache - because guessing beats raising there.
+    """
+    try:
+        from diffusers import DiffusionPipeline
+        cfg = DiffusionPipeline.load_config(
+            llm_name,
+            cache_dir="/models",
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+        class_name = str(cfg.get("_class_name", ""))
+        if class_name:
+            return "XL" in class_name
+    except Exception as e:
+        logger.warning(
+            f"Could not read model_index.json for '{llm_name}' "
+            f"({e.__class__.__name__}); falling back to the name heuristic."
+        )
+    return "sdxl" in llm_name.lower() or "turbo" in llm_name.lower()
 
 
 def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
@@ -289,11 +354,30 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
-    
+
+    # "<base>+<lora>" selects a base checkpoint with a LoRA fused on top.
+    #
+    # A LoRA is a small rank-decomposition delta over the base UNet's attention
+    # weights - tens to hundreds of MB against a multi-GB base - so it is not a
+    # model in its own right and cannot be listed like one. Encoding it in the
+    # name means the whole existing surface keeps working unchanged: the UI
+    # dropdowns, KNOWN_MODELS, the A1111 facade's sd_model_checkpoint, and the
+    # `pipes` cache key all treat "base+lora" as one more model string.
+    #
+    # This is how a general 6.7GB SDXL base is made to draw actual pixel art:
+    # the base supplies anatomy and prompt adherence, the LoRA supplies style.
+    # Style finetunes at SD1.5 scale cannot match the first half, and SDXL base
+    # alone measurably cannot do the second - it returns continuous-tone
+    # illustration (see .ai/decisions/0002).
+    lora = None
+    if "+" in llm_name:
+        llm_name, lora = (p.strip() for p in llm_name.split("+", 1))
+
     # The controlnet is part of the pipeline identity: the same checkpoint
     # with and without one are different objects, and keying them the same
-    # hands back a plain img2img pipeline that rejects control_image.
-    cache_key = f"{llm_name}_{pipeline_type}_{controlnet or 'none'}"
+    # hands back a plain img2img pipeline that rejects control_image. The LoRA
+    # is part of that identity for the same reason.
+    cache_key = f"{llm_name}_{pipeline_type}_{controlnet or 'none'}_{lora or 'nolora'}"
     if cache_key in pipes:
         return pipes[cache_key]
         
@@ -322,26 +406,39 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
     try:
         from diffusers import (StableDiffusionXLImg2ImgPipeline, StableDiffusionXLPipeline,
                                StableDiffusionPipeline, StableDiffusionImg2ImgPipeline,
-                               StableDiffusionControlNetImg2ImgPipeline, ControlNetModel)
+                               StableDiffusionControlNetImg2ImgPipeline,
+                               StableDiffusionXLControlNetImg2ImgPipeline, ControlNetModel)
 
-        is_sdxl = "sdxl" in llm_name.lower() or "turbo" in llm_name.lower()
+        is_sdxl = _is_sdxl_checkpoint(llm_name)
         want_img2img = pipeline_type == "img2img"
 
-        # ControlNet is SD1.5-only here. The openpose checkpoint is trained
-        # against SD1.5's UNet and does not fit SDXL, so silently ignore the
-        # request rather than loading something that cannot condition.
+        # ControlNet now works on both families. The checkpoint has to match the
+        # UNet it conditions, so swap in the SDXL-trained openpose model when the
+        # target turns out to be SDXL - callers pass OPENPOSE_CONTROLNET without
+        # knowing which family they will get.
         cn_model = None
-        if controlnet and want_img2img and not is_sdxl:
-            logger.info(f"Loading ControlNet '{controlnet}'...")
+        if controlnet and want_img2img:
+            cn_repo = controlnet
+            if is_sdxl and controlnet == OPENPOSE_CONTROLNET:
+                cn_repo = OPENPOSE_CONTROLNET_SDXL
+                logger.info(f"'{llm_name}' is SDXL; substituting '{cn_repo}' for the "
+                            "SD1.5 openpose checkpoint.")
+            logger.info(f"Loading ControlNet '{cn_repo}'...")
             cn_model = ControlNetModel.from_pretrained(
-                controlnet, torch_dtype=DTYPE, cache_dir="/models",
+                cn_repo, torch_dtype=DTYPE, cache_dir="/models",
                 token=os.environ.get("HF_TOKEN") or None,
             )
-        elif controlnet and is_sdxl:
-            logger.warning(f"Ignoring ControlNet '{controlnet}': '{llm_name}' is SDXL "
-                           "and the openpose checkpoint is SD1.5-only.")
+        elif controlnet:
+            logger.warning(f"Ignoring ControlNet '{controlnet}': only the img2img "
+                           f"path conditions on it, and this is '{pipeline_type}'.")
 
-        if is_sdxl:
+        if is_sdxl and cn_model is not None:
+            # SDXL UNet (~5GB fp16) + SDXL ControlNet (~2.5GB) + VAE and two text
+            # encoders is roughly 9.5GB against ~11.7GB free. It fits with VAE
+            # slicing, but it is the tightest combination this service loads -
+            # see the OOM fallback after .to(DEVICE).
+            pipeline_class = StableDiffusionXLControlNetImg2ImgPipeline
+        elif is_sdxl:
             pipeline_class = StableDiffusionXLImg2ImgPipeline if want_img2img else StableDiffusionXLPipeline
         elif cn_model is not None:
             pipeline_class = StableDiffusionControlNetImg2ImgPipeline
@@ -394,7 +491,49 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
                         "falling back to default weights.")
             pipe = pipeline_class.from_pretrained(llm_name, **common)
 
-        pipe.to(DEVICE)
+        if lora:
+            # Fuse rather than just load. `load_lora_weights` keeps the adapter
+            # as a separate set of tensors consulted on every forward pass;
+            # `fuse_lora` folds the delta into the base weights once, which costs
+            # nothing at inference and avoids the adapter being silently dropped
+            # by pipeline surgery later (ControlNet swaps, VAE config edits).
+            #
+            # Failure here is NOT fatal: a missing or incompatible LoRA should
+            # degrade to the plain base model with a loud warning, not take down
+            # a generation. An SDXL LoRA on an SD1.5 base raises here, which is
+            # the common mistake - the ranks do not match.
+            try:
+                logger.info(f"Loading LoRA '{lora}' onto '{llm_name}'...")
+                pipe.load_lora_weights(
+                    lora, cache_dir="/models",
+                    token=os.environ.get("HF_TOKEN") or None,
+                )
+                pipe.fuse_lora()
+                logger.info(f"LoRA '{lora}' fused.")
+            except Exception as lora_err:
+                logger.warning(
+                    f"Could not apply LoRA '{lora}' to '{llm_name}': "
+                    f"{lora_err.__class__.__name__}: {lora_err}. "
+                    "Continuing with the base checkpoint only - output will not "
+                    "carry the LoRA's style."
+                )
+
+        try:
+            pipe.to(DEVICE)
+        except torch.cuda.OutOfMemoryError:
+            # Only SDXL-plus-ControlNet gets close enough to the card's limit for
+            # this to fire (~9.5GB of ~11.7GB free), and it fires as a hard error
+            # rather than degrading. Offload streams weights through system RAM
+            # instead - much slower, but it produces an image rather than a 500.
+            # The WSL memory cap is the real ceiling for this path, not VRAM.
+            logger.warning(
+                f"'{llm_name}' did not fit in VRAM; retrying with "
+                "enable_model_cpu_offload(). Expect a large slowdown."
+            )
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            pipe.enable_model_cpu_offload()
         if DEVICE == "cuda":
             # SDXL decode of a 1024px latent spikes VRAM well past the UNet's
             # working set; slicing keeps the peak flat on a 12GB card.
@@ -826,7 +965,11 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     # the prompt alone does the job at 4 steps.
     background = ("" if "background" in clean_prompt.lower()
                   else ", plain white background")
-    full_prompt = (f"a single {clean_prompt}, one character alone, full body, "
+    trigger = CORE_TRIGGERS.get((llm_name or "").strip().lower())
+    if trigger:
+        logger.info(f"Using trigger '{trigger}' for '{llm_name}'.")
+    full_prompt = (f"{trigger + ', ' if trigger else ''}"
+                   f"a single {clean_prompt}, one character alone, full body, "
                    f"standing, centered, pixel art sprite, 16-bit, sharp focus"
                    f"{background}")
 
@@ -1348,3 +1491,256 @@ def warm_model_task(self, llm_name: str, pipeline_type: str = "text2img"):
     logger.info(f"Warmed '{llm_name}' in {elapsed:.0f}s")
     return {"status": "ok", "model": llm_name, "elapsed_s": round(elapsed, 1),
             "device": DEVICE, "loaded": sorted(pipes.keys())}
+
+
+# ---------------------------------------------------------------------------
+# Image EDITING (instruction-driven), as opposed to generation.
+# ---------------------------------------------------------------------------
+#
+# img2img changes an image by re-denoising it, so it cannot follow an
+# instruction - it has no notion of "remove that" or "turn him to face left",
+# only "stay this close to the original". That is the limitation the README's
+# step 2 section runs into: pose IS composition, and img2img preserves
+# composition.
+#
+# Qwen-Image-Edit takes the source image AND a natural-language instruction.
+#
+# The checkpoint is pre-quantised NF4. The unquantised pipeline is ~55GB with a
+# 15.45GB fp16 text encoder, which does not fit a 12GB card; NF4 puts the
+# transformer at 10.71GB and the encoder at 5.80GB, and ships it that way so
+# there is nothing to quantise at load. Requires `bitsandbytes` installed -
+# BitsAndBytesConfig imports fine without it and then from_pretrained raises.
+#
+# Capabilities are LoRAs on ONE base, the same pattern as the pixel-art LoRAs:
+# ~0.5GB per capability instead of a separate multi-GB model per task.
+# Chosen by TRANSFORMER size, not total size. See .ai/decisions/0002.
+# Qwen-Image-Edit-2511 NF4 was tried first and does not fit: its transformer is
+# 10.71GB and bitsandbytes 4-bit layers cannot be split or CPU-offloaded, so it
+# must be wholly resident, leaving ~0.75GB of an 11.7GB card for the activations
+# of a 20B model. FLUX Kontext's NF4 transformer is 6.24GB, which leaves ~5GB.
+# Its T5 encoder is a comparable 5.89GB but DOES offload to CPU.
+EDIT_BASE = "Meatfucker/Flux.1-Kontext-dev-bnb-nf4"
+
+# Editing is OFF by default on this machine, and the endpoint refuses rather
+# than trying.
+#
+# This is not caution: calling it actually takes the service down. Loading the
+# pipeline needs all 12.52GB of weights in system RAM (see enable_model_cpu_
+# offload below), the WSL VM is capped at 11GB, and the kernel OOM-kills the
+# Celery worker mid-load - silently, at component 4 of 7, with no traceback.
+# Generation is unavailable until the worker respawns. An endpoint that kills
+# its own service on every call must not be reachable by default.
+#
+# Set EDIT_ENABLED=1 once the host has materially more RAM (24GB+ settles it),
+# or if a smaller editing pipeline appears. Full measurements in
+# .ai/decisions/0002.
+EDIT_ENABLED = os.environ.get("EDIT_ENABLED", "").strip().lower() in ("1", "true", "yes")
+EDIT_UNAVAILABLE_REASON = (
+    "Image editing is disabled on this host. FLUX Kontext NF4 needs 12.52GB of "
+    "weights resident in system RAM and the WSL VM is capped at 11GB, so loading "
+    "it OOM-kills the worker. Needs more host RAM, not a different model. "
+    "SDXL img2img and ControlNet cover image-to-image today."
+)
+
+# How much VRAM accelerate may fill with WEIGHTS. The rest of the card is for
+# inference activations, and Qwen-Image is a 20B transformer whose activations
+# are not small.
+#
+# Measured on the 12GB card: at "8GiB" the pipeline loaded (11752MiB resident)
+# and then died mid-inference with "CUDA driver error: device not ready" - an
+# out-of-memory wearing a driver fault's clothing. Worse, that failure leaves
+# the CUDA context unusable, so the NEXT request fails differently, with
+# "!handles_.at(i) INTERNAL ASSERT FAILED ... CUDACachingAllocator". Only a
+# worker restart clears it. Keep this well under the free VRAM.
+EDIT_GPU_BUDGET = os.environ.get("EDIT_GPU_BUDGET", "6GiB")
+
+# Source images are downscaled to this before editing. 1024px input pushed the
+# activations past the card even with weights capped; 512 is also what the
+# sprite pipeline works at natively.
+EDIT_MAX_SIDE = int(os.environ.get("EDIT_MAX_SIDE", "512"))
+# No LoRAs. The two that were wanted -
+# fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA (turn the subject) and
+# prithivMLmods/Qwen-Image-Edit-2511-Object-Remover (remove an object) - are
+# trained against Qwen-Image-Edit, whose transformer does not fit this card.
+# A LoRA's ranks are tied to the UNet it was trained on, so they cannot move to
+# FLUX Kontext.
+#
+# The capability is not lost: FLUX Kontext is an instruction-editing model and
+# does both of those from the prompt alone ("remove the shield", "show this
+# character from the side"). That is what it was built for; the Qwen LoRAs exist
+# to teach a general editor one trick each.
+EDIT_LORAS = {}
+
+
+def get_edit_pipeline(lora: str = None):
+    """Load the NF4 editing pipeline, optionally with a capability LoRA.
+
+    Always uses enable_model_cpu_offload rather than .to("cuda"): the NF4
+    transformer alone is ~10.7GB against ~11.7GB free, so the text encoder has
+    to be evicted after it has encoded the prompt. Offload does exactly that,
+    and it is why this is slow but possible at all on this card.
+    """
+    if not EDIT_ENABLED:
+        logger.warning(EDIT_UNAVAILABLE_REASON)
+        return None
+
+    global pipes
+    cache_key = f"__edit__{EDIT_BASE}_{lora or 'nolora'}"
+    if cache_key in pipes:
+        return pipes[cache_key]
+
+    log_cuda_details_once()
+
+    # Same eviction rule as get_sd_pipeline, and it matters more here: this
+    # pipeline wants nearly the whole card.
+    if DEVICE == "cuda" and pipes:
+        logger.info(f"Evicting {len(pipes)} pipeline(s) before loading the editor: "
+                    f"{sorted(pipes.keys())}")
+        pipes.clear()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    try:
+        from diffusers import FluxKontextPipeline
+        logger.info(f"Loading editing pipeline '{EDIT_BASE}' (NF4)...")
+
+        common = dict(
+            torch_dtype=DTYPE, cache_dir="/models",
+            token=os.environ.get("HF_TOKEN") or None,
+        )
+
+        # device_map is REQUIRED here, not an optimisation.
+        #
+        # bitsandbytes places 4-bit weights on the GPU as from_pretrained walks
+        # the checkpoint, before any offload hook can run. The transformer is
+        # 10.71GB and the text encoder 5.80GB - 16.5GB against ~11.7GB free - so
+        # a plain from_pretrained fills the card partway through and dies with
+        # "CUDA driver error: device not ready", which reads like a driver fault
+        # rather than the out-of-memory it actually is.
+        #
+        # "balanced" hands placement to accelerate, which puts what fits on the
+        # GPU and leaves the rest in system RAM. max_memory keeps a margin: the
+        # figure below is deliberately under the free VRAM so the inference
+        # activations still have somewhere to live.
+        if DEVICE == "cuda":
+            try:
+                # enable_model_cpu_offload FIRST, not device_map.
+                #
+                # device_map="balanced" places correctly - measured: transformer
+                # on cuda:0, T5 on cpu, 6.62GB allocated - but it is a STATIC
+                # map with no runtime hooks, so calling the offloaded T5 dies
+                # with "Cannot copy out of meta tensor; no data!".
+                #
+                # enable_model_cpu_offload installs hooks that move each module
+                # to the GPU as it is called and evict it afterwards. The
+                # transformer (6.24GB) and T5 (5.89GB) are never needed at the
+                # same instant, so the peak is one of them plus VAE and CLIP,
+                # rather than the 12.5GB sum that does not fit.
+                pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+                pipe.enable_model_cpu_offload()
+                logger.info("Editing pipeline loaded with model CPU offload.")
+                pipes[cache_key] = pipe
+                return pipe
+            except Exception as dm_err:
+                # Model-level offload could not even load. Fall back to
+                # SEQUENTIAL offload, which moves weights a submodule at a time
+                # instead of a whole component: far slower, but its peak is a
+                # fraction of one component rather than all of one.
+                logger.warning(
+                    f"Model CPU offload failed ({dm_err.__class__.__name__}: "
+                    f"{dm_err}); retrying with sequential CPU offload."
+                )
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+                pipe.enable_sequential_cpu_offload()
+                pipes[cache_key] = pipe
+                return pipe
+        else:
+            pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+
+        if lora:
+            repo = EDIT_LORAS.get(lora, lora)
+            try:
+                logger.info(f"Loading edit LoRA '{repo}'...")
+                pipe.load_lora_weights(repo, cache_dir="/models",
+                                       token=os.environ.get("HF_TOKEN") or None)
+                # NOT fused. fuse_lora writes into the base weights, and these
+                # are NF4-quantised - fusing into 4-bit tensors is not supported
+                # and silently degrades or raises. Keep the adapter separate.
+                logger.info(f"Edit LoRA '{repo}' loaded (not fused: base is NF4).")
+            except Exception as e:
+                logger.warning(f"Could not apply edit LoRA '{repo}': "
+                               f"{e.__class__.__name__}: {e}. Continuing without it.")
+
+        # Do NOT call enable_model_cpu_offload here. accelerate has already
+        # placed every module via device_map="balanced", and adding offload
+        # hooks on top of an existing device map raises. The CPU branch is the
+        # only one that still needs an explicit move.
+        if DEVICE != "cuda":
+            pipe.to(DEVICE)
+        pipes[cache_key] = pipe
+    except Exception as e:
+        logger.error(f"Error loading editing pipeline: {e}", exc_info=True)
+        return None
+    return pipes[cache_key]
+
+
+@celery_app.task(name="tasks.edit_image_task", bind=True)
+def edit_image_task(self, source_path: str, instruction: str, lora: str = None,
+                    steps: int = 20, cfg_scale: float = 4.0, seed: int = None):
+    """Apply a natural-language edit to an existing image."""
+    task_id = self.request.id
+    logger.info(f"Task {task_id} editing '{source_path}' with '{instruction}' (lora={lora})")
+
+    if not os.path.exists(source_path):
+        update_task_record(task_id, error_msg=f"Source image not found: {source_path}")
+        return {"error": f"Source image not found: {source_path}"}
+
+    p = get_edit_pipeline(lora)
+    if not p:
+        update_task_record(task_id, error_msg="Editing pipeline failed to load")
+        return {"error": "Editing pipeline failed to load"}
+
+    if seed is None or seed < 0:
+        seed = random.randint(0, 10**9)
+
+    src = Image.open(source_path).convert("RGB")
+    if max(src.size) > EDIT_MAX_SIDE:
+        # Downscale before editing, not after. The activation cost scales with
+        # input area, and a 1024px source is what tipped this over the card.
+        # LANCZOS rather than NEAREST: the editor is not a pixel-art model and
+        # reasons better about a clean downscale than an aliased one.
+        before = src.size
+        src.thumbnail((EDIT_MAX_SIDE, EDIT_MAX_SIDE), Image.Resampling.LANCZOS)
+        logger.info(f"Downscaled source {before} -> {src.size} for editing.")
+    started = time.time()
+    try:
+        update_task_record(task_id, progress_pct=0, progress_msg="Editing...", seed=seed)
+        # FLUX Kontext takes guidance_scale, not true_cfg_scale (that is
+        # Qwen-Image-Edit's parameter). It is a guidance-distilled model, so the
+        # useful range is roughly 2.5-4.0 rather than SD's 7+; higher values
+        # over-bake the edit and drift from the source.
+        out = p(
+            image=src,
+            prompt=instruction,
+            num_inference_steps=steps,
+            guidance_scale=cfg_scale,
+            generator=torch.Generator("cpu").manual_seed(seed),
+        ).images[0]
+
+        name = f"edit_{uuid.uuid4().hex[:12]}.png"
+        path = os.path.join(IMAGES_DIR, name)
+        out.save(path)
+        ms = (time.time() - started) * 1000
+        update_task_record(task_id, file_path=path, duration_ms=ms,
+                           progress_pct=100, progress_msg="Complete")
+        logger.info(f"Edit complete in {ms/1000:.1f}s -> {name}")
+        return {"status": "success", "url": f"/images/{name}", "file_path": path,
+                "seed": seed, "duration_ms": ms}
+    except Exception as e:
+        logger.error(f"Edit failed: {e}", exc_info=True)
+        update_task_record(task_id, error_msg=str(e), progress_msg="Failed")
+        return {"error": str(e)}

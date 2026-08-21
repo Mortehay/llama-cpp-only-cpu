@@ -53,20 +53,37 @@ API_TOKEN = os.environ.get("SPRITE_API_TOKEN", "").strip()
 # text2img models this service will serve. `model_name` is the value clients
 # send back in override_settings.sd_model_checkpoint.
 #
-# Every entry must satisfy the `is_sdxl` NAME heuristic in get_sd_pipeline: the
-# pipeline class is chosen from whether the repo name contains "sdxl"/"turbo",
-# not from model_index.json. An SDXL repo named otherwise (e.g.
-# "…/pixel-art-diffusion-xl") is handed an SD1.5 pipeline class and fails to
-# load. See .ai/decisions/0002.
+# Family detection now reads model_index.json (_is_sdxl_checkpoint), so a repo
+# no longer has to be NAMED "sdxl" to be loaded as one. That constraint used to
+# rule out stable-diffusion-xl-base-1.0 entirely. See .ai/decisions/0002.
 KNOWN_MODELS = [
-    "stabilityai/sdxl-turbo",
-    "Onodofthenorth/SD_PixelArt_SpriteSheet_Generator",
     # Non-distilled. Turbo and friends run at guidance 0, so the negative_prompt
     # something2 sends is a silent no-op; these honour it at 20-30 steps.
     # Measured 2026-08-21, same prompt and seed across all four - see
     # .ai/decisions/0002. Best real pixel art of the set, 3.0s at 20 steps:
     "PublicPrompts/All-In-One-Pixel-Model",
-    "kohbanye/pixel-art-style",
+    # Full SDXL. Non-distilled, native 1024px, and now loadable because family
+    # detection reads the config rather than the name. Pairs with
+    # thibaud/controlnet-openpose-sdxl-1.0 for pose-conditioned step 2.
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    # "<base>+<lora>" fuses a style LoRA onto the base - see get_sd_pipeline.
+    # Measured 2026-08-21: this is the first configuration to produce
+    # structurally real pixel art. 86.6% of pixels drawn from 32 colours and
+    # 74.7% blockiness, against 36.9%/25.2% for sdxl-turbo. Needs "pixel art"
+    # in the prompt to trigger. 21s at 25 steps, 1024px.
+    "stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl",
+    # Two more pixel LoRAs on the SAME base - a different style each, for 0.32GB
+    # and 0.08GB. Swapping LoRAs costs a pipeline reload but no extra base
+    # download and no extra VRAM: fuse_lora folds the delta into the base
+    # weights rather than keeping a second set of tensors alive. Both declare
+    # stable-diffusion-xl-base-1.0 as their base_model.
+    # UNMEASURED - only nerijs/pixel-art-xl has been benchmarked.
+    "stabilityai/stable-diffusion-xl-base-1.0+Muapi/soft-pixel-art-xl",
+    "stabilityai/stable-diffusion-xl-base-1.0+ntc-ai/SDXL-LoRA-slider.pixel-art",
+    # NOT LISTED: Limbicnation/pixel-art-lora declares base_model
+    # black-forest-labs/FLUX.2-klein-4B. A LoRA's ranks are tied to the UNet it
+    # was trained against, so it cannot fuse onto SDXL - load_lora_weights
+    # raises and get_sd_pipeline degrades to the bare base with a warning.
     # NOT SERVED: "John6666/super-pixelart-xl-m-v1-v10-sdxl" loads without error
     # and returns pure RGB noise - undenoised latents, 25 steps at cfg 7, 1024px.
     # Not the fp16-VAE black-image failure documented in the README; something

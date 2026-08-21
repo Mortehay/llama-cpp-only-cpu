@@ -27,3 +27,13 @@ Pillow
 jinja2
 requests
 gguf>=0.10.0
+
+# Runtime for NF4/INT8 quantised weights. diffusers and transformers both
+# expose BitsAndBytesConfig without it, but loading a pre-quantised bnb-nf4
+# checkpoint raises at from_pretrained unless this is installed.
+#
+# Needed because image-EDITING models only fit a 12GB card pre-quantised: the
+# Qwen-Image-Edit text encoder is 15.45GB at fp16 and 5.80GB as NF4, and no
+# GGUF exists for it (GGUFQuantizationConfig covers transformers, not text
+# encoders). See .ai/decisions/0002.
+bitsandbytes>=0.43.0

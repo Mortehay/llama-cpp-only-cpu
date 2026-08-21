@@ -32,8 +32,8 @@ These are measured, not assumed, and several are binding constraints:
 | CPU | Intel i3-8100 — **4 cores / 4 threads, no HT** |
 | Host RAM | 15.9 GB |
 | GPU | RTX 3060 **12 GB**, driver 610.88 → **CUDA 13.3** (was 551.86 / CUDA 12.4) |
-| Host disk | C: 157 GB free |
-| WSL | Ubuntu 26.04 LTS ("resolute"), ext4 VHD 954 GB free |
+| Host disk | C: 222.9 GB total. **20.5 GB free on 2026-08-21** (was 157 GB free on 2026-08-19 — the ext4 VHDX grew to 119 GB). D: 111.8 GB total, 72.6 GB free |
+| WSL | Ubuntu 26.04 LTS ("resolute"), WSL 2.7.12. ext4 VHD reports ~1007 GB nominal — **this number is meaningless, see "Disk space" below** |
 | OS | Windows 10 Pro 19045 |
 
 Consequences worth remembering:
@@ -195,3 +195,134 @@ parts worth having in context before touching model choice:
   SDXL-Turbo, where it is inert; step 2 strips it and runs Onodofthenorth
   *without* its trigger. Comparing checkpoints without moving each model's own
   trigger with it is not a fair test.
+
+### Disk space: `df` inside WSL is not free disk space
+
+The distro lives in a **dynamically expanding `ext4.vhdx`** that grows and
+**never shrinks on its own**. Deleting files inside WSL frees space that `df`
+reports as available while Windows still sees the VHDX at its high-water mark.
+
+Measured 2026-08-21: `df -h /` inside WSL reported **70 GB used of a nominal
+1007 GB**, while `ext4.vhdx` was **119 GB on disk** and **C: had 20.5 GB free of
+222.9 GB**. Roughly 49 GB had been freed inside the distro and none of it had
+come back.
+
+- Always check the Windows side too:
+  `Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"`.
+  The VHDX path comes from `HKCU:\Software\...\Lxss` (`BasePath`), not a fixed
+  location.
+- Reclaim with `scripts/compact-wsl-disk.ps1` (**Administrator** — `diskpart`
+  cannot attach a vdisk otherwise).
+- **Do not use `wsl --manage <distro> --set-sparse true`.** WSL refuses it with
+  *"Sparse VHD support is currently disabled due to potential data corruption"*
+  and only proceeds with `--allow-unsafe`. This distro holds the Postgres data
+  directory; occasional manual compaction is the cheaper trade.
+
+**The biggest consumer is usually not the models.** Same date, `docker system df`
+showed a **40.93 GB build cache with 31.79 GB reclaimable** — larger than every
+model deletion combined. `docker builder prune` is the first thing to try; the
+cost is that the next no-cache rebuild re-pulls the torch wheel (15-25 min).
+
+**Moving weights to `/mnt/d` is not a fix.** That is DrvFs/9p, and the storage
+benchmarks in the README apply in full: 35x small-file penalty, no page cache.
+An HF snapshot is hundreds of files. If a different physical drive is genuinely
+needed, move the **VHDX** (`wsl --manage <distro> --move <path>`) or attach a
+second ext4 VHD, so the filesystem stays ext4 — never bind-mount weights from a
+Windows drive.
+
+#### Result, and two path traps the Cyrillic profile causes
+
+Ran 2026-08-21: **ext4.vhdx 119.0 GB -> 71.7 GB, C: free 25.9 GB -> 73.2 GB.**
+diskpart took about 7 minutes and exited 0. No data was lost - all model
+directories and the Postgres dir were intact afterwards.
+
+Both bugs hit on the way there came from `C:\Users\<cyrillic>`, and neither is
+fixed by quoting:
+
+1. **`-Encoding Ascii` destroys the path.** The diskpart script file must not
+   carry a UTF-8 BOM, but writing it as ASCII turns the Cyrillic profile name
+   into `??`, and diskpart then reports *"The filename, directory name, or
+   volume label syntax is incorrect"* / *"There is no virtual disk selected"*
+   (exit `-2147024809`). Fix: resolve the VHDX to its **8.3 short name** first
+   (`Scripting.FileSystemObject.GetFile($p).ShortPath` ->
+   `C:\Users\74EA~1\...\EXT4~1.VHD`), which is pure ASCII and names the same
+   file.
+2. **`~` in that short name breaks `-Path`.** PowerShell 5.1 treats `~` as a
+   home-directory reference, so `Remove-Item -Path "$env:TEMP\..."` fails with
+   *"An object at the specified path C:\Users\74EA~1 does not exist"*. That is a
+   `PSArgumentException` from parameter binding, so **`-ErrorAction
+   SilentlyContinue` does not suppress it**. Fix: use `-LiteralPath` for every
+   file operation under `$env:TEMP`.
+
+Generalise: on this machine, prefer `-LiteralPath` in PowerShell, and expect any
+tool that reads an ANSI/ASCII script file to need the 8.3 short path.
+
+**An elevated window's output is invisible to anything else.** The first attempt
+failed silently for 30 minutes because diskpart's error went only to the UAC
+console. `scripts/compact-wsl-disk.ps1` now tees everything to
+`%TEMP%\compact-wsl-disk.log`; keep that when editing it.
+
+#### Docker does auto-start after all
+
+The README's boot runbook says `sudo service docker start` is required because
+"Docker does not auto-start in WSL2". Measured 2026-08-21 after a full
+`wsl --shutdown`: the daemon was reachable with no manual start, and
+`systemctl is-enabled docker` returns **enabled** - this distro runs systemd, so
+the unit starts on boot. The manual step is harmless but no longer necessary.
+
+## Model roster (2026-08-21)
+
+Full reasoning and measurements in
+[decisions/0002](decisions/0002-image-model-selection.md). The short version:
+
+| role | model | size |
+|---|---|---|
+| text | `Qwen3-8B-Q8_0.gguf` via llama.cpp | 8.2 GB |
+| image gen | `stable-diffusion-xl-base-1.0` **+** one of three pixel-art LoRAs | 6.7 GB + 0.08-0.32 GB |
+| pose / step 2 | `All-In-One-Pixel-Model` + `control_v11p_sd15_openpose` | 5.4 GB |
+
+Rules that are easy to get wrong:
+
+- **`"<base>+<lora>"` is a valid model string.** `get_sd_pipeline` splits on `+`,
+  loads the right-hand side with `load_lora_weights` and calls `fuse_lora`. A big
+  base plus a small style LoRA is the ONLY configuration measured to produce
+  structurally real pixel art — 86.6% of pixels from 32 colours, 74.7%
+  blockiness. Do not judge a LoRA by file size; it is a delta, not a model.
+- **A LoRA only fuses onto the base it was trained against.** Check `base_model`
+  in the repo's card data first. `Limbicnation/pixel-art-lora` is FLUX, not SDXL.
+- **Step 2 must stay SD1.5.** ControlNet works on SDXL now, but
+  `thibaud/controlnet-openpose-sdxl-1.0` is **3.6x weaker** than
+  `control_v11p_sd15_openpose` — measured motion 9.57 vs 34.02 at the same
+  strength. Step 1 gets SDXL for the art, step 2 gets SD1.5 for the pose.
+- **`POSED_STRENGTH` below ~0.75 silently disables pose conditioning.** At 0.60
+  the img2img init latent wins and the skeletons do nothing, while every log line
+  still says "pose-conditioned".
+- **Each checkpoint needs its own trigger word** — see `CORE_TRIGGERS`. A trigger
+  from a different checkpoint is inert at best; `PixelartFSS` actively requests a
+  four-character sheet.
+- **Dedicated image-editing models do not fit.** Their transformers quantise to
+  ~9 GB but their text encoders (15.45 GB for Qwen-Image-Edit, T5 for FLUX
+  Kontext) have no GGUF and exceed both the 12 GB card and the 11 GB WSL cap.
+  SDXL img2img plus ControlNet already covers image-to-image at zero extra cost.
+- **Sizing intuition from chat LLMs does not transfer.** GGUF quant tiers give
+  chat models a smooth 4/8/16 GB ladder; image models jump 4 -> 6.5 -> 10 -> 20
+  -> 24 GB, and quality tracked style-fit rather than size in every test here.
+
+### Keepalive: register it, and know it needs elevation
+
+`scripts/wsl-keepalive.ps1 -Install` registers the logon task;
+`-Uninstall` removes it. **Requires Administrator** — `Register-ScheduledTask`
+fails with `Access is denied` / `HRESULT 0x80070005` otherwise. The README and
+the script's own help both claimed no elevation was needed; both were wrong and
+are corrected. Running the keepalive itself stays unprivileged — only
+registering the task does not.
+
+The task sets `ExecutionTimeLimit` to zero on purpose: the default is three
+days, after which the task engine stops the keepalive and every container dies
+looking exactly like the ordinary distro-teardown bug.
+
+Measured 2026-08-21: the keepalive died three separate times in one session,
+each time taking the whole stack with it mid-work — including a
+multi-GB download and a running generation. `wsl --shutdown` (e.g. from
+`scripts/compact-wsl-disk.ps1`) also kills it, so re-run the script after any
+deliberate shutdown; the logon task only fires at logon.

@@ -21,7 +21,14 @@
 # --- Chat LLM (llm-server) -----------------------------------------------
 # Qwen2.5 14B at Q4_K_M: the most capable model that fits, 14B parameters in
 # 8.37GB. Active by default.
-bartowski/Qwen2.5-14B-Instruct-GGUF Qwen2.5-14B-Instruct-Q4_K_M.gguf
+# Superseded 2026-08-21 by Qwen3-8B-Q8_0 below: Qwen2.5 is a 2024 release, and
+# Q4_K_M on 14B loses more to quantisation than Q8_0 on 8B does. Similar size.
+# bartowski/Qwen2.5-14B-Instruct-GGUF Qwen2.5-14B-Instruct-Q4_K_M.gguf
+
+# --- Text LLM (current) -------------------------------------------------
+# Qwen3, Q8_0: 8.11GB, near-lossless quantisation, fits the 12GB card with
+# room for llama.cpp KV cache alongside.
+Qwen/Qwen3-8B-GGUF Qwen3-8B-Q8_0.gguf
 
 # Verified alternatives, same size class. Uncomment to add — each is a separate
 # multi-GB download that `make up` blocks on, and `--models-max 1` means only
