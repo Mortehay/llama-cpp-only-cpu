@@ -36,6 +36,11 @@ textarea {
 .task-item .meta { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted); }
 .task-item .progress-info { font-size: 11px; color: var(--accent2); margin-top: 4px; font-weight: 600; display: block; }
 .task-actions { display: flex; gap: 4px; margin-top: 8px; justify-content: flex-end; }
+/* Client-side failures land here, on the card, instead of in an alert() the
+   browser may have been told to suppress. Hidden until something goes wrong. */
+.task-item .task-error { display: none; font-size: 11px; color: var(--danger); margin-top: 6px; word-break: break-word; }
+/* Armed state of the two-step Delete button (it replaces the native confirm). */
+.btn-danger-sm.armed { background: var(--danger); border-color: var(--danger); color: #fff; }
 
 /* Core Image Picker */
 .core-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-height: 300px; overflow-y: auto; margin-bottom: 20px; }

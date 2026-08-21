@@ -1,0 +1,210 @@
+{
+  "_readme": {
+    "purpose": "Maps each sprite action the UI can request onto the prompt text sent to the image model. Edit this file to change how an action looks; no code change is needed.",
+    "reload": "Re-read automatically when this file's mtime changes, so edits take effect on the next sheet WITHOUT restarting the sprite_worker container. Malformed JSON is logged and the previous good version stays loaded.",
+    "matching": "actions[] is ORDERED and matched in order. An action name from the UI is lowercased, then the first entry with any of its `match` substrings contained in that name wins. Specific entries must come before general ones: 'move right' has to win before a bare 'move' would.",
+    "fallback": "An action matching nothing is sent to the model as its own raw text, so a hand-typed custom action still works.",
+    "what_to_write": {
+      "rule": "ControlNet supplies a skeleton that already fixes where every limb is, far more precisely than words can. Prompt text that argues with the skeleton makes both signals worse. So do NOT describe limb positions here.",
+      "do_describe": [
+        "FACING - which way the camera sees the character. The skeleton encodes this too, so words reinforce it rather than fight it.",
+        "INTENT and energy - 'aggressive', 'off balance', 'at rest'. Mood is not a joint position.",
+        "EFFECTS - fire, smoke, embers, impact. A skeleton cannot ask for flames; only the prompt can."
+      ],
+      "do_not_describe": [
+        "Which leg is forward, arm angles, stride length - the skeleton owns all of it.",
+        "Art style, background, or the character's own identity - those come from the core image's prompt, which is appended after this text."
+      ]
+    },
+    "token_budget": {
+      "limit": 77,
+      "why": "CLIP keeps 77 tokens and silently discards the rest - a clause past the cut is absent from every generation while still looking present in this file.",
+      "shared_with": "This prompt is only the FIRST part of what the model receives. The core image's own prompt and the style suffix share the same 77 tokens.",
+      "guidance": "Keep each `prompt` under about 24 tokens (roughly 18 words). Measured against a 31-token core prompt the full frame prompt lands at 67-72, leaving very little slack - a longer core prompt WILL truncate.",
+      "how_to_check": "check_prompt_length() in tasks.py logs a WARNING naming the action whenever a frame prompt overruns. Watch the worker log after editing; do not assume it fits."
+    },
+    "pose_cycle": "Informational only - names the skeleton in poses.py that drives this action's limbs. Changing it here has no effect; edit poses.POSE_LIBRARY instead. Listed so the pose and the words can be checked for agreement (a side-view skeleton with a front-view prompt is the bug this field exists to make visible).",
+    "strength": {
+      "what": "OPTIONAL img2img strength for this action only, 0..1. How much of the core image the model may paint over. Omit to use POSED_STRENGTH (0.60) from tasks.py, which is right for most actions.",
+      "tradeoff": "Low keeps the character but freezes its appearance. High frees the appearance but drifts toward a different character. There is no value that is right for every action, which is why this is per-action.",
+      "when_to_raise": "Only when the action must ADD something the core image does not contain - flames, smoke, an impact. A pose change alone does NOT need it: the skeleton already supplies the pose, and raising strength for that just costs identity for nothing.",
+      "measured": "Burning, same prompt, seed and skeleton, fraction of the sprite that is flame-coloured: 0.60 -> 0.07% (no fire at all), 0.75 -> 4.36% (visible flames, character still intact). Below about 0.70 there is not enough denoising freedom left to add fire.",
+      "ceiling": "Do not exceed ~0.75. At 0.75 with an EMPTY negative prompt the character was lost outright (came back in different clothes), and higher still reintroduces the OpenPose skeleton's own limb colours printing onto the sprite. NEGATIVE_FRAME is what holds identity together up here - do not strip it to chase an effect."
+    },
+    "ip_adapter_scale": {
+      "what": "OPTIONAL 0..1. Re-injects the core image through cross-attention at EVERY denoising step, instead of only as the starting latent the way img2img does. Omit or 0 to leave it off, which is the default everywhere.",
+      "why_it_exists": "img2img uses the core exactly once - it noises it to `strength` and denoises from there, after which nothing refers back to the original. That is why `strength` alone decides both how much identity survives and how much freedom the prompt gets. This gives identity its own channel, the same way ControlNet gave pose its own channel.",
+      "cost": "Loads a CLIP image encoder that stays resident in VRAM next to the checkpoint (~2.6GB on disk). Only loaded when at least one action in the sheet sets a non-zero scale, and unloaded again when none do.",
+      "critical_warning": "DO NOT set this on an action that must ADD something the core image does not contain. The adapter anchors appearance to a reference with no flames, no bow and no spell in it, so it spends every step pulling back toward not-having-them. Measured on burning at strength 0.85, flame coverage: no adapter 15.57%, scale 0.35 -> 0.27%, scale 0.50 and above -> 0.00%. There is no scale that escapes this; it is what the adapter does.",
+      "where_it_helps": "Actions that only change POSE, where there is no added effect for it to suppress and identity anchoring is therefore free: the walks, idle, and close melee. Start around 0.4-0.6.",
+      "tuning": "Higher means the output clings harder to the core. Too high and every frame converges on the core's own pose and the animation stops moving, because the adapter fights ControlNet as well."
+    }
+  },
+  "actions": [
+    {
+      "id": "move_right",
+      "label": "Move Right",
+      "match": [
+        "move right",
+        "walk right",
+        "run right"
+      ],
+      "pose_cycle": "WALK_SIDE",
+      "prompt": "strict side view profile, facing right, walking to the right, full stride, arms swinging, steady forward motion",
+      "ip_adapter_scale": 0.5,
+      "_why_ip_adapter": "A/B on this action: frame-to-frame 7.25 -> 5.15, loop-gap 7.19 -> 5.34. Helps because a walk drifts most."
+    },
+    {
+      "id": "move_left",
+      "label": "Move Left",
+      "match": [
+        "move left",
+        "walk left",
+        "run left"
+      ],
+      "pose_cycle": "WALK_SIDE mirrored",
+      "prompt": "strict side view profile, facing left, walking to the left, full stride, arms swinging, steady forward motion",
+      "ip_adapter_scale": 0.5,
+      "_why_ip_adapter": "Mirror of move_right; same cycle, same measured benefit."
+    },
+    {
+      "id": "move_up",
+      "label": "Move Up",
+      "match": [
+        "move up",
+        "walk up",
+        "walk back"
+      ],
+      "pose_cycle": "WALK_FRONT",
+      "prompt": "back view seen from behind, facing away from the camera, walking away, back of the head visible, no face",
+      "ip_adapter_scale": 0.5,
+      "_why_ip_adapter": "Same WALK_FRONT cycle as move_down."
+    },
+    {
+      "id": "move_down",
+      "label": "Move Down",
+      "match": [
+        "move down",
+        "walk down",
+        "walk front",
+        "move",
+        "walk",
+        "run"
+      ],
+      "pose_cycle": "WALK_FRONT",
+      "prompt": "front view, facing the camera directly, walking forward toward the viewer, head on, mid step",
+      "ip_adapter_scale": 0.5,
+      "_why_ip_adapter": "Same WALK_FRONT cycle as move_up."
+    },
+    {
+      "id": "attack_bow",
+      "label": "Bow (Ranged)",
+      "match": [
+        "bow",
+        "arrow",
+        "archery"
+      ],
+      "pose_cycle": "BOW",
+      "strength": 0.66,
+      "_why_strength": "Must ADD a bow and arrow the core image does not contain, same additive case as burning. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
+      "prompt": "firing a wooden bow, arrow nocked and drawn back, archer taking aim at a distant target, taut bowstring",
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+    },
+    {
+      "id": "attack_sling",
+      "label": "Sling (Ranged)",
+      "match": [
+        "sling",
+        "slingshot"
+      ],
+      "pose_cycle": "SLING",
+      "strength": 0.66,
+      "_why_strength": "Must ADD a sling and its cords, which are not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
+      "prompt": "swinging a leather sling overhead, whirling a stone on a cord, hurling a projectile at a distant target",
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+    },
+    {
+      "id": "attack_magic_close",
+      "label": "Magic (Close)",
+      "match": [
+        "close magic",
+        "close magick",
+        "melee magic"
+      ],
+      "pose_cycle": "MAGIC_CLOSE",
+      "strength": 0.66,
+      "_why_strength": "Must ADD glowing energy that is not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
+      "prompt": "casting a close range spell, bright magical energy burning around both hands, glowing arcane sparks, short blast",
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+    },
+    {
+      "id": "attack_magic_distant",
+      "label": "Magic (Ranged)",
+      "match": [
+        "distant magic",
+        "distant magick",
+        "ranged magic",
+        "magic",
+        "magick",
+        "spell",
+        "cast"
+      ],
+      "pose_cycle": "MAGIC_FAR",
+      "strength": 0.66,
+      "_why_strength": "Must ADD a channelled glow and projectile that are not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
+      "prompt": "casting a long range spell, arms raised channelling a glowing magic orb overhead, radiant arcane light, hurling energy",
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+    },
+    {
+      "id": "attack_melee",
+      "label": "Melee (Close)",
+      "match": [
+        "close melee",
+        "melee",
+        "attack",
+        "strike",
+        "swing"
+      ],
+      "pose_cycle": "ATTACK",
+      "prompt": "aggressive close melee attack, mid swing, striking forward with force, fierce snarling expression, lunging",
+      "_why_ip_adapter": "OFF: A/B was a wash (frame-to-frame 3.90 -> 3.36 better, loop-gap 3.92 -> 4.30 worse). Left off as the conservative default; turn on if you prefer the steadier adjacent frames."
+    },
+    {
+      "id": "burning",
+      "label": "Burning",
+      "match": [
+        "burning",
+        "burn",
+        "on fire"
+      ],
+      "pose_cycle": "BURN",
+      "strength": 0.75,
+      "prompt": "engulfed in bright orange flames, body on fire, burning alive, fire and smoke rising, glowing embers, agony",
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+    },
+    {
+      "id": "got_damage",
+      "label": "Get Damage",
+      "match": [
+        "damage",
+        "hurt",
+        "hit"
+      ],
+      "pose_cycle": "HURT",
+      "prompt": "struck by a heavy hit, recoiling backward in pain, staggering off balance, pained expression, impact",
+      "ip_adapter_scale": 0.5,
+      "_why_ip_adapter": "A/B on this action: frame-to-frame 3.16 -> 2.18, loop-gap 3.58 -> 2.36. Best result of any action."
+    },
+    {
+      "id": "idle",
+      "label": "Idle",
+      "match": [
+        "idle",
+        "stand"
+      ],
+      "pose_cycle": "IDLE",
+      "prompt": "front view, facing the camera, standing still at rest, calm neutral idle stance, relaxed shoulders, alert",
+      "_why_ip_adapter": "OFF: measured WORSE on both (frame-to-frame 2.71 -> 4.69, loop-gap 1.88 -> 2.78). Idle barely moves, so there is no drift to suppress and the adapter only adds variance."
+    }
+  ]
+}

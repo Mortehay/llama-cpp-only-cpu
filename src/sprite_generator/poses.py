@@ -214,11 +214,22 @@ WALK_FRONT = [
 
 # Idle: a breathing loop. Deliberately tiny - an idle that moves as much as a
 # walk looks like a nervous tic.
+#
+# Phases 1 and 3 used to be the SAME _build call with the same arguments, so
+# render_skeleton returned two byte-identical control images. Every other input
+# to a frame is already shared - same core, same prompt, same seed - so the
+# skeleton is the only thing that distinguishes one frame from the next, and
+# duplicating it made frames 2 and 4 pixel-identical. A four frame idle was
+# therefore two frames padded out to four, which is visible as a stutter the
+# moment the strip is played back.
+#
+# Now a real four-beat breath: settle, inhale, hold, exhale. Phase 3 differs
+# from phase 1 in both lift and shoulder width, so no two phases can collapse.
 IDLE = [
     _build(False, ((0.37, 0.60), (0.63, 0.60)), ((0.45, 0.95), (0.55, 0.95))),
     _build(False, ((0.37, 0.59), (0.63, 0.59)), ((0.45, 0.95), (0.55, 0.95)), lift=0.012),
     _build(False, ((0.38, 0.60), (0.62, 0.60)), ((0.45, 0.95), (0.55, 0.95))),
-    _build(False, ((0.37, 0.59), (0.63, 0.59)), ((0.45, 0.95), (0.55, 0.95)), lift=0.012),
+    _build(False, ((0.375, 0.595), (0.625, 0.595)), ((0.45, 0.95), (0.55, 0.95)), lift=0.006),
 ]
 
 # Attack: wind the right arm up behind the head, then swing down and through.
@@ -230,6 +241,69 @@ ATTACK = [
     # 0.68/0.53, not 0.70/0.55: the further reach exceeded 2*ARM, so the solver
     # clamped the arm straight and the follow-through lost its elbow.
     _build(True, ((0.68, 0.53), (0.58, 0.58)), ((0.42, 0.94), (0.60, 0.93))),
+]
+
+# --- Ranged and magic attacks -------------------------------------------
+#
+# All four are `side=False`. ATTACK above is a side view, which suits a sword
+# swing because the whole arc is visible in profile - but it is the wrong
+# choice for these. What makes a bow, a sling or a cast legible is the SHAPE
+# the two arms make relative to each other, and a profile hides one arm behind
+# the other. Front view also matches the cores, which face the camera; see the
+# note on BURN for what happens when the skeleton and the core disagree.
+#
+# Feet stay braced throughout all four. These are stances, not walks: the
+# weight shifts between phases but the feet do not travel, so a sheet can cut
+# between an attack and an idle without the character appearing to teleport.
+
+# Bow: nock, draw, hold at full draw, release. The bow arm stays extended and
+# still - it is the draw hand travelling back to the cheek and then snapping
+# away that carries the whole action.
+BOW = [
+    _build(False, ((0.48, 0.42), (0.72, 0.36)), ((0.42, 0.94), (0.58, 0.94))),
+    _build(False, ((0.44, 0.28), (0.78, 0.33)), ((0.42, 0.93), (0.58, 0.94))),
+    _build(False, ((0.40, 0.26), (0.80, 0.33)), ((0.41, 0.94), (0.59, 0.93))),
+    # Release: the draw hand flies BACK past the face, not forward. Drawn
+    # forward it reads as a punch and the arrow appears to be thrown.
+    _build(False, ((0.34, 0.30), (0.79, 0.34)), ((0.42, 0.93), (0.58, 0.94))),
+]
+
+# Sling: wind down and back, whirl up and over, release across the body,
+# follow through. The overhead sweep is the recognisable part.
+SLING = [
+    _build(False, ((0.30, 0.45), (0.56, 0.44)), ((0.42, 0.94), (0.58, 0.93))),
+    _build(False, ((0.34, 0.18), (0.58, 0.42)), ((0.42, 0.93), (0.58, 0.94)),
+           lift=0.012),
+    _build(False, ((0.52, 0.14), (0.60, 0.44)), ((0.41, 0.93), (0.59, 0.94)),
+           lift=0.018),
+    # 0.66/0.30 keeps the follow-through inside 2*ARM. Reaching further clamps
+    # the arm straight and the release loses its elbow, exactly as ATTACK's
+    # phase 3 did before it was pulled back in.
+    _build(False, ((0.66, 0.30), (0.58, 0.46)), ((0.42, 0.94), (0.58, 0.93))),
+]
+
+# Close magic: gather at the chest, wind back, then throw both hands out low
+# and wide. Hands stay near the body - that proximity is what separates a
+# short-range burst from the overhead channel below.
+MAGIC_CLOSE = [
+    _build(False, ((0.48, 0.44), (0.52, 0.44)), ((0.43, 0.94), (0.57, 0.94))),
+    _build(False, ((0.44, 0.40), (0.56, 0.40)), ((0.42, 0.93), (0.58, 0.94)),
+           lift=0.010),
+    _build(False, ((0.36, 0.36), (0.64, 0.36)), ((0.41, 0.94), (0.59, 0.93))),
+    _build(False, ((0.30, 0.42), (0.70, 0.42)), ((0.42, 0.94), (0.58, 0.94))),
+]
+
+# Distant magic: raise both arms, bring the hands together overhead to channel,
+# then sweep down as it is released. Symmetric on purpose - unlike BURN, where
+# symmetry read as surrender, a deliberate two-handed cast is *supposed* to
+# look composed and controlled.
+MAGIC_FAR = [
+    _build(False, ((0.36, 0.30), (0.64, 0.30)), ((0.43, 0.94), (0.57, 0.94))),
+    _build(False, ((0.32, 0.18), (0.68, 0.18)), ((0.42, 0.93), (0.58, 0.94)),
+           lift=0.010),
+    _build(False, ((0.38, 0.12), (0.62, 0.12)), ((0.42, 0.94), (0.58, 0.93)),
+           lift=0.016),
+    _build(False, ((0.34, 0.24), (0.66, 0.24)), ((0.43, 0.94), (0.57, 0.94))),
 ]
 
 # Recoil: arms fly up, weight drives onto the back foot. Bending the elbows
@@ -245,6 +319,47 @@ HURT = [
            arm_bend=((0, -1), (0, -1))),
     _build(True, ((0.37, 0.31), (0.57, 0.30)), ((0.42, 0.94), (0.57, 0.94)),
            arm_bend=((0, -1), (0, -1))),
+]
+
+# Burning: writhing in flames. This used to share HURT, and sharing was wrong
+# twice over.
+#
+# HURT is authored `side=True`, which collapses both shoulders and both hips
+# onto x=0.50 and gives the head one eye plus a trailing ear - the deliberate,
+# heavily-commented profile cue in _head. The cores are drawn facing the
+# camera, so conditioning one on HURT asks ControlNet for a profile while
+# img2img holds a front view. They disagree, and what comes back is neither:
+# a different character, in different clothes, at whatever angle won that
+# frame. Front view is the only thing that matches the cores.
+#
+# The second problem is semantic. A recoil is one impact read four ways -
+# symmetric, both arms doing the same thing at once. Burning is continuous and
+# asymmetric: the body twists away from itself, one arm crosses the chest while
+# the other flails wide. Symmetry is what made the old row read as "surrender"
+# rather than "on fire".
+#
+# Beat structure: flinch up, twist one way, twist back the other, then hunch.
+# No phase is a mirror of another - a mirrored pair reads as a metronome, which
+# is the one thing a panic animation must not do.
+#
+# Every wrist here sits within 2*ARM (0.28) of its shoulder and every ankle
+# within 2*LEG (0.38) of its hip, so no limb hits the straight-line clamp in
+# _solve_joint. Elbows and knees are real bends, not degenerate midpoints. If
+# you retune these, keep that invariant or the limb silently goes stiff.
+BURN = [
+    # Flinch: arms fly up and out, weight back, one knee already giving.
+    _build(False, ((0.32, 0.20), (0.68, 0.22)), ((0.42, 0.93), (0.57, 0.90))),
+    # Twist left: right arm whips across the chest, left flails wide.
+    _build(False, ((0.52, 0.26), (0.76, 0.40)), ((0.40, 0.91), (0.56, 0.94)),
+           lift=0.015),
+    # Twist right: not the mirror of phase 1 - the arms swap roles but the
+    # heights and the stagger do not match, so the loop never reads as a rock.
+    _build(False, ((0.26, 0.38), (0.50, 0.22)), ((0.44, 0.94), (0.59, 0.91)),
+           lift=0.008),
+    # Hunch: hands clutch in at the torso, both knees buckle, body sinks.
+    # Negative lift, because this is the beat where the character drops.
+    _build(False, ((0.46, 0.44), (0.56, 0.46)), ((0.43, 0.89), (0.57, 0.89)),
+           lift=-0.012),
 ]
 
 
@@ -275,8 +390,20 @@ POSE_LIBRARY = [
     (("move left", "walk left", "run left"), _mirror(WALK_SIDE)),
     (("move up", "walk up", "walk back"), WALK_FRONT),
     (("move down", "walk down", "walk front", "move", "walk", "run"), WALK_FRONT),
-    (("attack", "strike", "swing"), ATTACK),
-    (("damage", "hurt", "hit", "burning", "burn"), HURT),
+    # Weapon and magic variants BEFORE the generic attack entry: every one of
+    # them contains the word "attack", so a bare ("attack",) placed first would
+    # swallow all five and hand a sword swing to an archer. Close/distant magic
+    # must likewise precede the generic magic keys.
+    (("bow", "arrow", "archery"), BOW),
+    (("sling", "slingshot"), SLING),
+    (("close magic", "close magick", "melee magic"), MAGIC_CLOSE),
+    (("distant magic", "distant magick", "ranged magic", "magic", "magick",
+      "spell", "cast"), MAGIC_FAR),
+    (("attack", "strike", "swing", "melee"), ATTACK),
+    # Before HURT, and burning is no longer one of HURT's keys: "burning"
+    # contains "burn", so whichever entry comes first wins outright.
+    (("burning", "burn", "on fire"), BURN),
+    (("damage", "hurt", "hit"), HURT),
     (("idle", "stand"), IDLE),
 ]
 

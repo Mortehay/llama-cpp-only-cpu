@@ -17,8 +17,9 @@ from migrations import run_migrations
 from celery.result import AsyncResult
 from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    remove_background, set_cancel_flag, describe_device,
+                   read_device_snapshot,
                    warm_model_task, edit_image_task, EDIT_LORAS,
-                   EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
+                   EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -160,14 +161,38 @@ def compute_info():
     Deliberately round-trips through Celery rather than reading DEVICE here:
     this process is pinned to COMPUTE_DEVICE=cpu so it never competes for VRAM,
     so a local readout would always report "cpu" and mislead.
+
+    A timeout is NOT a dead worker. The worker runs --pool=solo at concurrency
+    1, so for the whole duration of a generation it consumes nothing from the
+    broker and this round-trip cannot possibly return. Reporting that as 503
+    "Worker unreachable" meant the panel called the worker dead every time it
+    was doing its job, and filled the browser console with failed requests on
+    every sprite. Fall back to the snapshot the worker leaves in Redis and say
+    "busy"; only a missing snapshot means genuinely unreachable.
     """
     try:
-        return describe_device.delay().get(timeout=10)
+        # expires: a poll that has already timed out client-side is of no use
+        # when it finally reaches the front of the queue. Without this, a long
+        # generation accumulates one stale describe_device per 15s and runs the
+        # lot in a burst the moment it finishes.
+        return describe_device.apply_async(expires=12).get(timeout=4)
     except Exception as e:
-        # A dead worker is the most common cause, and the panel should say so
-        # rather than rendering a blank box.
+        cached = read_device_snapshot()
+        if cached:
+            age = max(0, int(time.time() - cached.get("snapshot_at", 0)))
+            cached.update({
+                "stale": True,
+                "worker_state": "busy",
+                "snapshot_age_s": age,
+                "note": f"Worker is running a task and cannot answer; figures "
+                        f"are {age}s old. A number in the minutes here means "
+                        f"a long generation — or a worker that has stopped.",
+            })
+            return JSONResponse(cached)
+
         return JSONResponse(
-            {"error": f"Worker did not respond: {e}", "device": "unknown"},
+            {"error": f"Worker did not respond: {e}", "device": "unknown",
+             "worker_state": "unreachable"},
             status_code=503,
         )
 
@@ -277,8 +302,13 @@ def edit_image(source: str = Form(...), instruction: str = Form(...),
                 with conn.cursor() as cur:
                     cur.execute(
                         "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        # Record the model that actually runs. This said
+                        # "qwen-image-edit-2511/..." long after the editor moved
+                        # to FLUX Kontext NF4, so the queue and the gallery
+                        # attributed every FLUX failure to a model that is not
+                        # installed — which is a bad place to start debugging.
                         (instruction, task.id, "Waiting in queue...", "edit",
-                         f"qwen-image-edit-2511/{capability or 'base'}", 1)
+                         f"{EDIT_BASE}/{capability or 'base'}", 1)
                     )
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
@@ -460,9 +490,22 @@ def retry_task(id: int):
                         (prompt, task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(requested_actions), llm_actual, step_number)
                     )
                 else:
-                    return {"status": "error", "message": "Invalid image type", "task_id": task.id, "image_type": image_type}
-                
-                    
+                    # Reads the retryable types off the front, so an "edit" row
+                    # lands here. It used to answer by putting `task.id` in the
+                    # payload — a name that is only bound inside the two
+                    # branches above — so this line raised NameError and the
+                    # caller got a 500 with no message. Unreachable while Retry
+                    # was only offered on completed tasks; not any more.
+                    #
+                    # 400, and honest about why: an edit is defined by its
+                    # SOURCE IMAGE, and the row stores only the instruction as
+                    # its prompt. There is nothing here to re-run.
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Tasks of type '{image_type}' cannot be retried "
+                               f"from history. Re-submit it against the source image.",
+                    )
+
                 return {"status": "queued", "task_id": task.id, "image_type": image_type}
     finally: conn.close()
 

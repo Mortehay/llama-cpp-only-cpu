@@ -205,6 +205,23 @@ services:
       - PYTHONUNBUFFERED=1
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+    # 1024 file descriptors is not enough for this worker, and running out does
+    # not look like running out.
+    #
+    # Loading a sharded pipeline mmaps every safetensors shard and fans the copy
+    # out over a thread pool, so a single from_pretrained holds hundreds of fds.
+    # A load that fails partway leaks them, and after a few retries the worker
+    # crossed the limit — at which point Redis and DNS stopped working too:
+    #   OSError: [Errno 24] Too many open files
+    #   could not translate host name "db" to address: System error
+    # The worker went on running, silently unable to reach the broker, and the
+    # task queued behind it sat at "Waiting in queue..." forever. The container
+    # default is the Docker daemon's soft limit (1024 here); the hard limit is
+    # already 1048576, so this only raises the soft one.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 1048576
     # No restart policy — see the note on sprite-generator above.
     depends_on:
       db:

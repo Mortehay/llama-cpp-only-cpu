@@ -55,7 +55,13 @@ async function updateDiagnostics() {
         }
 
         if (info.device === 'cuda') {
-            deviceEl.innerHTML = `<strong style="color:#5ac37d;">CUDA</strong> — ${info.gpu_name || 'GPU'}`;
+            // A stale reading means the worker is mid-task and cannot answer —
+            // it is the one moment the panel matters most, so label it rather
+            // than passing the figures off as live.
+            const busy = info.stale
+                ? ` <span style="color:#e0a45a;">· busy, last read ${info.snapshot_age_s}s ago</span>`
+                : '';
+            deviceEl.innerHTML = `<strong style="color:#5ac37d;">CUDA</strong> — ${info.gpu_name || 'GPU'}${busy}`;
             const used = info.vram_reserved_gb ?? 0;
             detailEl.innerText =
                 `${used} / ${info.vram_total_gb} GiB VRAM reserved · ${info.dtype}` +
@@ -104,7 +110,7 @@ async function loadCores() {
         }
         picker.innerHTML = cores.map(c => `
             <div class="core-item" id="core-sel-${c.id}" onclick="selectCore(${c.id})">
-                <img src="${c.file_path.split('/app').pop()}" title="${c.prompt}"/>
+                <img src="${esc(c.file_path.split('/app').pop())}" title="${esc(c.prompt)}"/>
             </div>
         `).join('');
         
@@ -120,12 +126,36 @@ function selectCore(id) {
     if(el) el.classList.add('selected');
 }
 
+// Escape before interpolating anything server-supplied into HTML.
+//
+// Not defensive style — this was load-bearing. Worker errors reach the queue
+// verbatim, and PyTorch's allocator assert contains double quotes:
+//   !handles_.at(i) INTERNAL ASSERT FAILED at "/__w/pytorch/.../..cpp":467
+// which broke out of title="${t.error}" and left the parser to invent
+// attributes out of the rest of the message. Prompts are user text and are the
+// same hazard with a friendlier name.
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+// Ids whose Delete button is showing "Confirm?" right now.
+//
+// The queue re-renders every 3s by replacing innerHTML wholesale, which
+// destroys the very button the pointer is over. A click needs mousedown and
+// mouseup on the SAME element, so a re-render landing between them silently
+// eats the click — no request, no error, nothing in the access log. Pause the
+// refresh while a button is armed.
+const armedDeletes = new Set();
+
 async function updateQueue() {
+  if (armedDeletes.size > 0) return;
   try {
     const res = await fetch('/api/tasks/recent');
     const tasks = await res.json();
     const queueDiv = document.getElementById('task-queue');
-    
+
     if (tasks.length === 0) {
       queueDiv.innerHTML = '<p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">No history yet.</p>';
       return;
@@ -137,13 +167,13 @@ async function updateQueue() {
       
       if (t.error) {
          statusTag = '<span class="tag tag-danger">Failed</span>';
-         progressLine = `<div style="color: var(--danger); font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${t.error}">${t.error}</div>`;
+         progressLine = `<div style="color: var(--danger); font-size: 11px; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${esc(t.error)}">${esc(t.error)}</div>`;
       } else if (t.file_path) {
          statusTag = '<span class="tag tag-success">Done</span>';
       } else {
          statusTag = `<span class="tag tag-working pulse">${t.progress_pct}%</span>`;
          progressLine = `
-          <span class="progress-info">${t.progress_msg || 'Preparing...'}</span>
+          <span class="progress-info">${esc(t.progress_msg || 'Preparing...')}</span>
           <div class="progress-bg"><div class="progress-fill" style="width: ${t.progress_pct}%"></div></div>
          `;
       }
@@ -151,20 +181,23 @@ async function updateQueue() {
       const isCore = t.image_type === 'core';
       const imgUrl = t.file_path ? `/images/${t.file_path.split('/').pop()}` : null;
 
+      // Retry is offered on failures, not only on successes. It used to be
+      // gated on file_path, so it appeared exactly where it was least useful —
+      // a completed sprite — and never on the failed cards, which were left
+      // with Delete as their only action.
       return `
         <div class="task-item" id="live-task-${t.id}">
-          <div class="prompt-clip">${t.prompt}</div>
+          <div class="prompt-clip">${esc(t.prompt)}</div>
           <div class="meta">
             <span>${statusTag}</span>
-            <span>${t.timestamp.split('T')[1].split('.')[0]}</span>
+            <span>${esc(t.timestamp.split('T')[1].split('.')[0])}</span>
           </div>
           ${progressLine}
+          <div class="task-error" id="task-error-${t.id}"></div>
           <div class="task-actions">
-              ${t.file_path ? `
-                  ${isCore ? `<button class="btn-sm btn-retry-sm" onclick="openCropModal('${imgUrl}', ${t.id})" style="border-color: var(--accent); color: var(--accent2);">Crop</button>` : ''}
-                  <button class="btn-sm btn-retry-sm" onclick="retryLiveTask(${t.id})">Retry</button>
-              ` : ''}
-              <button class="btn-sm btn-danger-sm" onclick="deleteTask(${t.id})">Delete</button>
+              ${t.file_path && isCore ? `<button class="btn-sm btn-retry-sm" onclick="openCropModal('${esc(imgUrl)}', ${t.id})" style="border-color: var(--accent); color: var(--accent2);">Crop</button>` : ''}
+              ${t.file_path || t.error ? `<button class="btn-sm btn-retry-sm" onclick="retryLiveTask(${t.id})">Retry</button>` : ''}
+              <button class="btn-sm btn-danger-sm" id="del-btn-${t.id}" onclick="deleteTask(${t.id})">Delete</button>
           </div>
         </div>
       `;
@@ -172,27 +205,85 @@ async function updateQueue() {
   } catch (e) { console.error(e); }
 }
 
-async function retryLiveTask(id) {
-    if(!confirm('Duplicate and retry this task?')) return;
-    try {
-        const res = await fetch('/api/task/' + id + '/retry', { method: 'POST' });
-        if (res.ok) {
-            const data = await res.json();
-            const mode = data.image_type === 'spritesheet' ? 'sheet' : data.image_type;
-            pollTaskStatus(data.task_id, mode);
-            updateQueue();
-        } else {
-            alert('Retry failed: ' + await res.text());
-        }
-    } catch(e) { alert('Retry failed: ' + e.message); }
+// Report a failure ON the card rather than through alert().
+//
+// alert()/confirm() are the wrong channel here for a reason that bit this page:
+// Chrome offers "prevent this page from creating additional dialogs" after a
+// couple of them, and once that box is ticked every later confirm() returns
+// false for the lifetime of the page — no dialog, no request, no console error.
+// Delete then looks broken and leaves nothing to diagnose.
+function showTaskError(id, msg) {
+    const el = document.getElementById(`task-error-${id}`);
+    if (el) {
+        el.textContent = msg;
+        el.style.display = 'block';
+    }
+    console.error(`task ${id}: ${msg}`);
 }
 
+// FastAPI reports refusals as {"detail": "..."}; show the sentence, not the JSON.
+async function errText(res) {
+    const body = await res.text();
+    try { return JSON.parse(body).detail ?? body; } catch { return body; }
+}
+
+async function retryLiveTask(id) {
+    try {
+        const res = await fetch('/api/task/' + id + '/retry', { method: 'POST' });
+        if (!res.ok) {
+            showTaskError(id, `Retry failed (HTTP ${res.status}): ${await errText(res)}`);
+            return;
+        }
+        const data = await res.json();
+        const mode = data.image_type === 'spritesheet' ? 'sheet' : data.image_type;
+        pollTaskStatus(data.task_id, mode);
+        updateQueue();
+    } catch(e) { showTaskError(id, 'Retry failed: ' + e.message); }
+}
+
+// Two-step delete, confirmed on the button itself.
+//
+// First click arms it ("Confirm?"), second click sends the request, and it
+// disarms itself after 4s. This replaces confirm() — see showTaskError — and
+// also gives the queue refresh something to pause on, so the 3s re-render
+// cannot delete the button out from under the second click.
 async function deleteTask(id) {
-    if(!confirm('Permanently cancel and remove this task?')) return;
+    const btn = document.getElementById(`del-btn-${id}`);
+
+    if (!armedDeletes.has(id)) {
+        armedDeletes.add(id);
+        if (btn) {
+            btn.dataset.label = btn.textContent;
+            btn.textContent = 'Confirm?';
+            btn.classList.add('armed');
+        }
+        setTimeout(() => {
+            if (!armedDeletes.delete(id)) return;
+            const b = document.getElementById(`del-btn-${id}`);
+            if (b) {
+                b.textContent = b.dataset.label || 'Delete';
+                b.classList.remove('armed');
+            }
+        }, 4000);
+        return;
+    }
+
+    armedDeletes.delete(id);
+    if (btn) { btn.disabled = true; btn.textContent = 'Deleting…'; }
     try {
         const res = await fetch('/api/task/' + id, { method: 'DELETE' });
-        if (res.ok) updateQueue();
-    } catch(e) { alert('Delete failed: ' + e.message); }
+        if (!res.ok) {
+            showTaskError(id, `Delete failed (HTTP ${res.status}): ${await errText(res)}`);
+            if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
+            return;
+        }
+        const card = document.getElementById(`live-task-${id}`);
+        if (card) card.remove();
+        updateQueue();
+    } catch(e) {
+        showTaskError(id, 'Delete failed: ' + e.message);
+        if (btn) { btn.disabled = false; btn.textContent = 'Delete'; }
+    }
 }
 
 async function generateCore() {

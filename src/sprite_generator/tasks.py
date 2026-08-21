@@ -27,6 +27,7 @@ import logging
 import requests
 from collections import namedtuple
 from celery import Celery, chord, group
+from celery.signals import worker_ready, task_prerun, task_postrun
 
 from PIL import Image, ImageDraw
 import base64
@@ -150,8 +151,93 @@ import poses
 #   0.70  9.1 / 9.7 / 20.2   silhouette starts breaking up
 # 0.75 was a guess and it was wrong: it returned a different character in
 # different clothes. Conditioning scale 1.0 beat 0.6 at every strength.
-POSED_STRENGTH = 0.75
+#
+# The constant then sat at 0.75 anyway - the value this very comment records as
+# measured and rejected - and produced exactly the failure it predicts. A white
+# shirted zombie came back in a dark outfit holding a pole, with the OpenPose
+# limb palette (magenta head, orange shoulders, yellow arms, cyan legs) printed
+# onto the sprite itself. At 0.75 so little of the init image survives that the
+# skeleton is the strongest signal left in the frame, and the model reproduces
+# its COLOURS and not just its geometry. Use the value the sweep chose.
+POSED_STRENGTH = 0.60
 CONTROLNET_SCALE = 1.0
+
+# IP-ADAPTER WAS TRIED HERE AND REJECTED. Do not reach for it again without
+# reading this.
+#
+# The reasoning that leads to it is sound, and it is the same reasoning that
+# put ControlNet in poses.py. img2img injects the core image exactly ONCE: it
+# noises the core to `strength` and denoises from there, after which the model
+# has no reference to the original at all. So `strength` is a single number
+# deciding two things - how much identity survives, and how much freedom the
+# prompt has - which is why no value satisfies both. IP-Adapter should fix that
+# by re-injecting the reference through cross-attention at every step, giving
+# identity its own channel exactly as ControlNet gave pose one.
+#
+# It does preserve identity. It also suppresses the effect completely, which
+# makes it useless for the actions that actually need help. Measured on burning
+# at strength 0.85, fraction of the sprite that is flame-coloured:
+#   no adapter        15.57%   real flames
+#   scale 0.15         7.98%   NO flames - detector counting orange clothing
+#   scale 0.25         6.28%   NO flames - same false positive
+#   scale 0.35         0.27%   no flames
+#   scale 0.50         0.00%   no flames
+#   scale 0.80         0.00%   no flames
+# ip-adapter-plus_sd15 was worse than the base adapter at every scale.
+#
+# The mechanism is why there is no scale to tune to: the adapter anchors
+# appearance to a reference that contains no fire, so every step pulls back
+# toward not-on-fire. For any action whose whole purpose is to ADD something
+# the core does not have - flames, a bow, a spell - the adapter is pulling
+# against the prompt by construction. It would help the actions that add
+# nothing (idle, walks, melee), and those already work at 0.60.
+#
+# Weights are cached at /models/models--h94--IP-Adapter (2.6GB); the image
+# encoder is the bulk of it.
+#
+# It is now wired up, OPT-IN PER ACTION via "ip_adapter_scale" in
+# action_prompts.json, and off everywhere by default. The measurements above
+# are why it is off rather than why it is absent: they say it is wrong for
+# actions that ADD something, not that it is wrong for everything. An action
+# that only changes pose has no effect to suppress, so there is nothing for the
+# adapter to fight and its identity anchoring is free. Whether that is worth
+# ~1.2GB of resident image encoder is a judgement call, so it is a switch.
+IP_ADAPTER_REPO = "h94/IP-Adapter"
+IP_ADAPTER_SUBFOLDER = "models"
+# The base adapter, not -plus. Plus encodes finer detail and was worse here at
+# every scale tested - it copies the reference harder, which is precisely the
+# behaviour that suppresses whatever the prompt is trying to add.
+IP_ADAPTER_WEIGHT = "ip-adapter_sd15.bin"
+
+
+def ensure_ip_adapter(pipe):
+    """Load the IP-Adapter onto `pipe` once, returning whether it is available.
+
+    Pipelines are cached and reused across sheets, so this attaches to whatever
+    came back from get_sd_pipeline rather than being part of the cache key -
+    otherwise turning the adapter on for one action would evict the pipeline
+    and force a full checkpoint reload.
+
+    A failure here is not fatal. The adapter is an enhancement to identity, and
+    a sheet rendered without it is still a sheet; refusing to generate because
+    an optional 2.6GB download is missing would be the wrong trade.
+    """
+    if getattr(pipe, "_ipa_loaded", False):
+        return True
+    if not hasattr(pipe, "load_ip_adapter"):
+        logger.warning(f"{type(pipe).__name__} has no load_ip_adapter; "
+                       "ip_adapter_scale will be ignored.")
+        return False
+    try:
+        pipe.load_ip_adapter(IP_ADAPTER_REPO, subfolder=IP_ADAPTER_SUBFOLDER,
+                             weight_name=IP_ADAPTER_WEIGHT, cache_dir="/models")
+        pipe._ipa_loaded = True
+        logger.info(f"IP-Adapter loaded ({IP_ADAPTER_WEIGHT}).")
+        return True
+    except Exception as e:
+        logger.warning(f"Could not load IP-Adapter ({e}); continuing without "
+                       "it. Frames will render, identity anchoring is just off.")
+        return False
 
 # Per-checkpoint trigger tokens for STEP 1 (one character, not a sheet).
 #
@@ -185,7 +271,23 @@ _NEGATIVE_QUALITY = (
 )
 
 # Step 1 (core): exactly ONE character. Duplicate-suppression belongs here only.
+# Ground terms come FIRST, ahead of the duplicate-character clause.
+#
+# They were absent entirely, and that is where the brown patch under every
+# sprite came from. Step 1 was never asked for a character standing on nothing,
+# so it drew one standing on dirt with grass tufts - and because that patch is
+# fused to the feet it is neither background-coloured nor a separate blob, so
+# neither remove_background nor _isolate_largest_sprite can touch it. Step 2
+# then inherits it through img2img: NEGATIVE_FRAME does list the ground terms,
+# but at strength 0.60 there is nothing it can do about pixels that are already
+# in the init image. The only place this is fixable by prompting is here.
+#
+# Terse on purpose. NEGATIVE_SINGLE was 59 tokens and the limit is 77, so the
+# obvious wording ("ground, floor, dirt, soil, grass, ground shadow, drop
+# shadow, base, platform") measured 79 and would have silently lost its tail -
+# the exact failure check_prompt_length exists to catch. This lands at 72.
 NEGATIVE_SINGLE = (
+    "ground, floor, dirt, grass, ground shadow, base, "
     "multiple characters, two characters, group, horde, crowd, twins, clones, "
     "split screen, collage, grid, set, " + _NEGATIVE_QUALITY
 )
@@ -205,9 +307,18 @@ NEGATIVE_SINGLE = (
 # Ordered by what actually goes wrong here: duplicates, then layout, then the
 # ground shadow (connected to the feet, so it survives both the background key
 # and _isolate_largest_sprite), then generic quality.
+# The ground clause is longer than the rest suggests it needs to be, because
+# there are two different ground problems and only one of them is fixed here.
+# The patch INHERITED from the core is handled geometrically by
+# strip_ground_patch - no prompt can remove pixels that are already in the init
+# image. What is left after that is a smaller shadow step 2 draws fresh under
+# the feet, and that one is a prompting problem. At 43 tokens there was room to
+# say so properly, so it now names the shape ("dark patch under feet") rather
+# than relying on "ground shadow" alone. Lands at 64 of 77.
 NEGATIVE_FRAME = (
     "multiple characters, crowd, clones, sprite sheet, grid, collage, "
-    "ground shadow, drop shadow, floor, grass, "
+    "ground shadow, drop shadow, floor, grass, ground, dirt, soil, "
+    "standing on ground, pedestal, dark patch under feet, contact shadow, "
     "blurry, deformed, extra limbs, cropped, low quality, watermark, text"
 )
 
@@ -221,6 +332,158 @@ PHASE_HINTS = (
     "contact pose mirrored, opposite leg extended",
     "passing pose mirrored, body settling down",
 )
+
+
+# What each UI action means, spelled out for the text encoder.
+#
+# The UI sends the checkbox value verbatim - "idle", "burning", "got damage" -
+# and those went to the model almost unexpanded. Four tokens of "idle standing"
+# is not a description of anything; the model fell back on whatever the core
+# image and the checkpoint's own bias suggested, which is why several actions
+# came back looking like the same neutral standing pose.
+#
+# WHAT BELONGS HERE, AND WHAT DOES NOT
+#
+# ControlNet owns geometry now. The skeleton states where every limb is, far
+# more precisely than words can, and prompt text that argues with it makes both
+# signals worse - the same reason PHASE_HINTS is suppressed on posed frames
+# just below. So these do NOT describe limb positions.
+#
+# They describe the three things a skeleton cannot express:
+#   * FACING - which way the camera sees the character. The skeleton encodes
+#     this (side views collapse the shoulders onto one x), so saying it in
+#     words reinforces the skeleton instead of fighting it.
+#   * INTENT and energy - "aggressive", "off balance", "at rest". Mood is not
+#     a joint position.
+#   * EFFECTS - fire, smoke, embers. This is the big one. No skeleton can ask
+#     for flames, which is exactly why the burning row came back as a zombie
+#     standing calmly: nothing in the pipeline had ever mentioned fire.
+#
+# TOKEN BUDGET. CLIP keeps 77 tokens and silently bins the rest - see
+# check_prompt_length. The trigger is only one part of the frame prompt; the
+# core's own prompt and the style suffix share the same 77. Measured against a
+# 31-token core prompt, the full frame prompt lands at 62-74 tokens with these,
+# so there is room but not much. Keep additions under ~24 tokens each, and
+# watch for the truncation warning rather than assuming it fits.
+#
+# The table itself lives in action_prompts.json, beside this file, so the
+# wording can be tuned without touching Python or rebuilding the image. Its
+# "_readme" block carries the authoring rules above in a form an LLM asked to
+# edit the file will actually read.
+ACTION_PROMPTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "action_prompts.json")
+
+# (mtime, parsed actions). Re-read when the file changes, so editing prompts
+# does not need a worker restart - which matters more than it sounds, because a
+# restart also drops the loaded pipeline and costs a ~25s reload on the next
+# sheet. Keyed on mtime rather than reloaded per call so a 16-frame sheet does
+# not stat-and-parse the file 16 times.
+_action_prompts_cache = (None, [])
+
+
+def _clamp_strength(value, action_id):
+    """Validate an optional per-action strength from JSON.
+
+    Anything out of range is dropped rather than passed to the pipeline: a
+    strength above 1.0 raises deep inside diffusers with a message that says
+    nothing about this file, and a hand-typed "0.9" is far more likely to be a
+    mistake than an intent - by 0.9 the character is gone and the skeleton's
+    own limb colours start printing onto the sprite.
+    """
+    if value is None:
+        return None
+    try:
+        s = float(value)
+    except (TypeError, ValueError):
+        logger.warning(f"action '{action_id}': strength {value!r} is not a "
+                       "number; using the default.")
+        return None
+    if not 0.0 < s <= 0.85:
+        logger.warning(f"action '{action_id}': strength {s} is outside the "
+                       "usable 0-0.85 range; using the default.")
+        return None
+    return s
+
+
+def _clamp_unit(value, action_id, field):
+    """Validate an optional 0..1 knob from JSON, or None if absent/bad."""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        logger.warning(f"action '{action_id}': {field} {value!r} is not a "
+                       "number; ignoring.")
+        return None
+    if not 0.0 <= v <= 1.0:
+        logger.warning(f"action '{action_id}': {field} {v} is outside 0..1; "
+                       "ignoring.")
+        return None
+    return v
+
+
+def load_action_prompts():
+    """Parse action_prompts.json, or keep the last good copy on failure.
+
+    A syntax error in a hand-edited prompt file must not take out sprite
+    generation: the previous version stays live and the problem is logged.
+    """
+    global _action_prompts_cache
+    try:
+        mtime = os.path.getmtime(ACTION_PROMPTS_PATH)
+    except OSError as e:
+        if _action_prompts_cache[1]:
+            return _action_prompts_cache[1]
+        logger.error(f"{ACTION_PROMPTS_PATH} is unreadable ({e}); actions will "
+                     "be sent to the model as their bare UI names.")
+        return []
+
+    if mtime == _action_prompts_cache[0]:
+        return _action_prompts_cache[1]
+
+    try:
+        with open(ACTION_PROMPTS_PATH, encoding="utf-8") as fh:
+            entries = json.load(fh).get("actions", [])
+        parsed = [(tuple(e.get("match", ())), e.get("prompt", ""),
+                   _clamp_strength(e.get("strength"), e.get("id")),
+                   _clamp_unit(e.get("ip_adapter_scale"), e.get("id"),
+                               "ip_adapter_scale"))
+                  for e in entries if e.get("match") and e.get("prompt")]
+        if not parsed:
+            raise ValueError("no usable entries under 'actions'")
+    except Exception as e:
+        logger.error(f"Could not load {ACTION_PROMPTS_PATH}: {e}. Keeping the "
+                     f"previously loaded {len(_action_prompts_cache[1])} entries.")
+        return _action_prompts_cache[1]
+
+    _action_prompts_cache = (mtime, parsed)
+    logger.info(f"Loaded {len(parsed)} action prompts from action_prompts.json.")
+    return parsed
+
+
+def action_trigger(action: str) -> str:
+    """Expand a UI action name into a full prompt fragment.
+
+    Falls back to the raw action text, which is what an unrecognised action got
+    before this table existed - a custom action typed by hand still reaches the
+    model as its own words rather than being silently dropped.
+    """
+    return action_entry(action)["prompt"]
+
+
+def action_entry(action: str) -> dict:
+    """Prompt fragment and optional per-action overrides for a UI action.
+
+    A dict rather than a tuple: this started as (prompt,), became
+    (prompt, strength), and is now three fields. Every widening of a tuple
+    silently breaks every caller that unpacked the old width.
+    """
+    a = (action or "").lower()
+    for keys, text, strength, ipa in load_action_prompts():
+        if any(k in a for k in keys):
+            return {"prompt": text, "strength": strength,
+                    "ip_adapter_scale": ipa}
+    return {"prompt": action, "strength": None, "ip_adapter_scale": None}
 
 
 def fit_into_frame(img, box, frame_w, frame_h):
@@ -730,6 +993,14 @@ def update_task_record(task_id: str, file_path: str = None, duration_ms: float =
                 if file_path is not None:
                     update_fields.append("file_path = %s")
                     values.append(file_path)
+                    # A row with an image succeeded, so it must not still carry
+                    # an error. Matters because the reaper below writes one on
+                    # every restart, and the queue renders error before
+                    # file_path — a retried task would come back looking failed.
+                    # Guarded: assigning the same column twice in one UPDATE is
+                    # a Postgres error, and one caller passes both.
+                    if error_msg is None:
+                        update_fields.append("error = NULL")
                 if duration_ms > 0:
                     update_fields.append("duration_ms = %s")
                     values.append(duration_ms)
@@ -837,6 +1108,89 @@ def _isolate_largest_sprite(arr):
     arr[(labels != keep) & opaque] = (0, 0, 0, 0)
     logger.info(f"Isolated main sprite: removed {n - 1} stray blob(s), {dropped} px.")
     return arr
+
+
+def strip_ground_patch(img, width_ratio: float = 1.8, max_band_frac: float = 0.25):
+    """Delete a ground/shadow patch fused to the bottom of a sprite.
+
+    NEGATIVE_SINGLE now asks step 1 not to draw one, but prompting is a request
+    rather than a guarantee, and every core generated before that change still
+    has one baked in. This is the geometric backstop, and it is needed because
+    the two existing cleanups both structurally cannot see this:
+    remove_background only clears regions reachable from the border and the
+    patch is enclosed by the sprite; _isolate_largest_sprite keeps the largest
+    connected blob and the patch is JOINED to the feet, so it is part of it.
+
+    Detection is by WIDTH, not colour. Colour would have to know that this
+    particular ground is brown, which does not generalise past one character -
+    a stone slab or a pool of shadow is not brown. Width does generalise: feet
+    are narrow and the thing they stand on spreads out. Measured on the zombie
+    core, legs run ~99px and the patch peaks at 319px, a 3.2x step that no
+    part of a character body produces.
+
+    `width_ratio` is how much wider than the body a row must be to count as
+    ground; 1.5 and 1.8 both cleared this core, 2.2 left a rim behind, and 2.6
+    missed it entirely. `max_band_frac` caps the damage at the bottom quarter
+    of the sprite, so a misfire cannot eat the legs.
+
+    Deliberately NOT applied to generated frames - a wide attack or a flared
+    robe genuinely is wider at the bottom, and clipping that would be worse
+    than the patch. It runs on the core, once, and every frame inherits the
+    clean version through img2img.
+    """
+    import numpy as np
+
+    arr = np.array(img.convert("RGBA"))
+    opaque = arr[:, :, 3] > 0
+    rows = np.where(opaque.any(axis=1))[0]
+    if rows.size == 0:
+        return img
+
+    top, bot = int(rows[0]), int(rows[-1])
+    height = bot - top + 1
+    widths = opaque.sum(axis=1).astype(float)
+
+    # Reference body width, measured ABOVE the bottom quarter so the patch
+    # cannot inflate the very number it is being compared against.
+    body = widths[top:max(bot + 1 - int(height * 0.25), top + 1)]
+    body = body[body > 0]
+    if body.size == 0:
+        return img
+    reference = float(np.median(body))
+    if reference <= 0:
+        return img
+
+    band = np.arange(max(bot - int(height * max_band_frac), top), bot + 1)
+    wide = band[widths[band] > reference * width_ratio]
+    if wide.size == 0:
+        return img
+
+    # Cut from the TOPMOST offending row, not upward from the bottom: the patch
+    # tapers to a few pixels of grass at its lowest rows, so a scan starting at
+    # the bottom edge stops on the first narrow row and removes nothing.
+    cut = int(wide.min())
+
+    # Then walk further up with a LOWER threshold. Two thresholds, because one
+    # cannot do both jobs: the high one has to be high enough that a wide stance
+    # or a flared coat is not mistaken for ground, but the patch does not stop
+    # abruptly at that width - it tapers. Cutting only where it exceeds the high
+    # threshold left the taper behind, which is exactly the residual shadow that
+    # then looked like step 2 drawing a fresh one.
+    #
+    # Measured on the zombie core: body median 128, legs ~99, patch 134-319. The
+    # high threshold (230) first fires at row 464; extending up while rows stay
+    # above 1.05x the body width carries the cut to the leg/ground boundary near
+    # 447, where the width drops to 91 and stops it. Legs are NARROWER than the
+    # body median, so they cannot sustain this walk - the taper can.
+    floor = max(top, bot - int(height * max_band_frac))
+    while cut - 1 >= floor and widths[cut - 1] > reference * 1.05:
+        cut -= 1
+    removed = int(opaque[cut:bot + 1].sum())
+    arr[cut:bot + 1, :, 3] = 0
+    logger.info(f"Stripped ground patch: {removed} px below row {cut} "
+                f"(body width {reference:.0f}, cut threshold "
+                f"{reference * width_ratio:.0f}).")
+    return Image.fromarray(arr)
 
 
 def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
@@ -1022,6 +1376,12 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     # _isolate_largest_sprite - on a distilled checkpoint the negative
     # prompt cannot enforce that, so the geometry does.
     img = remove_background(img, keep_largest=True)
+    # After the background key, because the patch has to be a distinct alpha
+    # shape before its width can be measured against the body's. The negative
+    # prompt asks step 1 not to draw ground at all; this catches the times it
+    # does anyway, so a core is clean the moment it is saved rather than being
+    # repaired on every sheet that later uses it.
+    img = strip_ground_patch(img)
 
     # Smart Aspect Ratio Detection:
     # If the model natively generates a 4x1 animation sequence, strip out Frame 1.
@@ -1048,6 +1408,7 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
 @celery_app.task(name="tasks.generate_spritesheet_task", bind=True)
 def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str, frame_width: int, frame_height: int, motion_steps: int):
     task_id = self.request.id
+    sheet_start = time.time()
     logger.info(f"Task {task_id} generating sheet with {llm_name}, actions: {actions}")
     
     update_task_record(task_id, progress_pct=5, progress_msg="Loading context...")
@@ -1064,6 +1425,13 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         # finished sheet came back 100% opaque with a black background, and
         # every frame was unusable as a sprite.
         core_img = Image.open(core_path)
+        # Before anything else measures this image. The ground patch is part of
+        # the sprite's alpha, so leaving it in would put core_box - and with it
+        # the pose skeleton, and the crop applied to every frame - around the
+        # character PLUS its dirt, scaling the character down to make room for
+        # something that should not be there.
+        if core_img.mode in ("RGBA", "LA", "P"):
+            core_img = strip_ground_patch(core_img.convert("RGBA"))
         # Keep the sprite's own alpha bounds before compositing flattens them.
         # The pose skeleton is fitted to this box so it lands on the character
         # rather than on the middle of the canvas; a skeleton centred while the
@@ -1125,6 +1493,27 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         logger.info("Pose cycles found; loading ControlNet for per-frame pose.")
     p = get_sd_pipeline(llm_name, pipeline_type="img2img",
                         controlnet=OPENPOSE_CONTROLNET if use_pose else None)
+
+    # Same "load it only if some action wants it" rule as ControlNet above. The
+    # adapter drags in a CLIP image encoder that stays resident in VRAM beside
+    # the checkpoint, so a sheet of actions that all leave ip_adapter_scale unset
+    # should never pay for it.
+    ipa_active = False
+    if any((action_entry(a)["ip_adapter_scale"] or 0.0) > 0 for a in actions):
+        ipa_active = ensure_ip_adapter(p)
+    elif getattr(p, "_ipa_loaded", False):
+        # A previous sheet on this cached pipeline turned it on. Unload rather
+        # than just zeroing the scale: once the adapter is attached, the UNet
+        # expects image embeds on every call, and this sheet will not be
+        # passing any. Zero scale would leave that mismatch in place and the
+        # first frame would fail inside diffusers rather than here. Unloading
+        # also hands the image encoder's VRAM back.
+        try:
+            p.unload_ip_adapter()
+            p._ipa_loaded = False
+            logger.info("IP-Adapter unloaded; no action in this sheet uses it.")
+        except Exception as e:
+            logger.warning(f"Could not unload IP-Adapter: {e}")
     if not p:
         update_task_record(task_id, error_msg=f"Pipeline '{llm_name}' failed to load")
         return {"error": f"Pipeline '{llm_name}' failed to load"}
@@ -1178,16 +1567,10 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         
         is_dynamic = any(kw in action.lower() for kw in ["move", "walk", "attack", "damage", "burning"])
         
-        action_lower = action.lower()
-        trigger = action
-        if "move right" in action_lower: trigger = "side view profile, walking right, character facing right, dynamic legs moving"
-        elif "move left" in action_lower: trigger = "side view profile, walking left, character facing left, dynamic legs moving"
-        elif "move down" in action_lower: trigger = "walking front, character facing forward, legs moving"
-        elif "move up" in action_lower: trigger = "walking back, character facing away, legs moving"
-        elif "idle" in action_lower: trigger = "idle standing"
-        elif "attack" in action_lower: trigger = "dramatic action pose, fast strike attack, swinging arms"
-        elif "got damage" in action_lower: trigger = "taking damage, hurt posture, recoiling"
-        elif "burning" in action_lower: trigger = "in flames burning, expressive movement"
+        _entry = action_entry(action)
+        trigger = _entry["prompt"]
+        action_strength = _entry["strength"]
+        ipa_scale = _entry["ip_adapter_scale"] or 0.0
         
         # Increase strength to force adaptation to new movements
         # img2img strength is how much of the core image to discard. At 0.95 the
@@ -1215,8 +1598,25 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
             # character - which is exactly why the pose barely moved. Raise it
             # and let the skeleton, not the init image, decide the posture.
             strength = POSED_STRENGTH
-            logger.info(f"  > '{action}': pose-conditioned, strength {strength}")
-        
+
+        # A per-action strength in action_prompts.json wins over both defaults.
+        #
+        # One global strength cannot serve every action, because the actions do
+        # not all ask for the same thing. Most only need a new POSE, and the
+        # skeleton already supplies that - so 0.60 is right, and raising it just
+        # trades identity away for nothing. But an action that has to ADD
+        # something absent from the core image is a different problem: measured
+        # on burning with identical prompt, seed and skeleton, the fraction of
+        # the sprite that came back flame-coloured was 0.07% at 0.60 and 4.36%
+        # at 0.75. Below ~0.70 there is simply not enough of the frame left
+        # unfrozen to paint fire into.
+        if action_strength is not None:
+            strength = action_strength
+        if frame_controls:
+            logger.info(f"  > '{action}': pose-conditioned, strength {strength}"
+                        + (" (from action_prompts.json)"
+                           if action_strength is not None else ""))
+
         negative = NEGATIVE_FRAME
         
         # Was hardcoded to 4 steps / guidance 0 for FLUX-schnell. Now derived
@@ -1276,6 +1676,12 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
                     f"{trigger}, {PHASE_HINTS[f % len(PHASE_HINTS)]}, {base_prompt}, "
                     "single character, full body, centered"
                 )
+                # Only NEGATIVE_FRAME was ever checked, so the positive prompt
+                # could overrun 77 tokens in silence - and it is the side that
+                # grew when the action triggers were expanded. Check the first
+                # frame of each action: the rest differ only by phase hint.
+                if f == 0:
+                    check_prompt_length(p, frame_prompt, f"frame prompt for '{action}'")
                 control_kwargs = {}
                 if use_pose:
                     control_kwargs = {
@@ -1283,6 +1689,41 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
                         "controlnet_conditioning_scale":
                             CONTROLNET_SCALE if frame_controls else 0.0,
                     }
+                # Re-inject the core through cross-attention at every denoising
+                # step, instead of only as the starting latent. Off unless this
+                # action asked for it - see the IP-Adapter block near
+                # POSED_STRENGTH for what it costs an action that adds an effect.
+                #
+                # The scale is set per frame rather than once per action: the
+                # pipeline object is shared and cached, so a scale left behind
+                # by a previous action would silently apply to this one.
+                if ipa_active:
+                    p.set_ip_adapter_scale(ipa_scale)
+                    control_kwargs["ip_adapter_image"] = core_frame
+                # image=core_frame, and NOT the previous frame. Chaining frame
+                # N-1 forward is the obvious fix for frames that do not look
+                # like each other, and it was measured and rejected.
+                #
+                # Swept on the bow row (the worst offender), core-ANCHORED
+                # blends so drift had a floor - init = blend(core, prev):
+                #   blend 0.00  frame-to-frame 10.65  loop-gap  8.36  <- kept
+                #   blend 0.35  frame-to-frame  8.01  loop-gap 12.06
+                #   blend 0.50  frame-to-frame  7.81  loop-gap 13.17
+                #   blend 0.70  frame-to-frame  9.16  loop-gap 19.51
+                # Chaining does make ADJACENT frames more alike, and that is
+                # exactly the trap: it buys it by letting the strip walk away
+                # from where it started, so frame 4 no longer joins back onto
+                # frame 1. loop-gap is the number that matters for a cycle and
+                # it gets monotonically worse. Every pass also re-encodes
+                # through the VAE, so compression artifacts compound - at
+                # blend 0.50 with strength 0.66 the frames came back visibly
+                # speckled with yellow blocks.
+                #
+                # Lowering strength beat it outright on both metrics at once
+                # (0.66 unchained: frame-to-frame 6.37, loop-gap 5.22) AND was
+                # the only variant that kept the character a zombie rather than
+                # a pale bald man. See the per-action strengths in
+                # action_prompts.json.
                 img = p(
                     prompt=frame_prompt,
                     negative_prompt=negative or None,
@@ -1365,9 +1806,13 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     os.makedirs(IMAGES_DIR, exist_ok=True)
     master.save(filepath, format="PNG")
     
-    update_task_record(task_id, file_path=filepath, progress_pct=100, progress_msg="Complete", image_type="spritesheet", requested_actions=actions, parent_id=parent_id)
-    logger.info(f"Sheet generated {filepath}")
-    return {"status": "success", "url": f"/images/{filename}"}
+    # duration_ms was never passed here, so the column kept its default and the
+    # UI rendered "Completed in 0s" for a job that took half a minute - which
+    # reads as a cache hit and hid what a sheet actually costs.
+    duration_ms = (time.time() - sheet_start) * 1000
+    update_task_record(task_id, file_path=filepath, duration_ms=duration_ms, progress_pct=100, progress_msg="Complete", image_type="spritesheet", requested_actions=actions, parent_id=parent_id)
+    logger.info(f"Sheet generated {filepath} in {duration_ms/1000:.1f}s")
+    return {"status": "success", "url": f"/images/{filename}", "duration_ms": duration_ms}
 
 
 @celery_app.task(name="tasks.generate_raw_task", bind=True)
@@ -1442,15 +1887,44 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     }
 
 
-@celery_app.task(name="tasks.describe_device")
-def describe_device():
-    """Report the worker's actual compute device.
+# Where the worker leaves its last device readout for the API to find.
+#
+# The round-trip alone is not enough. The worker runs --pool=solo at
+# concurrency=1, so while a task is executing it consumes NOTHING from the
+# broker - not other tasks, not control messages. Every describe_device sent
+# during a generation therefore times out, and the diagnostics panel spent the
+# whole of each generation claiming "Worker unreachable" about a worker that was
+# busy working. Leaving a snapshot behind gives the API something truthful to
+# show for exactly the window where it cannot ask.
+DEVICE_SNAPSHOT_KEY = "device:snapshot"
 
-    The API process cannot answer this about itself: compose pins it to
-    COMPUTE_DEVICE=cpu so it never holds VRAM, while the worker runs on cuda.
-    Any device readout taken in the API would therefore always say "cpu" and be
-    actively misleading. Ask the process that actually runs inference.
-    """
+
+def _cache_device_snapshot(info: dict):
+    """Publish a device readout for the API to read while the worker is busy."""
+    try:
+        # Stamped, because a busy worker and a dead one both fail the round-trip
+        # and would otherwise be reported identically. The age does not prove
+        # liveness — a long generation and a long outage look alike — but it is
+        # the difference between "busy, 12s ago" and "busy, 40 minutes ago",
+        # and the second one tells you to go look at the worker.
+        _redis_client.set(DEVICE_SNAPSHOT_KEY,
+                          json.dumps({**info, "snapshot_at": time.time()}))
+    except Exception as e:
+        logger.warning(f"Could not cache device snapshot: {e}")
+
+
+def read_device_snapshot():
+    """The worker's last published readout, or None. Safe to call from the API."""
+    try:
+        raw = _redis_client.get(DEVICE_SNAPSHOT_KEY)
+        return json.loads(raw) if raw else None
+    except Exception as e:
+        logger.warning(f"Could not read the device snapshot: {e}")
+        return None
+
+
+def _read_device_info() -> dict:
+    """Device readout, taken in whatever process calls this."""
     info = {
         "device": DEVICE,
         "dtype": str(DTYPE),
@@ -1467,6 +1941,20 @@ def describe_device():
             "vram_reserved_gb": round(torch.cuda.memory_reserved(0) / 1024**3, 2),
             "vram_allocated_gb": round(torch.cuda.memory_allocated(0) / 1024**3, 2),
         })
+    return info
+
+
+@celery_app.task(name="tasks.describe_device")
+def describe_device():
+    """Report the worker's actual compute device.
+
+    The API process cannot answer this about itself: compose pins it to
+    COMPUTE_DEVICE=cpu so it never holds VRAM, while the worker runs on cuda.
+    Any device readout taken in the API would therefore always say "cpu" and be
+    actively misleading. Ask the process that actually runs inference.
+    """
+    info = _read_device_info()
+    _cache_device_snapshot(info)
     return info
 
 
@@ -1542,17 +2030,62 @@ EDIT_UNAVAILABLE_REASON = (
     "SDXL img2img and ControlNet cover image-to-image today."
 )
 
-# How much VRAM accelerate may fill with WEIGHTS. The rest of the card is for
-# inference activations, and Qwen-Image is a 20B transformer whose activations
-# are not small.
+# How much VRAM the editing pipeline needs free before it may start loading.
+#
+# This is a PREFLIGHT GATE, not a placement budget. It used to be documented as
+# the latter - "max_memory keeps a margin" - but nothing ever passed max_memory
+# or device_map to from_pretrained, so the margin it described did not exist.
+# bitsandbytes places 4-bit weights on the card as from_pretrained walks the
+# checkpoint, with nothing to stop it, and the card fills partway through.
 #
 # Measured on the 12GB card: at "8GiB" the pipeline loaded (11752MiB resident)
 # and then died mid-inference with "CUDA driver error: device not ready" - an
 # out-of-memory wearing a driver fault's clothing. Worse, that failure leaves
 # the CUDA context unusable, so the NEXT request fails differently, with
-# "!handles_.at(i) INTERNAL ASSERT FAILED ... CUDACachingAllocator". Only a
-# worker restart clears it. Keep this well under the free VRAM.
+# "!handles_.at(i) INTERNAL ASSERT FAILED ... CUDACachingAllocator", and the one
+# after that with "Cannot copy out of meta tensor". Only a worker restart clears
+# it, and in the meantime plain sprite generation is broken too.
+#
+# So refusing up front is worth more than any placement tuning: one declined
+# edit costs nothing, one attempted edit costs every task behind it.
+#
+# The gate is not academic on this host. llm-server holds 8-9GB of the card
+# while a chat model is awake and only releases it after --sleep-idle-seconds,
+# so "free VRAM" here routinely means 3GB, not 11.7GB.
 EDIT_GPU_BUDGET = os.environ.get("EDIT_GPU_BUDGET", "6GiB")
+
+# Weights that must be resident in system RAM to load the NF4 pipeline. Checked
+# against MemAvailable for the same reason as the VRAM gate: the documented
+# failure mode here is the kernel OOM-killing the worker mid-load, which takes
+# generation down with it and leaves no traceback to read afterwards.
+EDIT_HOST_RAM_NEEDED = os.environ.get("EDIT_HOST_RAM_NEEDED", "12.5GiB")
+
+
+def _parse_bytes(spec: str) -> int:
+    """'6GiB' / '12.5GiB' / '6GB' -> bytes. Accepts a bare number as GiB."""
+    s = str(spec).strip().lower().replace("b", "")
+    mult = 1024 ** 3
+    if s.endswith("gi"):
+        s = s[:-2]
+    elif s.endswith("g"):
+        s, mult = s[:-1], 1000 ** 3
+    elif s.endswith("mi"):
+        s, mult = s[:-2], 1024 ** 2
+    elif s.endswith("m"):
+        s, mult = s[:-1], 1000 ** 2
+    return int(float(s) * mult)
+
+
+def _host_ram_available() -> int:
+    """MemAvailable in bytes, or -1 if it cannot be read."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) * 1024
+    except Exception:
+        pass
+    return -1
 
 # Source images are downscaled to this before editing. 1024px input pushed the
 # activations past the card even with weights capped; 512 is also what the
@@ -1572,6 +2105,20 @@ EDIT_MAX_SIDE = int(os.environ.get("EDIT_MAX_SIDE", "512"))
 EDIT_LORAS = {}
 
 
+# Why the last load attempt returned None. The task reports this instead of
+# "Editing pipeline failed to load", which named no cause and sent anyone
+# debugging it to the worker log to find out what the API already knew.
+_edit_load_error = None
+
+
+def _refuse_edit(reason: str):
+    """Record and log why the editing pipeline will not load, then return None."""
+    global _edit_load_error
+    _edit_load_error = reason
+    logger.error(reason)
+    return None
+
+
 def get_edit_pipeline(lora: str = None):
     """Load the NF4 editing pipeline, optionally with a capability LoRA.
 
@@ -1579,10 +2126,14 @@ def get_edit_pipeline(lora: str = None):
     transformer alone is ~10.7GB against ~11.7GB free, so the text encoder has
     to be evicted after it has encoded the prompt. Offload does exactly that,
     and it is why this is slow but possible at all on this card.
+
+    Returns None on refusal or failure; the reason is in `_edit_load_error`.
     """
+    global _edit_load_error
+    _edit_load_error = None
+
     if not EDIT_ENABLED:
-        logger.warning(EDIT_UNAVAILABLE_REASON)
-        return None
+        return _refuse_edit(EDIT_UNAVAILABLE_REASON)
 
     global pipes
     cache_key = f"__edit__{EDIT_BASE}_{lora or 'nolora'}"
@@ -1601,6 +2152,38 @@ def get_edit_pipeline(lora: str = None):
         gc.collect()
         torch.cuda.empty_cache()
 
+    # Preflight. Refuse BEFORE touching the checkpoint.
+    #
+    # Every failure mode below is one that, once entered, cannot be recovered
+    # inside this process: an OOM part-way through bitsandbytes placement leaves
+    # the CUDA context unusable for every later task, and a host-RAM OOM has the
+    # kernel kill the worker outright. Both are cheap to predict and impossible
+    # to undo, which is the whole argument for checking first.
+    if DEVICE == "cuda":
+        need = _parse_bytes(EDIT_GPU_BUDGET)
+        free, total = torch.cuda.mem_get_info()
+        if free < need:
+            return _refuse_edit(
+                f"Not enough free VRAM to load the editing pipeline: "
+                f"{free / 1024**3:.1f}GiB free of {total / 1024**3:.1f}GiB, need "
+                f"{need / 1024**3:.1f}GiB (EDIT_GPU_BUDGET={EDIT_GPU_BUDGET}). "
+                f"Something else holds the card - llm-server keeps a chat model "
+                f"resident until it has been idle for --sleep-idle-seconds. "
+                f"Loading anyway fills the card mid-placement and poisons the "
+                f"CUDA context for every later task."
+            )
+
+    ram_need = _parse_bytes(EDIT_HOST_RAM_NEEDED)
+    ram_free = _host_ram_available()
+    if 0 <= ram_free < ram_need:
+        return _refuse_edit(
+            f"Not enough system RAM to load the editing pipeline: "
+            f"{ram_free / 1024**3:.1f}GiB available, need "
+            f"{ram_need / 1024**3:.1f}GiB. Loading anyway gets the worker "
+            f"OOM-killed mid-load, silently and with no traceback. "
+            f"See .ai/decisions/0002."
+        )
+
     try:
         from diffusers import FluxKontextPipeline
         logger.info(f"Loading editing pipeline '{EDIT_BASE}' (NF4)...")
@@ -1610,19 +2193,23 @@ def get_edit_pipeline(lora: str = None):
             token=os.environ.get("HF_TOKEN") or None,
         )
 
-        # device_map is REQUIRED here, not an optimisation.
+        # There is no placement budget on the load itself, and there cannot be
+        # a useful one.
         #
         # bitsandbytes places 4-bit weights on the GPU as from_pretrained walks
         # the checkpoint, before any offload hook can run. The transformer is
-        # 10.71GB and the text encoder 5.80GB - 16.5GB against ~11.7GB free - so
-        # a plain from_pretrained fills the card partway through and dies with
-        # "CUDA driver error: device not ready", which reads like a driver fault
+        # 10.71GB and the text encoder 5.80GB - 16.5GB - so if the card is
+        # short, from_pretrained fills it partway through and dies with "CUDA
+        # driver error: device not ready", which reads like a driver fault
         # rather than the out-of-memory it actually is.
         #
-        # "balanced" hands placement to accelerate, which puts what fits on the
-        # GPU and leaves the rest in system RAM. max_memory keeps a margin: the
-        # figure below is deliberately under the free VRAM so the inference
-        # activations still have somewhere to live.
+        # device_map="balanced" + max_memory does bound placement, and this
+        # comment used to claim that is what happens here. It is not, and it
+        # must not be: a static device map has no runtime hooks, so calling the
+        # offloaded T5 afterwards dies with "Cannot copy out of meta tensor".
+        # See the note on enable_model_cpu_offload below. The load stays
+        # unbounded; the EDIT_GPU_BUDGET preflight above is what keeps it from
+        # being attempted on a card that cannot take it.
         if DEVICE == "cuda":
             try:
                 # enable_model_cpu_offload FIRST, not device_map.
@@ -1675,14 +2262,14 @@ def get_edit_pipeline(lora: str = None):
                 logger.warning(f"Could not apply edit LoRA '{repo}': "
                                f"{e.__class__.__name__}: {e}. Continuing without it.")
 
-        # Do NOT call enable_model_cpu_offload here. accelerate has already
-        # placed every module via device_map="balanced", and adding offload
-        # hooks on top of an existing device map raises. The CPU branch is the
-        # only one that still needs an explicit move.
+        # Only the CPU branch reaches here — the CUDA branch above returns from
+        # inside its try/except, having already installed offload hooks. Nothing
+        # to place on the GPU at this point.
         if DEVICE != "cuda":
             pipe.to(DEVICE)
         pipes[cache_key] = pipe
     except Exception as e:
+        _edit_load_error = f"Editing pipeline failed to load: {e.__class__.__name__}: {e}"
         logger.error(f"Error loading editing pipeline: {e}", exc_info=True)
         return None
     return pipes[cache_key]
@@ -1701,8 +2288,9 @@ def edit_image_task(self, source_path: str, instruction: str, lora: str = None,
 
     p = get_edit_pipeline(lora)
     if not p:
-        update_task_record(task_id, error_msg="Editing pipeline failed to load")
-        return {"error": "Editing pipeline failed to load"}
+        reason = _edit_load_error or "Editing pipeline failed to load"
+        update_task_record(task_id, error_msg=reason, progress_msg="Failed")
+        return {"error": reason}
 
     if seed is None or seed < 0:
         seed = random.randint(0, 10**9)
@@ -1744,3 +2332,82 @@ def edit_image_task(self, source_path: str, instruction: str, lora: str = None,
         logger.error(f"Edit failed: {e}", exc_info=True)
         update_task_record(task_id, error_msg=str(e), progress_msg="Failed")
         return {"error": str(e)}
+
+
+# --- Stranded task reaper -------------------------------------------------
+
+@worker_ready.connect
+def _fail_stranded_tasks(**_):
+    """Mark rows that claim to be in progress as failed, once, at worker boot.
+
+    This deployment runs exactly one worker at concurrency=1 on the solo pool,
+    so when this signal fires nothing can be running. Any row still showing
+    "Waiting in queue..." or a partial progress bar is a task whose worker died
+    holding it — an OOM kill, a container restart, the file-descriptor collapse
+    that motivated the nofile ulimit in docker-compose.yml.
+
+    Those rows never resolved themselves. acks_late is off (deliberately: a task
+    that OOM-kills its worker would otherwise be redelivered forever and take
+    the worker down on every attempt), so the message is gone with the process
+    and nothing was ever going to update the row. One sat at "Waiting in
+    queue... 0%" for 45 minutes with a Delete button as its only exit, which is
+    what sent someone looking for a bug in Delete.
+
+    Failing them here is what makes them honest — and, because the queue offers
+    Retry on failed cards, re-runnable.
+
+    The 30-second floor covers the one race: a task submitted just before this
+    signal fires may already be in the prefetch buffer and about to run. Rows
+    that young are left alone; if one is genuinely stranded, the next restart
+    catches it.
+    """
+    conn = get_db()
+    if not conn:
+        logger.warning("Stranded-task reaper skipped: no database connection.")
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE sprite_images
+                       SET error = %s, progress_msg = 'Failed'
+                     WHERE file_path IS NULL
+                       AND (error IS NULL OR error = '')
+                       AND deleted = false
+                       AND timestamp < NOW() - INTERVAL '30 seconds'
+                    """,
+                    ("Worker restarted while this task was queued or running, "
+                     "so it was lost. Retry to run it again.",),
+                )
+                if cur.rowcount:
+                    logger.warning(
+                        f"Marked {cur.rowcount} stranded task(s) as failed: their "
+                        f"worker died before they finished."
+                    )
+    except Exception as e:
+        logger.error(f"Stranded-task reaper failed: {e}")
+    finally:
+        conn.close()
+
+
+# --- Device snapshot upkeep -----------------------------------------------
+#
+# Refreshed around every task, not only when describe_device runs, because
+# describe_device is precisely what cannot run while the worker is busy. These
+# three moments bracket the blind window: what the card looked like when the
+# task started, and what it looks like the instant it finishes.
+
+@worker_ready.connect
+def _snapshot_on_boot(**_):
+    _cache_device_snapshot(_read_device_info())
+
+
+@task_prerun.connect
+def _snapshot_before_task(**_):
+    _cache_device_snapshot(_read_device_info())
+
+
+@task_postrun.connect
+def _snapshot_after_task(**_):
+    _cache_device_snapshot(_read_device_info())
