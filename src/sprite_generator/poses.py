@@ -310,14 +310,23 @@ MAGIC_FAR = [
 # outward and up is what separates "hit" from "surrender". Feet stay inside
 # leg reach - a stagger wide enough to over-extend gets clamped to a straight
 # leg, which reads as stiff at exactly the moment it should read as buckling.
+# FRONT-facing, not side. It was authored `side=True`, and that was the same
+# defect as burning: the cores face the camera, so a profile skeleton asks for a
+# turn the init image forbids, and the two signals fight. `got damage` declares
+# view "front" in action_prompts.json, and scripts/validate-actions.py now fails
+# the build when a declared view and its skeleton disagree - which is how this
+# one was caught, having survived the burning fix that should have caught it.
+#
+# Every wrist is inside 2*ARM (0.28) of its shoulder and every ankle inside
+# 2*LEG (0.38) of its hip, so no limb hits the straight-line clamp.
 HURT = [
-    _build(True, ((0.40, 0.34), (0.60, 0.34)), ((0.44, 0.94), (0.58, 0.94)),
+    _build(False, ((0.34, 0.22), (0.66, 0.22)), ((0.44, 0.94), (0.58, 0.93)),
            arm_bend=((0, -1), (0, -1))),
-    _build(True, ((0.34, 0.26), (0.56, 0.24)), ((0.41, 0.93), (0.56, 0.94)),
+    _build(False, ((0.30, 0.18), (0.70, 0.20)), ((0.42, 0.92), (0.60, 0.94)),
+           lift=0.010, arm_bend=((0, -1), (0, -1))),
+    _build(False, ((0.32, 0.24), (0.68, 0.26)), ((0.43, 0.93), (0.59, 0.93)),
            arm_bend=((0, -1), (0, -1))),
-    _build(True, ((0.31, 0.28), (0.53, 0.26)), ((0.40, 0.93), (0.55, 0.94)),
-           arm_bend=((0, -1), (0, -1))),
-    _build(True, ((0.37, 0.31), (0.57, 0.30)), ((0.42, 0.94), (0.57, 0.94)),
+    _build(False, ((0.36, 0.30), (0.64, 0.32)), ((0.45, 0.94), (0.57, 0.94)),
            arm_bend=((0, -1), (0, -1))),
 ]
 
@@ -386,8 +395,23 @@ def _mirror(cycle):
 # Matched against the action text in order, so the specific entries come first:
 # "move right" has to win before a bare "move" would.
 POSE_LIBRARY = [
-    (("move right", "walk right", "run right"), WALK_SIDE),
-    (("move left", "walk left", "run left"), _mirror(WALK_SIDE)),
+    # Diagonals alias onto the horizontal cardinal, and the keys live in the
+    # horizontal entries because matching is ordered and substring-based:
+    # "move up right" CONTAINS "move up", so a separate diagonal entry placed
+    # after these would never be reached, while one placed before would have to
+    # stay before forever. Position here is the guarantee.
+    #
+    # Aliasing rather than authoring four more cycles is deliberate. A
+    # side-facing sprite reads correctly moving diagonally; a front or back one
+    # does not, so the horizontal cardinal is the right fallback and the
+    # vertical component is the one to drop. These MUST agree with
+    # action_prompts.json - scripts/validate-actions.py asserts that they do.
+    (("move up right", "move down right", "up right", "down right",
+      "northeast", "southeast",
+      "move right", "walk right", "run right"), WALK_SIDE),
+    (("move up left", "move down left", "up left", "down left",
+      "northwest", "southwest",
+      "move left", "walk left", "run left"), _mirror(WALK_SIDE)),
     (("move up", "walk up", "walk back"), WALK_FRONT),
     (("move down", "walk down", "walk front", "move", "walk", "run"), WALK_FRONT),
     # Weapon and magic variants BEFORE the generic attack entry: every one of
@@ -406,6 +430,34 @@ POSE_LIBRARY = [
     (("damage", "hurt", "hit"), HURT),
     (("idle", "stand"), IDLE),
 ]
+
+
+def is_side_view(cycle) -> bool:
+    """True when a cycle is authored in profile rather than head-on.
+
+    _build(side=True) collapses both shoulders onto x=0.50, so the two shoulder
+    keypoints being identical is an exact structural marker - no threshold and
+    no separate flag to keep in sync with the coordinates.
+
+    This matters because img2img cannot rotate a character. A profile skeleton
+    over a camera-facing core asks for a turn that the init image forbids, and
+    what comes back is a front-facing character shuffling in place. Callers use
+    this to swap in a side-facing init instead of fighting it.
+    """
+    if not cycle:
+        return False
+    kp = cycle[0]
+    return kp.get(2) is not None and kp.get(2) == kp.get(5)
+
+
+def faces_left(cycle) -> bool:
+    """True when a profile cycle looks left. Meaningless for front views.
+
+    _head(True) puts the nose at 0.50 + 0.09*face_dir, so a nose left of centre
+    is a figure turned left.
+    """
+    nose = cycle[0].get(0) if cycle else None
+    return bool(nose and nose[0] < 0.50)
 
 
 def cycle_for(action: str):

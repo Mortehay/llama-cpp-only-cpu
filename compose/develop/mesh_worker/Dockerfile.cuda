@@ -1,0 +1,109 @@
+# syntax=docker/dockerfile:1
+# Stage 2 of the 3D conveyor: a generated character image -> a 3D mesh.
+#
+# SEPARATE IMAGE ON PURPOSE, not a layer on sprite_generator's. The 3D stack
+# needs Python 3.11 (UniRig, the rigging step after this one, requires it where
+# sprite_worker is 3.10) and compiled CUDA extensions. Isolating them means a
+# failed 3D experiment can never break sprite generation, which is the part of
+# this project that currently works.
+# See .ai/decisions/0004-pivot-to-3d-conveyor.md
+#
+# WHY A CUDA *DEVEL* BASE, when sprite_generator/Dockerfile.cuda argues AGAINST
+# one. That argument is correct for the sprite image: torch's wheels vendor the
+# CUDA *runtime*, so a container that only RUNS kernels needs nothing more.
+# This image COMPILES one. torchmcubes is a CMake project whose CUDA branch is
+# gated on the compiler, not on a device:
+#     check_language(CUDA)
+#     if(CMAKE_CUDA_COMPILER) ... else() "CPU VERSION ONLY!"
+# so it needs nvcc and a real CUDAToolkit layout at build time. A GPU is NOT
+# needed to build - only the toolkit - which is why this works in `docker build`
+# despite builds having no device.
+#
+# The CUDA MAJOR VERSION here must track torch's. PyPI torch now ships cu13
+# wheels (it pulls nvidia_cudnn_cu13), so a 12.x devel base would compile this
+# extension with an nvcc a major version behind the torch it links against -
+# which can build cleanly and then fail at runtime. 13.0 toolkit against the
+# host's 13.3 driver is fine; drivers are forward compatible with older
+# toolkits, not the reverse.
+FROM nvidia/cuda:13.0.3-devel-ubuntu22.04
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Python 3.11 from deadsnakes; 22.04 ships 3.10. build-essential/cmake/ninja are
+# for the extension build, libgl1/libglib2.0-0 for rembg's OpenCV dependency.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-dev python3.11-venv python3.11-distutils \
+        build-essential cmake ninja-build git curl \
+        libgl1 libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# torch in its own layer: large, changes rarely. PyPI's default torch is a
+# current-CUDA build, which the host driver (610.88 / CUDA 13.3) runs natively.
+# The long history note in sprite_generator/Dockerfile.cuda applies here too.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch torchvision
+
+# Build tooling for torchmcubes. pybind11 is NOT optional and NOT pulled in
+# automatically: its CMakeLists does `find_package(pybind11 CONFIG REQUIRED)`,
+# which needs the CMake config that the pip package ships.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install scikit-build-core pybind11 cmake ninja numpy
+
+# torchmcubes, WITH the CUDA kernel.
+#
+# Three settings are load-bearing:
+#   Torch_DIR      - `find_package(Torch CONFIG REQUIRED)` cannot find torch
+#                    unless pointed at its config dir inside site-packages.
+#   pybind11_DIR   - same for `find_package(pybind11 CONFIG REQUIRED)`.
+#   CUDA arch      - pinned to 86, the RTX 3060 (Ampere, compute 8.6). Left
+#                    unset, nvcc compiles for every supported arch, which on a
+#                    4-thread i3-8100 is the difference between minutes and a
+#                    very long time.
+#
+# Use the per-package <name>_DIR variables, NOT CMAKE_PREFIX_PATH. Setting
+# CMAKE_PREFIX_PATH to torch's cmake dir alone REPLACES the default search path
+# rather than extending it, which found Torch and then hid pybind11:
+#     -- INSTALLING EXTENSIONS WITH CUDA!
+#     CMake Error at CMakeLists.txt:40 (find_package):
+#       Could not find a package configuration file provided by "pybind11"
+# find_package(X CONFIG) consults X_DIR first, so naming each one is both
+# narrower and more robust than juggling one shared list.
+ENV TORCH_CUDA_ARCH_LIST=8.6 \
+    CUDA_HOME=/usr/local/cuda
+RUN --mount=type=cache,target=/root/.cache/pip \
+    TORCH_DIR=$(python3.11 -c "import torch, os; print(os.path.join(os.path.dirname(torch.__file__), 'share', 'cmake', 'Torch'))") && \
+    PYBIND_DIR=$(python3.11 -c "import pybind11; print(pybind11.get_cmake_dir())") && \
+    echo "Torch_DIR=${TORCH_DIR}  pybind11_DIR=${PYBIND_DIR}" && \
+    CMAKE_ARGS="-DTorch_DIR=${TORCH_DIR} -Dpybind11_DIR=${PYBIND_DIR} -DCMAKE_CUDA_ARCHITECTURES=86" \
+    pip install --no-build-isolation \
+        git+https://github.com/tatsy/torchmcubes.git
+
+# --no-build-isolation above is why torch/pybind11 are installed first: with
+# isolation, the build would run in a fresh venv where neither is importable and
+# find_package(Torch) would fail no matter what CMAKE_PREFIX_PATH said.
+
+COPY compose/develop/mesh_worker/requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# TripoSR is a repo, not a pip package: its model code lives in `tsr/` and is
+# imported directly, so the source has to be on the image rather than installed.
+ARG TRIPOSR_REF=main
+RUN git clone --depth 1 --branch ${TRIPOSR_REF} \
+    https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
+ENV PYTHONPATH=/opt/TripoSR:/app
+
+# Weights are NOT baked in. They live in the shared /models volume alongside the
+# diffusion checkpoints, so the image stays small and a rebuild does not refetch.
+ENV HF_HOME=/models \
+    PYTHONUNBUFFERED=1
+
+CMD ["sleep", "infinity"]

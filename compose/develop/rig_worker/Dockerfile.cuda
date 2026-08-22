@@ -1,0 +1,115 @@
+# syntax=docker/dockerfile:1
+# Stage 3 of the 3D conveyor: a mesh -> a rigged mesh (skeleton + skinning).
+#
+# Separate from mesh_worker despite both being Python 3.11 + CUDA, because
+# UniRig pins transformers==4.51.3 while TripoSR pins 4.35.0. Sharing an image
+# would mean one of them running against a transformers it was not tested on,
+# and the failure mode there is silent wrong output rather than an ImportError.
+# Layers are shared with mesh_worker anyway (same base, same torch), so the cost
+# on disk is far smaller than the image size suggests.
+#
+# See .ai/decisions/0004-pivot-to-3d-conveyor.md
+FROM nvidia/cuda:13.0.3-devel-ubuntu22.04
+
+WORKDIR /app
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Python 3.11 is REQUIRED, not preferred: bpy==4.2 ships cp311 wheels only, and
+# UniRig's README states 3.11. 22.04 ships 3.10, hence deadsnakes.
+# The X11 set is for bpy, not for a display. `import bpy` dlopens Blender's GUI
+# libraries even when nothing is ever drawn, and a missing one fails at IMPORT
+# time with e.g. "libXi.so.6: cannot open shared object file" - which reads like
+# a broken install rather than a missing apt package. open3d and pyrender want
+# libgl1/libglib for the same reason. Found by installing into a running
+# container until `import bpy` succeeded, rather than guessing through rebuilds.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        software-properties-common gnupg ca-certificates \
+    && add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-dev python3.11-venv python3.11-distutils \
+        build-essential cmake ninja-build git curl \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+        libxi6 libxxf86vm1 libxfixes3 libxkbcommon0 \
+        libxrandr2 libxinerama1 libxcursor1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1 \
+    && curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+
+# torch first and alone: large, changes rarely, and the cache mount means a
+# rebuild of the layers below never re-downloads it. Shares the pip cache with
+# mesh_worker, so this is usually a cache hit rather than a fresh 3GB.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch torchvision
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install numpy scipy
+
+# torch_scatter / torch_cluster are NOT in requirements.txt and NOT optional:
+# UniRig's skeleton model does `from torch_cluster import fps` at module load
+# (src/model/michelangelo/models/tsal/sal_perceiver.py), so inference dies with
+# ModuleNotFoundError without them. Neither ships a wheel for torch 2.13+cu130,
+# so both compile from source here.
+#
+# TORCH_CUDA_ARCH_LIST=8.6 IS LOAD-BEARING AT BUILD TIME. When a GPU is visible
+# torch auto-detects it and emits only -gencode arch=compute_86 - confirmed on
+# the exec-time install that produced these wheels, which finished in wall-clock
+# minutes. During `docker build` there is NO GPU, so that auto-detect falls back
+# to compiling EVERY supported architecture: identical source, many times the
+# work. Pinning it gives the build the same single-arch scope the runtime
+# install got. 8.6 is the RTX 3060 - change this if the card changes.
+#
+# --no-build-isolation because both compile against the INSTALLED torch; an
+# isolated build env has no torch and setup.py fails immediately.
+# MAX_JOBS=2 on a 4-thread i3-8100: unbounded nvcc jobs are the standard way to
+# exhaust WSL's 11GB, and an OOM here takes down the distro, not just pip.
+ENV TORCH_CUDA_ARCH_LIST=8.6
+RUN --mount=type=cache,target=/root/.cache/pip \
+    MAX_JOBS=2 pip install --no-build-isolation \
+        torch_scatter==2.1.2 torch_cluster==1.6.3
+
+# blinker must be shadowed BEFORE the requirements install, or that install dies:
+#
+#   Attempting uninstall: blinker
+#   error: uninstall-distutils-installed-package
+#   Cannot uninstall blinker 1.4 - It is a distutils installed project and thus
+#   we cannot accurately determine which files belong to it
+#
+# apt pulls blinker 1.4 in as a dependency of software-properties-common, which
+# this image needs only to add the deadsnakes PPA. It lands as a distutils
+# package with no reliable file manifest, so pip refuses to remove it and aborts
+# the whole transaction when something in UniRig's tree wants a newer one.
+# --ignore-installed writes a pip-managed copy over the top instead of trying to
+# uninstall, which is the narrow fix; purging the apt package would drag
+# software-properties-common out with it.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --ignore-installed blinker
+
+COPY compose/develop/rig_worker/requirements.txt ./requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
+
+# UniRig is a repo, not a package: its inference is driven by shell scripts in
+# launch/ that call into src/. Cloned rather than installed.
+ARG UNIRIG_REF=main
+RUN git clone --depth 1 --branch ${UNIRIG_REF} \
+    https://github.com/VAST-AI-Research/UniRig.git /opt/UniRig
+
+# Two edits the skeleton path needs: drop the eager spconv import, and swap
+# flash_attention_2 for sdpa. Both remove dependencies that this path does not
+# actually use; neither changes what the model computes. The script carries the
+# full reasoning and is idempotent. It EXITS NONZERO if an anchor is missing, so
+# a UNIRIG_REF bump that moves the code fails the build here rather than
+# producing an image that dies at inference.
+COPY compose/develop/rig_worker/patch_unirig.py /opt/patch_unirig.py
+RUN python /opt/patch_unirig.py /opt/UniRig
+
+ENV PYTHONPATH=/opt/UniRig:/app
+
+# Weights live in the shared /models volume, not baked into the image. Inference
+# needs the skeleton (1.4GB) and skin (4.4GB) checkpoints only - NOT
+# data/rigxl/processed.7z, which is 4.9GB of TRAINING data.
+ENV HF_HOME=/models \
+    PYTHONUNBUFFERED=1
+
+CMD ["sleep", "infinity"]

@@ -110,7 +110,7 @@ async function loadCores() {
         }
         picker.innerHTML = cores.map(c => `
             <div class="core-item" id="core-sel-${c.id}" onclick="selectCore(${c.id})">
-                <img src="${esc(c.file_path.split('/app').pop())}" title="${esc(c.prompt)}"/>
+                <img src="${esc(c.file_path.split('/app').pop())}" title="${esc(c.prompt)}" loading="lazy" onerror="retryImage(this)"/>
             </div>
         `).join('');
         
@@ -384,7 +384,7 @@ function pollTaskStatus(taskId, mode) {
             clearInterval(pollInterval);
             const imgUrl = `/images/${me.file_path.split('/').pop()}`;
             resultDiv.innerHTML = `
-                <img src="${imgUrl}" alt="Sprite" />
+                <img src="${imgUrl}" alt="Sprite" onerror="retryImage(this)" />
                 <div class="crop-btn-container">
                     <button class="btn-crop" onclick="openCropModal('${imgUrl}', ${me.id})">✂️ Crop Character</button>
                 </div>

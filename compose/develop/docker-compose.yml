@@ -232,3 +232,54 @@ services:
         condition: service_started
     tmpfs:
       - /app/images/temp:size=2G,mode=1777
+  # Stage 2 of the 3D conveyor: character image -> mesh. See
+  # .ai/decisions/0004-pivot-to-3d-conveyor.md
+  #
+  # Isolated from the sprite images on purpose: Python 3.11 (UniRig needs it
+  # later, sprite_worker is 3.10) and compiled extensions that must never put
+  # the working 2D pipeline at risk.
+  #
+  # `sleep infinity` rather than a queue worker. The mesh step has one
+  # unanswered question in front of it - whether a generated stylised character
+  # yields a usable mesh - and wiring it into Celery before that is answered
+  # would be building on an assumption. Drive it with:
+  #   docker exec mesh_worker python /app/mesh.py /app/images/<core>.png -o /app/images/out.obj
+  mesh-worker:
+    build:
+      context: ../../
+      dockerfile: compose/develop/mesh_worker/Dockerfile.cuda
+    container_name: mesh_worker
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${MODELS_DIR:-../../models}:/models
+      - ../../src/mesh_worker:/app
+      - ${IMAGES_DIR:-../../images}:/app/images
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTHONUNBUFFERED=1
+    profiles: ["mesh"]
+
+  # Stage 3 of the 3D conveyor: mesh -> rigged mesh. See
+  # .ai/decisions/0004-pivot-to-3d-conveyor.md
+  #
+  # Separate from mesh-worker because UniRig pins transformers==4.51.3 against
+  # TripoSR's 4.35.0; sharing would run one of them untested, and that fails
+  # silently rather than loudly. Base and torch layers are shared on disk.
+  #
+  # `sleep infinity` for the same reason as mesh-worker: the open question is
+  # whether UniRig emits a CONSISTENT skeleton across characters, and wiring it
+  # into Celery before that is answered would build on an assumption.
+  rig-worker:
+    build:
+      context: ../../
+      dockerfile: compose/develop/rig_worker/Dockerfile.cuda
+    container_name: rig_worker
+    command: ["sleep", "infinity"]
+    volumes:
+      - ${MODELS_DIR:-../../models}:/models
+      - ../../src/rig_worker:/app
+      - ${IMAGES_DIR:-../../images}:/app/images
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - PYTHONUNBUFFERED=1
+    profiles: ["rig"]

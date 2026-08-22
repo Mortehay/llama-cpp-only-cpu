@@ -159,7 +159,21 @@ import poses
 # onto the sprite itself. At 0.75 so little of the init image survives that the
 # skeleton is the strongest signal left in the frame, and the model reproduces
 # its COLOURS and not just its geometry. Use the value the sweep chose.
-POSED_STRENGTH = 0.60
+# 0.60 was chosen by the sweep above, and that sweep asked the wrong question.
+# It scored MOTION and DRIFT, and never scored whether the frame came back
+# looking like pixel art at all. At 0.60 only ~60% of the denoising steps run,
+# so the output is the ORIGINAL core lightly modified - and the core is soft and
+# painterly, so the sprite inherits that and is never re-rendered in the
+# checkpoint's own crisp style. Idle at 0.60 came out mushy and blotchy: an
+# unreadable face and a torso of green camouflage smear. The walk rows looked
+# better not because they move but because they are re-drawn at high strength.
+#
+# 0.75 redraws. What makes it affordable is the IP-Adapter holding identity,
+# which is also why this could not have been the answer before it was wired up:
+# 0.75 without an identity anchor is where the character starts changing
+# clothes. Actions that need to ADD an effect still override this downward or
+# upward per action in action_prompts.json.
+POSED_STRENGTH = 0.75
 CONTROLNET_SCALE = 1.0
 
 # IP-ADAPTER WAS TRIED HERE AND REJECTED. Do not reach for it again without
@@ -261,6 +275,41 @@ CORE_TRIGGERS = {
     "publicprompts/all-in-one-pixel-model": "pixelsprite",
     "kohbanye/pixel-art-style": "pixelartstyle",
 }
+
+# STEP 2 view triggers. Different job from CORE_TRIGGERS above, which activates
+# a checkpoint's art style; these select which way the character FACES.
+#
+# Onodofthenorth ships four trained directional views. That is the capability
+# nothing else here has: All-In-One has never seen a character from behind, so
+# `move up` renders a face no matter what the prompt says, while `PixelartBSS`
+# returns a genuine faceless back.
+#
+# Why this is safe in step 2 when the same triggers were banned from step 1:
+# CORE_TRIGGERS records that FSS in txt2img returns four characters in a row
+# even at guidance 7.5 with duplicate-suppression negatives. Step 2 is different
+# in kind - img2img from a single-character core AND a single ControlNet
+# skeleton both pin the composition - and rendering FSS/BSS/RSS through that
+# path returned single characters every time. The trigger asks for a sheet and
+# the init image plus skeleton overrule it.
+#
+# Keys are lowercased repo ids. A checkpoint absent from this map simply gets no
+# view trigger, and falls back to derive_side_core for profile actions.
+VIEW_TRIGGERS = {
+    "onodofthenorth/sd_pixelart_spritesheet_generator": {
+        "front": "PixelartFSS",
+        "back": "PixelartBSS",
+        "left": "PixelartLSS",
+        "right": "PixelartRSS",
+    },
+}
+
+
+def view_trigger(llm_name: str, view: str):
+    """The trigger token selecting `view` on this checkpoint, or None."""
+    if not view:
+        return None
+    return VIEW_TRIGGERS.get((llm_name or "").strip().lower(), {}).get(view)
+
 
 DISTILLED_MARKERS = ("turbo", "schnell", "lightning", "lcm")
 
@@ -447,7 +496,8 @@ def load_action_prompts():
         parsed = [(tuple(e.get("match", ())), e.get("prompt", ""),
                    _clamp_strength(e.get("strength"), e.get("id")),
                    _clamp_unit(e.get("ip_adapter_scale"), e.get("id"),
-                               "ip_adapter_scale"))
+                               "ip_adapter_scale"),
+                   (e.get("view") or "").strip().lower() or None)
                   for e in entries if e.get("match") and e.get("prompt")]
         if not parsed:
             raise ValueError("no usable entries under 'actions'")
@@ -479,11 +529,12 @@ def action_entry(action: str) -> dict:
     silently breaks every caller that unpacked the old width.
     """
     a = (action or "").lower()
-    for keys, text, strength, ipa in load_action_prompts():
+    for keys, text, strength, ipa, view in load_action_prompts():
         if any(k in a for k in keys):
             return {"prompt": text, "strength": strength,
-                    "ip_adapter_scale": ipa}
-    return {"prompt": action, "strength": None, "ip_adapter_scale": None}
+                    "ip_adapter_scale": ipa, "view": view}
+    return {"prompt": action, "strength": None, "ip_adapter_scale": None,
+            "view": None}
 
 
 def fit_into_frame(img, box, frame_w, frame_h):
@@ -494,8 +545,28 @@ def fit_into_frame(img, box, frame_w, frame_h):
 
     scale = min(frame_w / crop.width, frame_h / crop.height)
     new_size = (max(1, int(crop.width * scale)), max(1, int(crop.height * scale)))
-    # NEAREST keeps pixel-art edges hard; see the note at the call site.
-    crop = crop.resize(new_size, Image.Resampling.NEAREST)
+    # Pick the filter by DIRECTION. NEAREST is right for pixel art only when
+    # scaling UP, where it keeps edges hard instead of blurring them into a
+    # gradient. This path is almost always scaling DOWN, and hard by default:
+    # frames render at 512 with the character ~423px tall, into a 128px frame -
+    # a 3.3x reduction. Downscaling with NEAREST keeps every third pixel and
+    # discards the other two, so a one-pixel outline survives or vanishes
+    # depending on where it lands on the sampling grid. Thin detail breaks into
+    # speckle, and that reads as the sprite being noisy rather than small.
+    #
+    # Measured on the zombie core, mean edge energy per opaque pixel (higher =
+    # more high-frequency content, which at this scale is aliasing, not detail):
+    #   into 128px:  NEAREST 52.07   BOX 43.95
+    #   into 256px:  NEAREST 31.32   BOX 29.26
+    # BOX area-averages the pixels being merged, which is what a downscale
+    # should do. Above 1:1 nothing changes - NEAREST still wins there.
+    #
+    # This is also the argument for a larger frame size: at 256 the reduction
+    # is only 1.65x and visibly more of the character survives, whichever
+    # filter is used. The frame-size selector already offers 256 and 512.
+    downscaling = scale < 1.0
+    crop = crop.resize(new_size, Image.Resampling.BOX if downscaling
+                       else Image.Resampling.NEAREST)
 
     frame = Image.new("RGBA", (frame_w, frame_h), (0, 0, 0, 0))
     # Centre horizontally, sit on the bottom edge: sprites share a ground line,
@@ -1110,6 +1181,95 @@ def _isolate_largest_sprite(arr):
     return arr
 
 
+# Deriving a side-facing core, for actions whose skeleton is in profile.
+#
+# WHY THIS EXISTS. img2img cannot rotate a character - it preserves composition,
+# and which way a body faces IS composition. So a profile skeleton over a
+# camera-facing core asks for a turn the init image forbids, and 'move right'
+# rendered as a front-facing zombie shifting its weight while a walk skeleton
+# was ignored. Raising strength far enough to force the turn (0.90+) destroyed
+# the character, which is why this went unsolved.
+#
+# WHAT CHANGED. The IP-Adapter. It was rejected for burning because it
+# suppresses anything the reference does not contain - but a rotation ADDS
+# nothing. The whole character is present in the reference; only the viewing
+# angle differs. So it holds identity at a strength high enough to actually
+# turn the body, which is a combination nothing else offered.
+#
+# Swept strength x adapter scale, judged on the rendered images:
+#   ipa 0.0  turns, but degrades into a blob at every strength
+#   ipa 0.4  clean profile, character intact          <- chosen
+#   ipa 0.7  clings to the front-facing core, will not turn
+# Aspect ratio was tried as an automatic "is it in profile" score and is NOT
+# reliable - a forward-reaching arm widens the bounds and it ranked ipa 0.4
+# worst when ipa 0.4 was visibly best. These values come from looking.
+SIDE_CORE_STRENGTH = 0.90
+SIDE_CORE_IPA_SCALE = 0.4
+
+
+VIEW_PROMPTS = {
+    "back": "back view seen from directly behind, facing away from the camera, "
+            "back of the head, no face, no eyes",
+    "right": "strict side view profile, facing right, standing in profile, "
+             "head turned right",
+    "left": "strict side view profile, facing left, standing in profile, "
+            "head turned left",
+}
+
+
+def derive_view_core(pipe, core_rgb, control, base_prompt, seed, view,
+                     llm_name=None):
+    """Render a profile-facing version of a core, or None if unavailable.
+
+    Returns None rather than raising: a sheet rendered from the front core is
+    the previous behaviour, which is worse but not broken, and losing a whole
+    generation job over an optional enhancement is the wrong trade.
+
+    Always produced facing RIGHT. A left-facing core is that image mirrored -
+    free, and it guarantees the two directions are the same character, which
+    two independent generations would not.
+    """
+    if not getattr(pipe, "_ipa_loaded", False):
+        logger.warning("Side-facing core needs the IP-Adapter and it is not "
+                       "loaded; falling back to the front core.")
+        return None
+    # The trained trigger LEADS the derivation prompt when the checkpoint has
+    # one, with the descriptive wording kept behind it as reinforcement. This is
+    # where a view trigger belongs, and where an earlier attempt got it wrong:
+    # applying the trigger to the per-frame prompt instead did nothing visible,
+    # because at frame settings (strength 0.75, adapter 0.5) the front init and
+    # the adapter outvote it. Derivation runs at 0.90 with a weaker adapter,
+    # which is the only place there is enough freedom to turn a body.
+    vt = view_trigger(llm_name, view)
+    described = VIEW_PROMPTS.get(view, VIEW_PROMPTS["right"])
+    view_text = f"{vt}, {described}" if vt else described
+    try:
+        pipe.set_ip_adapter_scale(SIDE_CORE_IPA_SCALE)
+        img = pipe(
+            prompt=(f"{view_text}, {base_prompt}, "
+                    "single character, full body"),
+            negative_prompt=NEGATIVE_FRAME,
+            image=core_rgb,
+            ip_adapter_image=core_rgb,
+            strength=SIDE_CORE_STRENGTH,
+            num_inference_steps=30,
+            guidance_scale=8.0,
+            generator=torch.Generator("cpu").manual_seed(seed),
+            control_image=control,
+            controlnet_conditioning_scale=CONTROLNET_SCALE,
+        ).images[0]
+        keyed = remove_background(img, keep_largest=True)
+        logger.info(f"Derived '{view}' core"
+                    + (f" via trained trigger {vt}" if vt else " by prompt")
+                    + f" (strength {SIDE_CORE_STRENGTH}, "
+                    f"ip_adapter {SIDE_CORE_IPA_SCALE}); bounds {keyed.getbbox()}.")
+        return keyed
+    except Exception as e:
+        logger.warning(f"Could not derive a '{view}' core ({e}); using the "
+                       "front core, so this action will not turn.")
+        return None
+
+
 def strip_ground_patch(img, width_ratio: float = 1.8, max_band_frac: float = 0.25):
     """Delete a ground/shadow patch fused to the bottom of a sprite.
 
@@ -1137,6 +1297,31 @@ def strip_ground_patch(img, width_ratio: float = 1.8, max_band_frac: float = 0.2
     robe genuinely is wider at the bottom, and clipping that would be worse
     than the patch. It runs on the core, once, and every frame inherits the
     clean version through img2img.
+
+    KNOWN GAP - measured on core_21f88cbbe9b4 (stocky zombie, arm outstretched):
+
+        body median (reference)  194    <- inflated by the raised arm
+        patch peak               344    <- ratio 1.77, just under width_ratio
+        boots                    206-209 <- ratio 1.06, just over the 1.05 walk
+
+    Both numbers land on the wrong side of their limit at the same time, so the
+    patch is missed AND lowering width_ratio does not rescue it: the hysteresis
+    walk would then run up through the boots and amputate the feet. The rule
+    assumes a body whose reference width is dominated by the torso and whose
+    feet are clearly narrower than it - true for the slim zombie it was tuned on
+    (legs 0.77x, patch 3.2x), false for a stocky character holding an arm out.
+
+    A per-row gradient detector was tried as a replacement and rejected: the
+    shadow ramps in over ~12 rows rather than stepping, so the largest single
+    row jump is the ankle-to-boot flare (+20%), not the ground. A windowed
+    version would need a threshold that separates +36% (boots) from +66%
+    (ground) - another number fitted to two samples, so it was not adopted.
+
+    This is cosmetic in 2D. It is NOT cosmetic for the 3D path, where the patch
+    reconstructs as a disc fused to the soles: on charB it took silhouette IoU
+    from 0.908 to 0.412 and turned a 19-bone branching skeleton into a 6-bone
+    straight chain. Anything feeding TripoSR should be visually checked until
+    this gap is closed.
     """
     import numpy as np
 
@@ -1498,8 +1683,14 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     # adapter drags in a CLIP image encoder that stays resident in VRAM beside
     # the checkpoint, so a sheet of actions that all leave ip_adapter_scale unset
     # should never pay for it.
+    # Also required by derive_side_core, which is the only thing that lets a
+    # profile action actually turn - so a sheet containing one needs the adapter
+    # whether or not that action sets ip_adapter_scale for its own frames.
+    needs_side = any((action_entry(a).get("view") or "front") != "front"
+                     for a in actions)
     ipa_active = False
-    if any((action_entry(a)["ip_adapter_scale"] or 0.0) > 0 for a in actions):
+    if needs_side or any((action_entry(a)["ip_adapter_scale"] or 0.0) > 0
+                         for a in actions):
         ipa_active = ensure_ip_adapter(p)
     elif getattr(p, "_ipa_loaded", False):
         # A previous sheet on this cached pipeline turned it on. Unload rather
@@ -1553,6 +1744,44 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     logger.info(f"Generating frames at {GEN_SIZE}x{GEN_SIZE} (model native), "
                 f"downscaling to {frame_width}x{frame_height} for the sheet.")
 
+    # A profile-facing init for the profile actions, derived once and shared.
+    #
+    # Derived lazily and cached for the whole sheet: it costs a full generation,
+    # so a sheet with four side actions must not pay for it four times, and a
+    # sheet with none must not pay for it at all.
+    _side_cache = {}
+
+    def view_core_for(view):
+        """(init image, pose box) for a non-front view, deriving on first use."""
+        # Left is the mirror of right, never its own generation: two independent
+        # generations do not agree on the character, and a walk that changes
+        # clothes when it turns around is worse than one that does not turn.
+        source = "right" if view == "left" else view
+
+        if source not in _side_cache:
+            ctrl_action = "move up" if source == "back" else "move right"
+            ctrl = poses.control_images(ctrl_action, 1, (GEN_SIZE, GEN_SIZE),
+                                        pose_box)[0]
+            _side_cache[source] = derive_view_core(
+                p, core_frame, ctrl, base_prompt, parent_seed, source, llm_name)
+        base_img = _side_cache[source]
+        if base_img is None:
+            return core_frame, pose_box
+
+        if view not in _side_cache:
+            _side_cache[view] = (base_img.transpose(Image.FLIP_LEFT_RIGHT)
+                                 if view == "left" else base_img)
+        img = _side_cache[view]
+
+        # The turned body has its own bounds, so the skeleton must be refitted
+        # to them. Reusing the front core's box would put the skeleton back
+        # around a silhouette that no longer exists.
+        box = img.getbbox() or (0, 0, GEN_SIZE, GEN_SIZE)
+        flat = Image.alpha_composite(
+            Image.new("RGBA", img.size, (255, 255, 255, 255)),
+            img.convert("RGBA")).convert("RGB")
+        return flat, box
+
     action_strips = []
     failed_actions = []
 
@@ -1588,9 +1817,37 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         #                                    appeared halfway through the strip)
         strength = 0.55 if is_dynamic else 0.45
 
+        # Facing comes from ONE of two sources, never both.
+        #
+        # A checkpoint with a trained view trigger knows what the character
+        # looks like from that angle, so the trigger does the work and the front
+        # core stays the init. That is strictly better than deriving: a derived
+        # core is this pipeline guessing at an unseen angle, where the trigger is
+        # the model recalling one it was trained on.
+        #
+        # Without such a trigger we fall back to derive_side_core, which is the
+        # only option for profile actions on All-In-One.
+        # Facing is decided ONCE, when the view core is derived - not per frame.
+        #
+        # Trigger and derivation compose rather than competing. The trigger says
+        # WHAT the far side of the character looks like, which only a checkpoint
+        # trained on that view knows; the derivation is the one moment with
+        # enough denoising freedom to actually turn the body. Applying the
+        # trigger per frame instead was measured and did nothing: every row came
+        # back front-facing, because at frame settings the init and the adapter
+        # outvote a prompt token.
+        #
+        # `view` is data from action_prompts.json, so this no longer infers
+        # facing from skeleton shape - which could only ever distinguish profile
+        # from not-profile, and so had no way to express "back".
+        view = (_entry.get("view") or "front")
+        action_init, action_box = core_frame, pose_box
+        if view != "front":
+            action_init, action_box = view_core_for(view)
+
         # Skeletons for this action, or None when it has no cycle.
         frame_controls = (poses.control_images(action, motion_steps,
-                                               (GEN_SIZE, GEN_SIZE), pose_box)
+                                               (GEN_SIZE, GEN_SIZE), action_box)
                           if use_pose else None)
         if frame_controls:
             # ControlNet now holds the pose, so strength no longer has to serve
@@ -1670,6 +1927,10 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
                 # more precisely, and the words then fight it - "leading leg
                 # extended" against a front-facing or attack skeleton is simply
                 # wrong. Use the hint only for unposed actions.
+                # No view trigger here on purpose. Facing is already baked into
+                # the init image by view_core_for; repeating the trigger per
+                # frame was measured to change nothing, and it would only spend
+                # tokens from the 77 CLIP keeps.
                 frame_prompt = (
                     f"{trigger}, {base_prompt}, single character, full body, centered"
                     if frame_controls else
@@ -1727,7 +1988,7 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
                 img = p(
                     prompt=frame_prompt,
                     negative_prompt=negative or None,
-                    image=core_frame,
+                    image=action_init,
                     strength=strength,
                     num_inference_steps=num_inf_steps,
                     guidance_scale=sheet_guidance,

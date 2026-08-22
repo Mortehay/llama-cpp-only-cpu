@@ -1,5 +1,9 @@
 # Project Context
 
+Companion docs: [domain.md](domain.md) for vocabulary that is ambiguous in this
+codebase — "core" alone means three different things — and
+[decisions/](decisions/) for choices that are hard to reverse.
+
 ## What this is
 
 Despite the repo name, `llama-cpp-only-cpu` is no longer a CPU LLM cluster. The
@@ -23,6 +27,15 @@ Three deliverables, in priority order:
 The first external consumer is the admin panel of
 [Mortehay/something2](https://github.com/Mortehay/something2).
 
+> **These three predate [decisions/0004](decisions/0004-pivot-to-3d-conveyor.md)
+> and need revisiting.** The target is now whole-sheet consistency - ~150 cells
+> per character, all matching - via a 3D intermediate rather than 2D img2img.
+> Specifically: **deliverable 3 may be moot**, because LoRA training is the *2D*
+> answer to sprite consistency and the pivot removes that problem. Deliverable 1
+> is also in question: the something2 contract is a txt2img A1111 facade, and a
+> 3D conveyor does not fit that shape. Not rewritten yet - the pivot's
+> mesh -> rig -> animate chain is still unverified.
+
 ## Measured hardware (2026-08-19)
 
 These are measured, not assumed, and several are binding constraints:
@@ -32,7 +45,7 @@ These are measured, not assumed, and several are binding constraints:
 | CPU | Intel i3-8100 — **4 cores / 4 threads, no HT** |
 | Host RAM | 15.9 GB |
 | GPU | RTX 3060 **12 GB**, driver 610.88 → **CUDA 13.3** (was 551.86 / CUDA 12.4) |
-| Host disk | C: 222.9 GB total. **20.5 GB free on 2026-08-21** (was 157 GB free on 2026-08-19 — the ext4 VHDX grew to 119 GB). D: 111.8 GB total, 72.6 GB free |
+| Host disk | C: 222.9 GB total, **47.7 GB free on 2026-08-22** (20.5 GB on 2026-08-21; 157 GB on 2026-08-19 — the ext4 VHDX grew to 119 GB). D: 111.8 GB total, **72.6 GB free — usable for model storage when C: is tight** |
 | WSL | Ubuntu 26.04 LTS ("resolute"), WSL 2.7.12. ext4 VHD reports ~1007 GB nominal — **this number is meaningless, see "Disk space" below** |
 | OS | Windows 10 Pro 19045 |
 
@@ -150,9 +163,22 @@ Their actual calling code has not been read.
 
 ## Known-broken areas
 
-- **Step 2 (spritesheet) does not produce usable output** after four rewrites —
-  the model's row/stack/grid layout is not stable, so no fixed slicing rule
-  holds. See README "Known issues". Step 1 works well.
+- (historical) **Step 2 produced no usable output** after four rewrites, because
+  the model's row/stack/grid layout was not stable and no fixed slicing rule
+  held. Fixed by no longer asking for a layout at all: each frame is generated
+  separately from the core and the strip is composed in PIL, where layout is
+  arithmetic rather than a sample from a distribution.
+- **Directional actions: cardinals work, diagonals do not.** `move left`/`right`
+  turn via derived view cores, and `move up` now renders a genuine BACK view
+  (no face) since step 2 moved to `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator`,
+  which ships trained front/back/left/right view triggers — see
+  `tasks.VIEW_TRIGGERS`. **Diagonals still do not exist and still silently
+  collapse onto cardinals**: matching is contiguous-substring, and
+  `"move up right"` contains `"move up"`. Full diagnosis in
+  [decisions/0003](decisions/0003-directional-sprites-and-view-cores.md).
+- `attack_melee` uses the profile `ATTACK` cycle, so it silently receives a
+  derived side core. Shipped, never verified.
+- `burning` still speckles at strength 0.75 on some frames.
 - (historical) The FLUX path could not load at all: `tasks.py` expected
   `/models/flux1-schnell.safetensors` plus a hardcoded HF snapshot hash, while
   `models.txt` downloads `flux-2-klein-4b-Q8_0.gguf`. Neither the safetensors
@@ -211,6 +237,16 @@ come back.
   `Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3"`.
   The VHDX path comes from `HKCU:\Software\...\Lxss` (`BasePath`), not a fixed
   location.
+- `df` inside the container is actively misleading here: it reports the ext4
+  VHDX's **nominal** ~1007 GB, so a model download can look free when C: is
+  nearly full. Check `Get-PSDrive C` on the Windows side before pulling weights.
+
+**D: is available as model overflow** (72.6 GB free, 2026-08-22). Nothing points
+at it yet — `MODELS_DIR` in `compose/develop/.env` is on the WSL ext4 volume,
+which lives on C:. Moving or symlinking the model cache to D: is the escape
+hatch when C: gets tight, and matters because model spikes are the main thing
+that consumes space: the IP-Adapter set is 2.6 GB (mostly its CLIP image
+encoder) and an SDXL turnaround candidate would be ~7 GB more.
 - Reclaim with `scripts/compact-wsl-disk.ps1` (**Administrator** — `diskpart`
   cannot attach a vdisk otherwise).
 - **Do not use `wsl --manage <distro> --set-sparse true`.** WSL refuses it with

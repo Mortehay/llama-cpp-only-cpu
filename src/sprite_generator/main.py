@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 from PIL import Image
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from migrations import run_migrations
@@ -48,8 +48,28 @@ os.makedirs(IMAGES_DIR, exist_ok=True)
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+class NoStoreStaticFiles(StaticFiles):
+    """Serve generated images without letting the browser cache them.
+
+    The gallery was rendering broken thumbnails with ERR_CACHE_READ_FAILURE in
+    the console: the sheets had been cached, this mount answered the reload with
+    304 Not Modified, and reading the (unreadable) disk-cache entry then failed -
+    which leaves the browser with no body *and* no network fallback, so the <img>
+    simply breaks. no-store keeps these responses out of the disk cache entirely,
+    the one setting where that failure cannot happen. Always sending the body is
+    cheap here: the files are local and the gallery lazy-loads its thumbnails.
+    """
+
+    def file_response(self, full_path, stat_result, scope, status_code: int = 200):
+        # Deliberately not calling super(): its conditional-request check is what
+        # produces the 304 this class exists to avoid.
+        response = FileResponse(full_path, status_code=status_code, stat_result=stat_result)
+        response.headers["cache-control"] = "no-store, max-age=0"
+        return response
+
+
 # Mount static files for serving saved images
-app.mount("/images", StaticFiles(directory=IMAGES_DIR), name="images")
+app.mount("/images", NoStoreStaticFiles(directory=IMAGES_DIR), name="images")
 
 def _db_target():
     """Host:port/name from DB_URL, without the credentials — safe to log."""

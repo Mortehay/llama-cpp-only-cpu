@@ -23,7 +23,8 @@
             {% if row.error %}
               <span>Error</span>
             {% elif row.file_path %}
-              <img src="{{ img_url }}" alt="sprite" />
+              <img src="{{ img_url }}" alt="sprite" loading="lazy" decoding="async"
+                   onerror="retryImage(this)" />
             {% else %}
               <span>Pending...</span>
             {% endif %}
@@ -33,7 +34,8 @@
         {% if row.components and row.components is iterable and row.components|length > 0 %}
           <div class="components-wrap">
             {% for c in row.components %}
-              <img src="{{ c }}" class="comp-img"/>
+              <img src="{{ c }}" class="comp-img" loading="lazy" decoding="async"
+                   onerror="retryImage(this)"/>
             {% endfor %}
           </div>
         {% endif %}

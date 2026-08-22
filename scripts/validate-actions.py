@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Assert every action resolves to a self-consistent skeleton + prompt + view.
+
+WHY THIS EXISTS
+
+Three separate bugs shipped in one day, and they were the same bug:
+
+  * `burning` routed to HURT, a SIDE-view recoil cycle, while its prompt asked
+    for a front view.
+  * `move up` routed to WALK_FRONT, whose head keypoints place nose and both
+    eyes facing camera, while its prompt asked for "back of the head, no face".
+    It rendered identically to `move down`.
+  * Every diagonal silently resolved to a cardinal and discarded its horizontal
+    component, because matching is contiguous-substring and "move up right"
+    contains "move up".
+
+In all three the skeleton and the prompt described DIFFERENT CHARACTERS, and
+nothing complained. Each was found by eye, after wasting a generation. The cost
+of the class is not any one bug - it is that the failure mode is silent, so it
+recurs.
+
+This is the cheap check that makes it loud. It runs no model and needs no GPU:
+it only asks whether the routing tables agree with each other.
+
+    docker exec sprite_worker python /app/../scripts/validate-actions.py
+    # or, from the repo, inside any container with the sources on PYTHONPATH:
+    python scripts/validate-actions.py
+
+Exit code is non-zero when anything disagrees, so it can gate a commit.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "src", "sprite_generator"))
+sys.path.insert(0, "/app")
+
+import poses  # noqa: E402
+import tasks  # noqa: E402
+
+# Every action the UI can send, plus the diagonals it cannot but callers can.
+UI_ACTIONS = [
+    "move right", "move left", "move down", "move up",
+    "close melee attack", "distant attack with bow",
+    "distant attack with sling", "close magic attack",
+    "distant magic attack", "got damage", "idle", "burning",
+]
+DIAGONALS = [
+    "move up right", "move down right", "move up left", "move down left",
+]
+
+# What the skeleton's own geometry says about facing, independent of any label.
+# `is_side_view` keys off both shoulders collapsing onto x=0.50, which is a
+# structural fact of the cycle rather than an annotation that can drift.
+def skeleton_facing(cycle):
+    if cycle is None:
+        return None
+    return "side" if poses.is_side_view(cycle) else "front-or-back"
+
+
+def check(action, expect_view=None):
+    problems = []
+    entry = tasks.action_entry(action)
+    cycle = poses.cycle_for(action)
+    view = entry.get("view")
+
+    if cycle is None:
+        problems.append("no pose cycle - falls back to unposed img2img")
+    if entry["prompt"] == action:
+        problems.append("no expanded prompt - raw action text sent to the model")
+    if not view:
+        problems.append("no 'view' declared in action_prompts.json")
+
+    # The core assertion: a side-view skeleton must not carry a front/back
+    # prompt, and vice versa. This is exactly what burning and move_up violated.
+    if cycle is not None and view:
+        geom = skeleton_facing(cycle)
+        if view in ("left", "right") and geom != "side":
+            problems.append(f"view '{view}' wants a profile skeleton, "
+                            f"but the cycle is {geom}")
+        if view in ("front", "back") and geom == "side":
+            problems.append(f"view '{view}' wants a front/back skeleton, "
+                            f"but the cycle is a profile")
+
+    if expect_view and view != expect_view:
+        problems.append(f"expected view '{expect_view}', got '{view}'")
+
+    return entry, cycle, view, problems
+
+
+def main():
+    failures = 0
+    print(f"{'action':28s} {'view':6s} {'skeleton':14s} status")
+    print("-" * 74)
+
+    for action in UI_ACTIONS:
+        entry, cycle, view, problems = check(action)
+        geom = skeleton_facing(cycle) or "NONE"
+        status = "ok" if not problems else "FAIL"
+        print(f"{action:28s} {str(view):6s} {geom:14s} {status}")
+        for p in problems:
+            print(f"    - {p}")
+            failures += 1
+
+    # Diagonals must alias to the HORIZONTAL cardinal. Before they did, they
+    # resolved to the back view and dropped the horizontal component silently.
+    print()
+    for action in DIAGONALS:
+        expect = "right" if "right" in action else "left"
+        entry, cycle, view, problems = check(action, expect_view=expect)
+        status = "ok" if not problems else "FAIL"
+        print(f"{action:28s} {str(view):6s} {'aliased':14s} {status}")
+        for p in problems:
+            print(f"    - {p}")
+            failures += 1
+
+    # Prompt budget. CLIP silently discards past 77 tokens, so an over-long
+    # action prompt is absent from every generation while looking present.
+    print()
+    try:
+        from transformers import CLIPTokenizer
+        tok = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14",
+                                            cache_dir="/models")
+        base = ("green zombie, tattered clothes, solid transparent background, "
+                "only zombie, high quality pixel art, sharp focus")
+        worst = 0
+        for action in UI_ACTIONS:
+            trig = tasks.action_entry(action)["prompt"]
+            full = f"{trig}, {base}, single character, full body, centered"
+            n = len(tok(full)["input_ids"])
+            worst = max(worst, n)
+            if n > 77:
+                print(f"OVER BUDGET  {action}: {n}/77 tokens - tail discarded")
+                failures += 1
+        print(f"prompt budget: worst case {worst}/77")
+    except Exception as e:
+        print(f"prompt budget: SKIPPED ({type(e).__name__}: {e})")
+
+    print()
+    if failures:
+        print(f"FAILED: {failures} disagreement(s) between skeleton, prompt "
+              "and declared view.")
+    else:
+        print("All actions self-consistent.")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -6,7 +6,14 @@ compose/develop/.env
 *.pyc
 __pycache__/*
 .env
+# Backups of .env are still .env - the plain pattern above does not match a
+# suffixed copy, so one made during a models move would be committed.
+.env.bak*
+*.env.bak*
 !compose/develop/.env.example
+# Core dumps. spconv-cu120 SIGFPEs on its first CUDA kernel here, and drops one
+# into whatever directory it was launched from.
+core.[0-9]*
 .venv
 compose/develop/db/data/
 !images

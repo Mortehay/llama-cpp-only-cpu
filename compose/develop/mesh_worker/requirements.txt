@@ -1,0 +1,29 @@
+# TripoSR's own requirements, minus gradio (no UI in this container) and minus
+# torch/torchvision (installed in an earlier layer to control the CUDA build).
+#
+# Versions follow TripoSR's requirements.txt rather than floating: this model
+# code is pinned to a commit, so its dependencies should be too.
+omegaconf==2.3.0
+Pillow==10.1.0
+einops==0.7.0
+transformers==4.35.0
+# trimesh>=5, NOT TripoSR's pinned 4.0.5. That version calls numpy's
+# ndarray.ptp(), removed in numpy 2.x, and torch pulls numpy 2.4.6 - so the pin
+# has to move rather than numpy being held back. Export still works on 4.0.5,
+# which is why the mesh generated fine; it is mesh.split() (used by
+# inspect_mesh.py to count components) that dies with AttributeError.
+trimesh>=5.0.0
+huggingface-hub
+rembg
+xatlas==0.0.9
+moderngl==5.10.0
+imageio[ffmpeg]
+onnxruntime
+
+# scipy: inspect_mesh.py uses ndimage for the silhouette-IoU rasterisation.
+scipy
+
+# torchmcubes is NOT listed here. It is installed in its own Dockerfile layer
+# with CMAKE_PREFIX_PATH and CMAKE_CUDA_ARCHITECTURES set, and with build
+# isolation disabled, so that it compiles the CUDA kernel rather than silently
+# falling back to the CPU one.

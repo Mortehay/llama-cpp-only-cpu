@@ -4,6 +4,7 @@
     "reload": "Re-read automatically when this file's mtime changes, so edits take effect on the next sheet WITHOUT restarting the sprite_worker container. Malformed JSON is logged and the previous good version stays loaded.",
     "matching": "actions[] is ORDERED and matched in order. An action name from the UI is lowercased, then the first entry with any of its `match` substrings contained in that name wins. Specific entries must come before general ones: 'move right' has to win before a bare 'move' would.",
     "fallback": "An action matching nothing is sent to the model as its own raw text, so a hand-typed custom action still works.",
+    "diagonals": "Diagonals ALIAS onto the horizontal cardinal: up-right and down-right render as move_right, up-left and down-left as move_left. That is a 4-way conveyor serving 8-way input, which is what a large share of 2D games ship - a side-facing sprite reads correctly while moving diagonally, where a front or back sprite does not. It costs nothing: no extra generation, no extra view core, and left/right are already mirror-consistent. WHY IT MATTERS: matching is contiguous-substring and ORDERED, and 'move up right' CONTAINS 'move up'. Before these keys existed every diagonal silently resolved to the BACK view and discarded the horizontal component entirely - measured, 'move up right' rendered as 'back view, facing away'. It failed silently, which is worse than failing. The horizontal entries sit before the vertical ones in actions[], so their diagonal keys win by position; do not reorder actions[] without re-running scripts/validate-actions.py.",
     "what_to_write": {
       "rule": "ControlNet supplies a skeleton that already fixes where every limb is, far more precisely than words can. Prompt text that argues with the skeleton makes both signals worse. So do NOT describe limb positions here.",
       "do_describe": [
@@ -25,11 +26,13 @@
     },
     "pose_cycle": "Informational only - names the skeleton in poses.py that drives this action's limbs. Changing it here has no effect; edit poses.POSE_LIBRARY instead. Listed so the pose and the words can be checked for agreement (a side-view skeleton with a front-view prompt is the bug this field exists to make visible).",
     "strength": {
-      "what": "OPTIONAL img2img strength for this action only, 0..1. How much of the core image the model may paint over. Omit to use POSED_STRENGTH (0.60) from tasks.py, which is right for most actions.",
+      "what": "OPTIONAL img2img strength for this action only, 0..1. How much of the core image the model may paint over. Omit to use POSED_STRENGTH (0.75) from tasks.py.",
       "tradeoff": "Low keeps the character but freezes its appearance. High frees the appearance but drifts toward a different character. There is no value that is right for every action, which is why this is per-action.",
-      "when_to_raise": "Only when the action must ADD something the core image does not contain - flames, smoke, an impact. A pose change alone does NOT need it: the skeleton already supplies the pose, and raising strength for that just costs identity for nothing.",
+      "when_to_raise": "Two cases. (1) The action must ADD something the core does not contain - flames, a bow, a spell. (2) The action must MOVE THE BODY substantially. Case 2 was originally documented as unnecessary, on the theory that ControlNet supplies the pose so strength can stay low. That was measured and it is FALSE: at 0.60 the init image outvotes the skeleton and the legs do not move at all. A walk rendered at 0.60 is a character standing still while a walk skeleton is ignored.",
       "measured": "Burning, same prompt, seed and skeleton, fraction of the sprite that is flame-coloured: 0.60 -> 0.07% (no fire at all), 0.75 -> 4.36% (visible flames, character still intact). Below about 0.70 there is not enough denoising freedom left to add fire.",
-      "ceiling": "Do not exceed ~0.75. At 0.75 with an EMPTY negative prompt the character was lost outright (came back in different clothes), and higher still reintroduces the OpenPose skeleton's own limb colours printing onto the sprite. NEGATIVE_FRAME is what holds identity together up here - do not strip it to chase an effect."
+      "ceiling": "Do not exceed ~0.75. At 0.75 with an EMPTY negative prompt the character was lost outright (came back in different clothes), and higher still reintroduces the OpenPose skeleton's own limb colours printing onto the sprite. NEGATIVE_FRAME is what holds identity together up here - do not strip it to chase an effect.",
+      "measured_pose": "Walk cycle, leg motion at controlnet_conditioning_scale 1.0: strength 0.60 -> legs static, the sprite stands there; 0.75 -> visibly striding, character intact; 0.90 -> striding but the design starts changing; 1.00 -> a different character entirely. Raising controlnet_conditioning_scale instead of strength does NOT substitute - 0.60 with scale 1.6 was still static, because the problem is that too few denoising steps run to move anything, not that the skeleton is too quiet.",
+      "measured_quality": "Strength is not only about motion and identity - it decides whether the frame is REDRAWN at all. Below ~0.70 the output is the original core lightly modified, so it keeps the core painterly rendering and never becomes crisp pixel art. Idle at 0.60 came back with an unreadable face and a smeared torso; at 0.75 with the IP-Adapter holding identity it is clean. If a row looks mushy rather than wrong, this is the knob."
     },
     "ip_adapter_scale": {
       "what": "OPTIONAL 0..1. Re-injects the core image through cross-attention at EVERY denoising step, instead of only as the starting latent the way img2img does. Omit or 0 to leave it off, which is the default everywhere.",
@@ -38,34 +41,53 @@
       "critical_warning": "DO NOT set this on an action that must ADD something the core image does not contain. The adapter anchors appearance to a reference with no flames, no bow and no spell in it, so it spends every step pulling back toward not-having-them. Measured on burning at strength 0.85, flame coverage: no adapter 15.57%, scale 0.35 -> 0.27%, scale 0.50 and above -> 0.00%. There is no scale that escapes this; it is what the adapter does.",
       "where_it_helps": "Actions that only change POSE, where there is no added effect for it to suppress and identity anchoring is therefore free: the walks, idle, and close melee. Start around 0.4-0.6.",
       "tuning": "Higher means the output clings harder to the core. Too high and every frame converges on the core's own pose and the animation stops moving, because the adapter fights ControlNet as well."
-    }
+    },
+    "view": "Which way the character FACES: front | back | left | right. Used two ways. (1) On a checkpoint listing this view in tasks.VIEW_TRIGGERS, the matching trained trigger is prepended to the frame prompt - that is how a real back view is obtained rather than a hallucinated one. (2) On a checkpoint without view triggers it falls back to derive_side_core for profile views. Omit for actions with no meaningful facing."
   },
   "actions": [
     {
       "id": "move_right",
       "label": "Move Right",
       "match": [
+        "move up right",
+        "move down right",
+        "up right",
+        "down right",
+        "northeast",
+        "southeast",
         "move right",
         "walk right",
         "run right"
       ],
+      "_why_diagonals": "Diagonals alias onto the horizontal cardinal - see _readme.diagonals. These keys sit in THIS entry rather than their own because move_right is matched before move_up, and 'move up right' contains 'move up'.",
       "pose_cycle": "WALK_SIDE",
       "prompt": "strict side view profile, facing right, walking to the right, full stride, arms swinging, steady forward motion",
       "ip_adapter_scale": 0.5,
-      "_why_ip_adapter": "A/B on this action: frame-to-frame 7.25 -> 5.15, loop-gap 7.19 -> 5.34. Helps because a walk drifts most."
+      "_why_ip_adapter": "A/B at strength 0.75 with a stride metric (foot spread per frame): ON [60.5,56.3,59.7,56.4] stride 7.1 and correctly alternating contact/passing; OFF [62.7,63.9,62.0,64.0] stride 3.2. The adapter HELPS the walk - it was expected to fight the stride by anchoring the core standing pose, and it does not.",
+      "_why_strength": "Uses the POSED_STRENGTH default (0.75). At the old 0.60 default the walk skeleton was ignored and the legs stayed planted.",
+      "view": "right"
     },
     {
       "id": "move_left",
       "label": "Move Left",
       "match": [
+        "move up left",
+        "move down left",
+        "up left",
+        "down left",
+        "northwest",
+        "southwest",
         "move left",
         "walk left",
         "run left"
       ],
+      "_why_diagonals": "Mirror of move_right's diagonal aliasing - see _readme.diagonals.",
       "pose_cycle": "WALK_SIDE mirrored",
       "prompt": "strict side view profile, facing left, walking to the left, full stride, arms swinging, steady forward motion",
       "ip_adapter_scale": 0.5,
-      "_why_ip_adapter": "Mirror of move_right; same cycle, same measured benefit."
+      "_why_ip_adapter": "Mirror of move_right; same cycle, same measured benefit.",
+      "_why_strength": "Uses the POSED_STRENGTH default (0.75). At the old 0.60 default the walk skeleton was ignored and the legs stayed planted.",
+      "view": "left"
     },
     {
       "id": "move_up",
@@ -78,7 +100,9 @@
       "pose_cycle": "WALK_FRONT",
       "prompt": "back view seen from behind, facing away from the camera, walking away, back of the head visible, no face",
       "ip_adapter_scale": 0.5,
-      "_why_ip_adapter": "Same WALK_FRONT cycle as move_down."
+      "_why_ip_adapter": "Same WALK_FRONT cycle as move_down.",
+      "_why_strength": "Uses the POSED_STRENGTH default (0.75). At the old 0.60 default the walk skeleton was ignored and the legs stayed planted.",
+      "view": "back"
     },
     {
       "id": "move_down",
@@ -94,7 +118,9 @@
       "pose_cycle": "WALK_FRONT",
       "prompt": "front view, facing the camera directly, walking forward toward the viewer, head on, mid step",
       "ip_adapter_scale": 0.5,
-      "_why_ip_adapter": "Same WALK_FRONT cycle as move_up."
+      "_why_ip_adapter": "Same WALK_FRONT cycle as move_up.",
+      "_why_strength": "Uses the POSED_STRENGTH default (0.75). At the old 0.60 default the walk skeleton was ignored and the legs stayed planted.",
+      "view": "front"
     },
     {
       "id": "attack_bow",
@@ -108,7 +134,9 @@
       "strength": 0.66,
       "_why_strength": "Must ADD a bow and arrow the core image does not contain, same additive case as burning. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
       "prompt": "firing a wooden bow, arrow nocked and drawn back, archer taking aim at a distant target, taut bowstring",
-      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
+      "view": "front",
+      "_why_view": "front, not right: BOW and SLING are authored front-facing in poses.py because what makes a bow or sling legible is the shape the two arms make against each other, and a profile hides one arm behind the other. The view field must match the skeleton geometry; validate-actions.py enforces it."
     },
     {
       "id": "attack_sling",
@@ -121,7 +149,9 @@
       "strength": 0.66,
       "_why_strength": "Must ADD a sling and its cords, which are not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
       "prompt": "swinging a leather sling overhead, whirling a stone on a cord, hurling a projectile at a distant target",
-      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
+      "view": "front",
+      "_why_view": "front, not right: BOW and SLING are authored front-facing in poses.py because what makes a bow or sling legible is the shape the two arms make against each other, and a profile hides one arm behind the other. The view field must match the skeleton geometry; validate-actions.py enforces it."
     },
     {
       "id": "attack_magic_close",
@@ -135,7 +165,8 @@
       "strength": 0.66,
       "_why_strength": "Must ADD glowing energy that is not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
       "prompt": "casting a close range spell, bright magical energy burning around both hands, glowing arcane sparks, short blast",
-      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
+      "view": "front"
     },
     {
       "id": "attack_magic_distant",
@@ -153,7 +184,8 @@
       "strength": 0.66,
       "_why_strength": "Must ADD a channelled glow and projectile that are not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
       "prompt": "casting a long range spell, arms raised channelling a glowing magic orb overhead, radiant arcane light, hurling energy",
-      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
+      "view": "front"
     },
     {
       "id": "attack_melee",
@@ -167,7 +199,8 @@
       ],
       "pose_cycle": "ATTACK",
       "prompt": "aggressive close melee attack, mid swing, striking forward with force, fierce snarling expression, lunging",
-      "_why_ip_adapter": "OFF: A/B was a wash (frame-to-frame 3.90 -> 3.36 better, loop-gap 3.92 -> 4.30 worse). Left off as the conservative default; turn on if you prefer the steadier adjacent frames."
+      "_why_ip_adapter": "OFF: A/B was a wash (frame-to-frame 3.90 -> 3.36 better, loop-gap 3.92 -> 4.30 worse). Left off as the conservative default; turn on if you prefer the steadier adjacent frames.",
+      "view": "right"
     },
     {
       "id": "burning",
@@ -180,7 +213,8 @@
       "pose_cycle": "BURN",
       "strength": 0.75,
       "prompt": "engulfed in bright orange flames, body on fire, burning alive, fire and smoke rising, glowing embers, agony",
-      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning."
+      "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
+      "view": "front"
     },
     {
       "id": "got_damage",
@@ -193,7 +227,8 @@
       "pose_cycle": "HURT",
       "prompt": "struck by a heavy hit, recoiling backward in pain, staggering off balance, pained expression, impact",
       "ip_adapter_scale": 0.5,
-      "_why_ip_adapter": "A/B on this action: frame-to-frame 3.16 -> 2.18, loop-gap 3.58 -> 2.36. Best result of any action."
+      "_why_ip_adapter": "A/B on this action: frame-to-frame 3.16 -> 2.18, loop-gap 3.58 -> 2.36. Best result of any action.",
+      "view": "front"
     },
     {
       "id": "idle",
@@ -204,7 +239,9 @@
       ],
       "pose_cycle": "IDLE",
       "prompt": "front view, facing the camera, standing still at rest, calm neutral idle stance, relaxed shoulders, alert",
-      "_why_ip_adapter": "OFF: measured WORSE on both (frame-to-frame 2.71 -> 4.69, loop-gap 1.88 -> 2.78). Idle barely moves, so there is no drift to suppress and the adapter only adds variance."
+      "_why_ip_adapter": "ON: idle adds no effect for the adapter to suppress, and it is what holds identity at the 0.75 default. An earlier A/B rejected it on a frame-to-frame metric, but that metric rewards an animation that freezes and was not measuring quality; at 0.60 without it idle rendered as mush.",
+      "ip_adapter_scale": 0.5,
+      "view": "front"
     }
   ]
 }

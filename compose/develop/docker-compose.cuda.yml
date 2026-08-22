@@ -100,3 +100,33 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # The mesh step needs the card for TripoSR's triplane inference. Marching
+  # cubes runs on CPU regardless - see the torchmcubes note in its Dockerfile.
+  mesh-worker:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # UniRig needs the card for both the skeleton transformer and the skinning
+  # cross-attention. Its README states 8GB VRAM minimum for generation.
+  rig-worker:
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

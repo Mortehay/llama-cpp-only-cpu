@@ -1,0 +1,52 @@
+# UniRig's requirements, with two deliberate omissions.
+#
+# flash_attn: OMITTED ON PURPOSE, not forgotten. It has no prebuilt wheel for
+# this torch/CUDA/Python combination, so pip would build it from source - hours
+# on a 4-thread i3-8100, with a real chance of OOM against WSL's 11GB, and its
+# own README warns the install "may encounter errors".
+#
+# RESOLVED: the skeleton path DOES want it, but not through an `import` - the AR
+# model config sets `_attn_implementation: flash_attention_2`, so transformers
+# refuses to build the model without it. Scanning Python imports missed this and
+# suggested only the skin model needed it; that was wrong.
+# patch_unirig.py rewrites those configs to `sdpa`. FlashAttention-2 computes
+# EXACT attention (it is an IO/memory optimisation, not an approximation) and
+# sdpa is exact too, so outputs agree to float rounding. The cost is speed and
+# peak-memory headroom, neither of which binds on one 350M model at 1024 tokens.
+#
+# spconv: DELIBERATELY ABSENT, and do not "fix" this by adding it. UniRig's
+# parse_encoder imports the PTv3 encoder eagerly, but the skeleton task selects
+# michelangelo_encoder, so PTv3 is never constructed - patch_unirig.py makes
+# that import optional. There is no cu130 wheel; spconv-cu120 was measured here
+# importing cleanly and then dying with SIGFPE (exit 136) on its first kernel
+# launch, so the older wheel is not a substitute, and a source build is hours
+# for an encoder this path never runs.
+#
+# torch_scatter / torch_cluster are NOT here either - they must compile against
+# an installed torch, so they live in Dockerfile.cuda after the torch layer.
+#
+# wandb: training telemetry. This container only runs inference.
+#
+# torch/torchvision are installed in an earlier Dockerfile layer to control the
+# CUDA build, same as the mesh worker.
+transformers==4.51.3
+python-box
+einops
+omegaconf
+pytorch_lightning
+lightning
+addict
+timm
+fast-simplification
+
+# bpy 4.2 is Blender as a Python module. It is version-locked to cp311, which is
+# the real reason this container is Python 3.11 rather than the sprite stack's
+# 3.10. It also happens to be what the RENDER stage will need later, so this
+# image is a natural home for that too.
+bpy==4.2
+
+trimesh
+open3d
+pyrender
+huggingface_hub
+numpy

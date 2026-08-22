@@ -104,12 +104,21 @@
           pose). The cost is that step 2 re-renders the core in this model's
           weaker style. See .ai/decisions/0002.
 
-          Onodofthenorth was removed: every trigger it ships is a SHEET trigger
-          (PixelartFSS = "Front Sprite Sheet") and it returns four characters in
-          a row even with guidance on.
+          Onodofthenorth was removed for returning four characters in a row.
+          That was measured, but in STEP 1 - txt2img with nothing constraining
+          composition. Step 2 is img2img from a single-character core AND a
+          single ControlNet skeleton, which both pin composition; rendering
+          FSS/BSS/RSS through that path returns single characters. It is back,
+          and it is the only checkpoint here with TRAINED directional views
+          (tasks.VIEW_TRIGGERS) - which is what All-In-One cannot do: it has
+          never seen this character from behind, so 'move up' renders a face no
+          matter what the prompt asks for.
         -->
-        <option value="PublicPrompts/All-In-One-Pixel-Model" selected>
-          All-In-One Pixel (SD1.5) - pose works, trigger 'pixelsprite'
+        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator" selected>
+          Pixel SpriteSheet (SD1.5) - trained front/back/left/right views
+        </option>
+        <option value="PublicPrompts/All-In-One-Pixel-Model">
+          All-In-One Pixel (SD1.5) - no back view, 'move up' shows a face
         </option>
         <option value="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl">
           SDXL + pixel-art LoRA - better art, but pose barely moves
