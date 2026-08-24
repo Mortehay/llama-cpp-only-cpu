@@ -20,59 +20,26 @@
 
     <div class="card tab-content active" id="tab-core">
       <label>Select Model</label>
-      <select id="core-llm" class="select-field">
-        <!--
-          Default measured 2026-08-21. SDXL base with a pixel-art LoRA fused on
-          top is the only configuration that produced structurally real pixel
-          art: 86.6% of pixels from 32 colours, 74.7% blockiness, against
-          36.9%/25.2% for sdxl-turbo. The base supplies anatomy and prompt
-          adherence; the 0.32GB LoRA supplies the style. Put "pixel art" in the
-          prompt - that is the LoRA's trigger. ~21s at 25 steps, 1024px.
-
-          sdxl-turbo and kohbanye/pixel-art-style were removed from disk: turbo
-          is distilled (guidance 0, negative prompts inert) and lost the bench,
-          kohbanye was never used. See .ai/decisions/0002.
-        -->
-        <option value="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl" selected>
-          SDXL + pixel-art LoRA - best measured, prompt with "pixel art"
+      <!--
+        Options come from core_models.roster(), not from this template. The
+        roster carries availability, so a checkpoint that has been archived off
+        /models renders disabled with the restore command attached instead of
+        being offered and then failing on the worker with "Model failed to load".
+        The per-model rationale (benchmarks, trigger words, why turbo was
+        dropped) moved into core_models.py with the list.
+      -->
+      <select id="core-llm" class="select-field" onchange="updateCoreModelState()">
+        {% for m in core_models %}
+        <option value="{{ m.value }}"
+                {% if m.default and m.available %}selected{% endif %}
+                {% if not m.available %}disabled{% endif %}
+                data-available="{{ 'true' if m.available else 'false' }}"
+                data-reason="{{ m.reason or '' }}">
+          {{ m.label }}{% if not m.available %} — not on disk{% endif %}
         </option>
-        <option value="stabilityai/stable-diffusion-xl-base-1.0+Muapi/soft-pixel-art-xl">
-          SDXL + soft-pixel-art LoRA - untested, softer style
-        </option>
-        <option value="stabilityai/stable-diffusion-xl-base-1.0+ntc-ai/SDXL-LoRA-slider.pixel-art">
-          SDXL + pixel-art slider LoRA - untested, 0.08GB
-        </option>
-        <option value="stabilityai/stable-diffusion-xl-base-1.0">
-          SDXL base - no pixel style, use for non-sprite subjects
-        </option>
-        <!--
-          Non-distilled alternatives. Turbo runs at guidance 0, so classifier-free
-          guidance is off and every negative prompt is a silent no-op - the root
-          cause behind _isolate_largest_sprite. These restore it, at ~25-30
-          steps instead of 4. See .ai/decisions/0002.
-
-          The step 1 core does NOT have to be a pixel-art model: step 2 re-renders
-          it through img2img and supplies the style. It has to produce one clean,
-          centred character.
-        -->
-        <!--
-          Benched 2026-08-21, same subject and seed across four models. This one
-          was the only one that produced real pixel art: hard grid, bounded
-          palette, one character, 3.0s at 20 steps / cfg 7.5. It is SD1.5, so it
-          is also ControlNet-compatible and can serve step 2 as well.
-
-          It needs its trigger word 'pixelsprite' in the prompt. Note that
-          generate_core_task currently prepends 'PixelartFSS' instead, which is
-          Onodofthenorth's "Front Sprite Sheet" trigger and asks for a 4-up
-          sheet - see .ai/decisions/0002.
-
-          John6666/super-pixelart-xl-m-v1-v10-sdxl was tried and removed: it
-          loads cleanly and returns pure RGB noise.
-        -->
-        <option value="PublicPrompts/All-In-One-Pixel-Model">
-          All-In-One Pixel (SD1.5) - best benched, trigger 'pixelsprite'
-        </option>
+        {% endfor %}
       </select>
+      <div class="model-warning" id="core-model-warning" hidden></div>
 
       <label for="core-prompt">Core Character Description</label>
       <textarea id="core-prompt" rows="3">green zombie, tattered clothes, solid transparent background</textarea>
@@ -104,17 +71,24 @@
       </div>
 
       <label>Actions</label>
-      <div class="actions-grid">
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="walk" checked /> Walk</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="attack" /> Attack</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="idle" /> Idle</label>
+      <!--
+        Rendered from /api/action-catalog, which reads action_prompts.json.
+        Three actions used to be hardcoded here while the library defined more,
+        so a new action was invisible until someone remembered to edit this
+        file too. Add an action to the JSON and it appears here on reload.
+      -->
+      <div class="actions-grid" id="actions-grid">
+        <span style="color:var(--muted); font-size: 13px;">Loading actions…</span>
       </div>
 
       <label>Directions</label>
       <div class="actions-grid">
+        <!--
+          Optional. Untick everything and the job builds the front row only -
+          /api/jobs reads an empty list as ["s"]. The button used to be disabled
+          until at least one was ticked, which made a direction a decision you
+          had to make before you could generate anything at all.
+        -->
         <label class="action-cb"><input type="checkbox" name="direction" value="s" checked /> S (front)</label>
         <label class="action-cb"><input type="checkbox" name="direction" value="se" checked /> SE</label>
         <label class="action-cb"><input type="checkbox" name="direction" value="e" checked /> E (right)</label>
@@ -137,7 +111,14 @@
         </div>
         <div style="flex: 1;">
           <label>Frames per Action</label>
-          <input type="number" id="sheet-frames" class="select-field" value="4" min="2" max="8"
+          <!--
+            max is set from /api/action-catalog at load, not written here. A
+            frame is a named pose in actions.py, so the real ceiling is however
+            many poses the chosen actions define - four today. This input used
+            to offer 8, and asking for 6 produced a job that ran the whole
+            turnaround pass and then died with KeyError: 'idle|s|4'.
+          -->
+          <input type="number" id="sheet-frames" class="select-field" value="4" min="2" max="4"
             onchange="updateGenSheetButtonState()"
             style="width: 100%; border-radius: 4px; padding: 6px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border);">
         </div>

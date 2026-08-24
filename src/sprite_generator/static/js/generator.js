@@ -1,19 +1,29 @@
 let pollInterval = null;
 let selectedCoreId = null;
+// True while a core generation is in flight. updateCoreModelState must not
+// re-enable the Generate button underneath a running job.
+let coreBusy = false;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     updateQueue();
     setInterval(updateQueue, 3000);
     
-    // Both axes toggle the button and move the estimate.
-    document.querySelectorAll('input[name="action"], input[name="direction"]')
+    // Directions are in the markup; the action checkboxes are rendered from
+    // /api/action-catalog and bind their own listeners in renderActions().
+    document.querySelectorAll('input[name="direction"]')
         .forEach(cb => cb.addEventListener('change', updateGenSheetButtonState));
+    // The frames box had no listener, so the estimate and the frame ceiling
+    // only refreshed when an action or direction was toggled.
+    const framesInput = document.getElementById('sheet-frames');
+    if (framesInput) framesInput.addEventListener('input', updateSheetEstimate);
     updateGenSheetButtonState();
     // A running job outlives this page, so reattach to it instead of leaving it
     // orphaned with the button re-enabled as though nothing were happening.
     resumeSheetJob();
     loadCores(); // Fetch initial core images
+    updateCoreModelState();
+    loadActionCatalog();
     updateDiagnostics();
     // 15s, not 5s: each call is a Celery round-trip to the inference worker, and
     // polling it three times a minute is plenty for a static device readout.
@@ -88,12 +98,13 @@ async function updateDiagnostics() {
 function updateGenSheetButtonState() {
     const btn = document.getElementById('gen-sheet-btn');
     if (!btn) return;
-    // Both axes are required now. An action with no direction - or a direction
-    // with no action - is zero cells, which submits happily and produces a job
-    // that finishes in seconds having written nothing.
+    // An ACTION is required - zero actions is zero cells, a job that finishes
+    // in seconds having written nothing. A DIRECTION is not: an empty
+    // selection is read by /api/jobs as the front row, which is a sensible
+    // sheet rather than an empty one, so requiring it only forced a choice
+    // before anything could be pressed.
     const acts = document.querySelectorAll('input[name="action"]:checked');
-    const dirs = document.querySelectorAll('input[name="direction"]:checked');
-    btn.disabled = (acts.length === 0 || dirs.length === 0);
+    btn.disabled = (acts.length === 0);
     if (typeof updateSheetEstimate === 'function') updateSheetEstimate();
 }
 
@@ -103,6 +114,74 @@ function switchTab(tabId) {
     event.currentTarget.classList.add('active');
     document.getElementById('tab-' + tabId).classList.add('active');
     if (pollInterval) clearInterval(pollInterval);
+    // Re-stat the model cache when the core tab is opened. A page left open
+    // across an archive/restore would otherwise keep showing the availability
+    // it was rendered with, which is exactly when it is most misleading.
+    if (tabId === 'core') refreshCoreModels();
+}
+
+// --- core model availability ---------------------------------------------
+//
+// The dropdown is rendered server-side from core_models.roster(), which stats
+// the shared /models cache. A checkpoint that has been archived to cold storage
+// cannot be fetched (HF_HUB_OFFLINE=1), so it is rendered disabled rather than
+// offered — the failure it used to produce was an opaque "Model failed to load
+// on worker" arriving seconds later in the queue panel, with no mention of the
+// cache at all.
+
+function updateCoreModelState() {
+    const sel = document.getElementById('core-llm');
+    const warn = document.getElementById('core-model-warning');
+    const btn = document.getElementById('gen-core-btn');
+    if (!sel || !warn || !btn) return;
+
+    const opts = Array.from(sel.options);
+    const usable = opts.filter(o => o.dataset.available === 'true');
+
+    if (usable.length === 0) {
+        // Every option disabled: the browser still reports one as selected, so
+        // check the roster rather than the selection.
+        warn.hidden = false;
+        warn.innerHTML =
+            '<strong>No core model is on disk.</strong> Step 1 cannot run until one is '
+            + 'restored.<br>' + esc(opts[0] ? (opts[0].dataset.reason || '') : '');
+        btn.disabled = true;
+        return;
+    }
+
+    // A disabled option can still be the selection after a refresh flips it.
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].dataset.available !== 'true') {
+        sel.value = usable[0].value;
+    }
+
+    warn.hidden = true;
+    warn.innerHTML = '';
+    if (!coreBusy) btn.disabled = false;
+}
+
+async function refreshCoreModels() {
+    const sel = document.getElementById('core-llm');
+    if (!sel) return;
+    try {
+        const res = await fetch('/api/core-models');
+        if (!res.ok) return;
+        const { models } = await res.json();
+        const by = new Map(models.map(m => [m.value, m]));
+        // Patch the existing options in place rather than rebuilding the select:
+        // rebuilding drops the user's selection and closes an open dropdown.
+        Array.from(sel.options).forEach(o => {
+            const m = by.get(o.value);
+            if (!m) return;
+            o.disabled = !m.available;
+            o.dataset.available = m.available ? 'true' : 'false';
+            o.dataset.reason = m.reason || '';
+            const base = o.textContent.replace(/ — not on disk$/, '').trim();
+            o.textContent = m.available ? base : base + ' — not on disk';
+        });
+        updateCoreModelState();
+    } catch (e) {
+        console.error('Could not refresh core models:', e);
+    }
 }
 
 async function loadCores() {
@@ -155,19 +234,107 @@ function esc(v) {
 // refresh while a button is armed.
 const armedDeletes = new Set();
 
+// --- sheet jobs in the queue panel ---------------------------------------
+//
+// Sheet jobs live in the `jobs` table; Live Tasks only ever read
+// /api/tasks/recent, which is the `sprite_images` table. So a sheet was
+// invisible the moment you navigated away from the page that submitted it -
+// no progress, no result, and a finished sheet that existed only as a URL
+// nobody was holding. The two are merged here rather than given a second
+// panel: from the operator's side it is one queue of work on one GPU.
+
+const JOB_TAGS = {
+  done: '<span class="tag tag-success">Done</span>',
+  failed: '<span class="tag tag-danger">Failed</span>',
+  cancelled: '<span class="tag tag-danger">Cancelled</span>',
+};
+
+function renderJobCard(j) {
+  const spec = j.spec || {};
+  const acts = (spec.actions || []).join(', ') || 'sheet';
+  const dirs = (spec.directions || []).length;
+  const title = `Sheet: ${acts} · ${dirs} dir · ${spec.frames || '?'}f`;
+  const running = !JOB_TAGS[j.status];
+  const tag = JOB_TAGS[j.status]
+    || `<span class="tag tag-working pulse">${j.progress_pct || 0}%</span>`;
+
+  let body = '';
+  if (j.status === 'failed' && j.error) {
+    body = `<div style="color: var(--danger); font-size: 11px; margin-top: 4px;`
+         + ` overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"`
+         + ` title="${esc(j.error)}">${esc(j.error)}</div>`;
+  } else if (j.sheet_url) {
+    body = `<a href="${esc(j.sheet_url)}" target="_blank">`
+         + `<img src="${esc(j.sheet_url)}" alt="sheet" loading="lazy"`
+         + ` style="width:100%; margin-top:6px; border-radius:4px;`
+         + ` image-rendering: pixelated; background: rgba(0,0,0,.25);" /></a>`;
+  } else if (running) {
+    body = `<span class="progress-info">${esc(j.progress_msg || j.stage || 'queued')}</span>`
+         + `<div class="progress-bg"><div class="progress-fill"`
+         + ` style="width: ${j.progress_pct || 0}%"></div></div>`;
+  }
+
+  const when = (j.updated_at || j.created_at || '').split('T')[1] || '';
+  return `
+    <div class="task-item" id="live-job-${esc(j.job_id)}">
+      <div class="prompt-clip">${esc(title)}</div>
+      <div class="meta">
+        <span>${tag}</span>
+        <span>${esc(when.split('.')[0])}</span>
+      </div>
+      ${body}
+      <div class="task-actions">
+        ${j.atlas_url ? `<button class="btn-sm btn-retry-sm" onclick="window.open('${esc(j.atlas_url)}','_blank')">Atlas</button>` : ''}
+        ${running ? `<button class="btn-sm btn-danger-sm" onclick="cancelSheetJob('${esc(j.job_id)}')">Cancel</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function cancelSheetJob(jobId) {
+  try {
+    await fetch(`/api/jobs/${jobId}`, { method: 'DELETE' });
+    updateQueue();
+  } catch (e) { console.error('cancel failed:', e); }
+}
+
+// Both feeds sort into one list by time. sprite_images uses `timestamp`, jobs
+// use `updated_at`; neither is comparable across tables except as a string,
+// which is fine because both are ISO-8601 UTC.
+function queueSortKey(item) {
+  return item._job ? (item.updated_at || item.created_at || '')
+                   : (item.timestamp || '');
+}
+
 async function updateQueue() {
   if (armedDeletes.size > 0) return;
   try {
-    const res = await fetch('/api/tasks/recent');
-    const tasks = await res.json();
-    const queueDiv = document.getElementById('task-queue');
+    // Settle both before rendering. Rendering on whichever returns first made
+    // the panel flicker between one feed and both.
+    const [taskRes, jobRes] = await Promise.allSettled([
+      fetch('/api/tasks/recent'),
+      fetch('/api/jobs?limit=25'),
+    ]);
 
-    if (tasks.length === 0) {
+    const tasks = taskRes.status === 'fulfilled' && taskRes.value.ok
+      ? await taskRes.value.json() : [];
+    let jobs = [];
+    if (jobRes.status === 'fulfilled' && jobRes.value.ok) {
+      const body = await jobRes.value.json();
+      jobs = (body.jobs || []).map(j => Object.assign({ _job: true }, j));
+    }
+
+    const queueDiv = document.getElementById('task-queue');
+    const merged = tasks.concat(jobs)
+                        .sort((a, b) => queueSortKey(b).localeCompare(queueSortKey(a)));
+
+    if (merged.length === 0) {
       queueDiv.innerHTML = '<p style="font-size: 12px; color: var(--muted); text-align: center; padding: 40px 0;">No history yet.</p>';
       return;
     }
 
-    queueDiv.innerHTML = tasks.map(t => {
+    queueDiv.innerHTML = merged.map(t => {
+      if (t._job) return renderJobCard(t);
       let statusTag = '';
       let progressLine = '';
       
@@ -303,6 +470,7 @@ async function generateCore() {
 
   if (resultDiv) resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
   if (statusDiv) statusDiv.innerText = 'Initializing...';
+  coreBusy = true;
   if (btn) btn.disabled = true;
 
   try {
@@ -318,11 +486,20 @@ async function generateCore() {
       pollTaskStatus(data.task_id, 'core');
       updateQueue();
     } else {
-      statusDiv.innerText = '❌ Error: ' + await req.text();
+      // FastAPI puts the reason in `detail`; printing the raw body showed the
+      // operator {"detail":"..."} instead of the sentence inside it. A 409 is
+      // the "model is not on disk" refusal, which is worth re-stating in the
+      // dropdown too in case the cache changed under an open page.
+      let msg = await req.text();
+      try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* not JSON */ }
+      statusDiv.innerText = '❌ ' + msg;
+      coreBusy = false;
+      if (req.status === 409) refreshCoreModels();
       btn.disabled = false;
     }
   } catch (e) {
     statusDiv.innerText = '❌ Error: ' + e.message;
+    coreBusy = false;
     btn.disabled = false;
   }
 }
@@ -353,16 +530,93 @@ function selectedDirections() {
 
 // Shown before submitting. ~33s/cell measured, plus roughly four model loads
 // at ~90s across the five build stages.
+// --- pose library limits -------------------------------------------------
+//
+// A frame is a named pose in actions.py, not an interpolation, so the number of
+// frames a sheet can have is bounded by the poses the chosen actions define.
+// The input used to offer up to 8 against a library of 4; the excess was only
+// discovered by the worker, which encoded keys 0..3, looked up 0..5, and died
+// with KeyError: 'idle|s|4' after the turnaround pass had already run.
+let actionCatalog = null;
+
+async function loadActionCatalog() {
+  try {
+    const res = await fetch('/api/action-catalog');
+    if (!res.ok) return;
+    actionCatalog = await res.json();
+    renderActions();
+    applyFrameLimit();
+  } catch (e) {
+    console.error('Could not load the action catalog:', e);
+  }
+}
+
+// The ceiling depends on WHICH actions are ticked, so recompute on every change
+// rather than once at load.
+// Walk stays ticked by default because it was the previous hardcoded default;
+// everything else the library defines is offered unticked.
+const DEFAULT_ACTION = 'walk';
+
+function renderActions() {
+  const grid = document.getElementById('actions-grid');
+  if (!grid || !actionCatalog) return;
+  const list = actionCatalog.actions || [];
+  if (!list.length) {
+    grid.innerHTML = '<span style="color:var(--danger); font-size:13px;">'
+      + 'No actions defined in action_prompts.json.</span>';
+    updateGenSheetButtonState();
+    return;
+  }
+  // Preserve what was already ticked, so a catalog refresh does not silently
+  // reset a selection the user made.
+  const ticked = new Set(selectedActions());
+  const anyTicked = ticked.size > 0;
+  grid.innerHTML = list.map(a => {
+    const on = anyTicked ? ticked.has(a.id) : a.id === DEFAULT_ACTION;
+    return `<label class="action-cb"><input type="checkbox" name="action"`
+         + ` value="${esc(a.id)}"${on ? ' checked' : ''} /> ${esc(a.label)}</label>`;
+  }).join('');
+  grid.querySelectorAll('input[name="action"]')
+      .forEach(cb => cb.addEventListener('change', updateGenSheetButtonState));
+  updateGenSheetButtonState();
+}
+
+function frameLimit() {
+  if (!actionCatalog) return null;
+  const per = actionCatalog.frames_by_action || {};
+  const picked = selectedActions().filter(a => a in per);
+  if (!picked.length) return actionCatalog.max_frames || null;
+  return Math.min(...picked.map(a => per[a]));
+}
+
+function applyFrameLimit() {
+  const el = document.getElementById('sheet-frames');
+  const limit = frameLimit();
+  if (!el || !limit) return;
+  el.max = String(limit);
+  // Clamp rather than leave an out-of-range value sitting in the box: a number
+  // input does not refuse one, it just submits it.
+  if ((parseInt(el.value, 10) || 0) > limit) el.value = String(limit);
+}
+
 function updateSheetEstimate() {
   const el = document.getElementById('sheet-estimate');
   if (!el) return;
+  applyFrameLimit();
   const framesEl = document.getElementById('sheet-frames');
   const frames = framesEl ? parseInt(framesEl.value, 10) || 4 : 4;
-  const cells = selectedActions().length * selectedDirections().length * frames;
+  // No direction ticked builds the front row, so it is one direction, not zero.
+  const dirCount = selectedDirections().length || 1;
+  const cells = selectedActions().length * dirCount * frames;
   if (!cells) { el.innerText = ''; return; }
   const mins = Math.round((cells * 33 + 360) / 60);
-  el.innerText = `${cells} cells — roughly ${mins} min on this card. `
-               + `The job keeps running if you close this page.`;
+  const limit = frameLimit();
+  const cap = (limit && frames >= limit)
+    ? ` ${limit} frames is the most these actions define.`
+    : '';
+  const front = selectedDirections().length ? '' : ' Front row only.';
+  el.innerText = `${cells} cells — roughly ${mins} min on this card.${front} `
+               + `The job keeps running if you close this page.${cap}`;
 }
 
 async function generateSheet() {
@@ -370,7 +624,6 @@ async function generateSheet() {
   const actions = selectedActions();
   const directions = selectedDirections();
   if (!actions.length) { alert("Select at least one action!"); return; }
-  if (!directions.length) { alert("Select at least one direction!"); return; }
 
   const resultDiv = document.getElementById('sheet-result');
   const statusDiv = document.getElementById('sheet-status');
@@ -405,7 +658,12 @@ async function generateSheet() {
     });
 
     if (!req.ok) {
-      statusDiv.innerText = '❌ Error: ' + await req.text();
+      // FastAPI puts the reason in `detail`. A 400 here is a spec the pose
+      // library cannot satisfy, which is worth reading rather than skimming
+      // past as a JSON blob.
+      let msg = await req.text();
+      try { msg = JSON.parse(msg).detail || msg; } catch (e) { /* not JSON */ }
+      statusDiv.innerText = '❌ ' + msg;
       btn.disabled = false;
       return;
     }
@@ -513,6 +771,7 @@ function pollTaskStatus(taskId, mode) {
                 </div>
             `;
             statusDiv.innerText = `✅ Success! Completed in ${me.duration_ms / 1000}s`;
+            if (mode === 'core') coreBusy = false;
             btn.disabled = false;
             updateQueue();
             if (mode === 'core') loadCores(); // Refresh picker if we just made a core
@@ -521,6 +780,7 @@ function pollTaskStatus(taskId, mode) {
         if (me.error) {
             clearInterval(pollInterval);
             statusDiv.innerText = '❌ Error: ' + me.error;
+            if (mode === 'core') coreBusy = false;
             btn.disabled = false;
             updateQueue();
             return;

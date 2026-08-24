@@ -37,6 +37,10 @@ import multiprocessing
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Shared with the API process: the step-1 roster and the cache probes behind it.
+# stdlib-only by design, so importing it here adds nothing to worker start.
+from core_models import unavailable_reason, local_weight_name
+
 # --- Compute device ------------------------------------------------------
 # Set by compose: docker-compose.cuda.yml forces cuda on the worker and cpu on
 # the API process (which imports this module but never runs inference).
@@ -866,10 +870,23 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
             # a generation. An SDXL LoRA on an SD1.5 base raises here, which is
             # the common mistake - the ranks do not match.
             try:
-                logger.info(f"Loading LoRA '{lora}' onto '{llm_name}'...")
+                # weight_name is mandatory under HF_HUB_OFFLINE=1: diffusers
+                # would otherwise ask the Hub which file to take and raise
+                # "When using the offline mode, you must specify a
+                # `weight_name`" — caught below and downgraded to a warning, so
+                # the LoRA silently did not apply and the pixel-art option
+                # produced plain SDXL. Resolved from the cache rather than
+                # hardcoded, so a new LoRA in the roster needs no code change.
+                lora_kwargs = {}
+                weight_name = local_weight_name(lora)
+                if weight_name:
+                    lora_kwargs["weight_name"] = weight_name
+                _wn = " (weights: %s)" % weight_name if weight_name else ""
+                logger.info(f"Loading LoRA '{lora}' onto '{llm_name}'{_wn}...")
                 pipe.load_lora_weights(
                     lora, cache_dir="/models",
                     token=os.environ.get("HF_TOKEN") or None,
+                    **lora_kwargs,
                 )
                 pipe.fuse_lora()
                 logger.info(f"LoRA '{lora}' fused.")
@@ -900,7 +917,25 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
         if DEVICE == "cuda":
             # SDXL decode of a 1024px latent spikes VRAM well past the UNet's
             # working set; slicing keeps the peak flat on a 12GB card.
-            pipe.enable_vae_slicing()
+            #
+            # diffusers 0.40 removed the pipeline-level `enable_vae_slicing()`
+            # in favour of the VAE's own `enable_slicing()`. The old call raised
+            # AttributeError INSIDE this try, so the whole load was abandoned and
+            # get_sd_pipeline returned None — every SDXL text2img request failed
+            # with "Model failed to load" long after the weights had loaded
+            # successfully. Prefer the current API, keep the old one for older
+            # diffusers, and never let a memory optimisation kill a working load.
+            try:
+                if hasattr(pipe, "enable_vae_slicing"):
+                    pipe.enable_vae_slicing()
+                elif getattr(pipe, "vae", None) is not None:
+                    pipe.vae.enable_slicing()
+            except Exception as slicing_err:
+                logger.warning(
+                    f"Could not enable VAE slicing ({slicing_err.__class__.__name__}: "
+                    f"{slicing_err}); continuing without it. Peak VRAM on decode "
+                    "will be higher."
+                )
 
             if is_sdxl:
                 # The original SDXL VAE overflows in fp16 and decodes to pure
@@ -1399,8 +1434,17 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     logger.info(f"Task {task_id} generated core with llm {llm_name}")
     p = get_sd_pipeline(llm_name)
     if not p:
-        update_task_record(task_id, error_msg="Model failed to load on worker")
-        return {"error": "Model failed to load"}
+        # "Model failed to load on worker" was the only thing the queue panel
+        # ever said, for every cause. The common one by far is that the weights
+        # are not in /models at all — archived to cold storage, with
+        # HF_HUB_OFFLINE=1 making the fetch impossible — and that is a fact this
+        # process can establish and name.
+        reason = (unavailable_reason(llm_name)
+                  or "the checkpoint is present but did not load; see the worker log")
+        msg = f"Could not load '{llm_name}': {reason}"
+        logger.error(msg)
+        update_task_record(task_id, error_msg=msg)
+        return {"error": msg}
 
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)

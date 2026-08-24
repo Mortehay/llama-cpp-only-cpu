@@ -18,12 +18,24 @@ import urllib.request
 CHECKS = {
     "/": [
         ("directions are their own axis", r'name="direction"', None),
-        ("new action vocabulary", r'value="walk"', None),
         ("cell size, not render size", r'id="sheet-cell"', None),
         ("runtime estimate shown", r'id="sheet-estimate"', None),
         ("old SD model dropdown gone", None, r'id="sheet-llm"'),
         ("old free-text actions gone", None, r'value="move right"'),
         ("old render-size control gone", None, r'id="sheet-frame-size"'),
+        # The core dropdown is rendered from core_models.roster(), which stats
+        # the /models cache. The regression this guards is the options being
+        # pasted back into the template: they would then keep offering
+        # checkpoints that have been archived, and the only symptom would be
+        # "Model failed to load on worker" arriving seconds later.
+        ("core models carry availability", r'data-available="(true|false)"', None),
+        ("core model warning slot present", r'id="core-model-warning"', None),
+        # Actions are rendered from /api/action-catalog, which reads
+        # action_prompts.json. The regression this guards is checkboxes being
+        # pasted back into the template: the library would grow an action and
+        # the UI would never offer it.
+        ("actions rendered from the catalog", r'id="actions-grid"', None),
+        ("actions not hardcoded", None, r'name="action"[^>]*value="walk"'),
     ],
     "/static/js/generator.js": [
         ("posts to the job API", r"fetch\('/api/jobs'", None),
@@ -36,6 +48,27 @@ CHECKS = {
         # reported a correct file as broken.
         ("old sheet endpoint not called", None,
          r"fetch\(\s*['\"]/api/generate_sheet"),
+        ("re-stats the model cache", r"fetch\('/api/core-models'\)", None),
+        ("gates the core button on availability", r"updateCoreModelState", None),
+        ("reads the action catalog", r"fetch\('/api/action-catalog'\)", None),
+        ("sheet jobs shown in the queue", r"fetch\('/api/jobs\?limit=", None),
+        # A direction is optional - an empty selection builds the front row.
+        # This guards the button being re-gated on it.
+        ("directions not required", None,
+         r"dirs\.length === 0"),
+    ],
+    # The action vocabulary used to be asserted as `value="walk"` in the page.
+    # It is served now, not rendered, so assert it at the source - including
+    # that the library still reaches the API, which is the wiring that broke
+    # when actions.py held its own hardcoded copy.
+    "/api/action-catalog": [
+        ("walk still defined", r'"id":\s*"walk"', None),
+        ("idle still defined", r'"id":\s*"idle"', None),
+        ("damage action defined", r'"id":\s*"damage"', None),
+        ("use action defined", r'"id":\s*"use"', None),
+        ("cast action defined", r'"id":\s*"cast"', None),
+        ("sway action defined", r'"id":\s*"sway"', None),
+        ("frame ceiling published", r'"max_frames"', None),
     ],
 }
 

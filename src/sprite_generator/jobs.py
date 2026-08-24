@@ -38,7 +38,11 @@ import psycopg2
 import psycopg2.extras
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# The pose library. stdlib-only, so the API process can consult it without
+# pulling in the Celery/torch import chain that tasks.py brings.
+import actions as action_lib
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,6 +76,20 @@ class JobSpec(BaseModel):
     directions: list[str] = Field(
         default_factory=lambda: ["s", "se", "e", "ne", "n", "nw", "w", "sw"])
     frames: int = 4
+
+    @field_validator("directions")
+    @classmethod
+    def _empty_means_front(cls, v):
+        """An explicitly EMPTY direction list means front only.
+
+        Not the same as omitting the field, which keeps the documented full
+        turnaround for existing API consumers. The UI always sends the array,
+        so unticking every direction arrives here as [] - and a direction is
+        not something a caller should be forced to think about to get a sheet.
+        Front is the cheapest possible answer (one row) and the canonical
+        facing, so an empty choice costs 8 minutes rather than 24.
+        """
+        return v if v else ["s"]
     cell: str = "48x64"
     colors: int = 24
     seed: int = 0
@@ -114,6 +132,30 @@ def create_job(spec: JobSpec, authorization: str | None = Header(None)):
     body carefully.
     """
     _require_auth(authorization)
+
+    # Validate the spec against the pose library before spending any GPU time.
+    #
+    # These used to fail deep inside the worker, minutes in and after the
+    # turnaround pass had already been paid for: an unknown action as a
+    # SystemExit from stage_actions, and too many frames as
+    # `KeyError: 'idle|s|4'` halfway through the denoise pass. Both are
+    # answerable here, instantly, from the request alone.
+    unknown = [a for a in spec.actions if a not in action_lib.ACTIONS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown action(s): {', '.join(unknown)}. "
+                   f"Available: {', '.join(sorted(action_lib.ACTIONS))}")
+
+    limit = action_lib.max_frames(spec.actions, spec.directions)
+    if spec.frames > limit:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{spec.frames} frames requested, but the pose library "
+                   f"defines only {limit} for {', '.join(spec.actions)}. "
+                   f"A frame is a named pose, not an interpolation - asking "
+                   f"for more cannot produce more motion. Use {limit} or "
+                   f"fewer, or add poses to action_prompts.json.")
 
     job_id = uuid.uuid4()
     with _db() as conn, conn.cursor() as cur:
@@ -279,6 +321,32 @@ def cancel_job(job_id: str, authorization: str | None = Header(None)):
         set_cancel_flag(row["celery_task_id"])
 
     return {"job_id": job_id, "status": "cancelled"}
+
+
+@router.get("/api/action-catalog")
+def action_catalog():
+    """What the pose library can build, for the UI to constrain its inputs.
+
+    Served rather than hardcoded in the template for the same reason the core
+    model roster is: the frames input offered up to 8 while every action
+    defined 4 poses, and the only feedback was a job that died mid-render.
+    """
+    cat = action_lib.catalog()
+    return {
+        # [{id, label, max_frames}], so the UI renders the checkboxes from the
+        # library instead of hardcoding three of them in the template - which
+        # is what kept the four newest actions invisible until this existed.
+        "actions": cat["actions"],
+        "directions": [
+            {"id": d, "family": action_lib.family(d)}
+            for d in ["s", "se", "e", "ne", "n", "nw", "w", "sw"]
+        ],
+        "max_frames": cat["max_frames"],
+        "frames_by_action": {a["id"]: a["max_frames"] for a in cat["actions"]},
+        # Empty directions is a valid request, not an error. Named here so the
+        # UI can say what it will build rather than guessing.
+        "default_direction": "s",
+    }
 
 
 @router.get("/api/jobs-health")

@@ -18,6 +18,23 @@ textarea {
 }
 
 .btn:disabled { opacity: .4; cursor: not-allowed; filter: grayscale(1); }
+
+/* Shown when no core model is present in the /models cache. Sits between the
+   dropdown and the prompt so it is read before the disabled button is blamed.
+   The restore command it carries is long, hence the wrapping and the monospace
+   feel — it is meant to be copied, not skimmed. */
+.model-warning {
+  background: rgba(239, 68, 68, .10);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: -8px 0 16px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-word;
+}
+.model-warning[hidden] { display: none; }
 .status { margin-top: 14px; font-size: 13px; color: var(--warn); text-align: center; line-height: 1.5; }
 
 .preview {

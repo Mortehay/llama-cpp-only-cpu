@@ -1,6 +1,6 @@
 {
   "_readme": {
-    "purpose": "Maps each sprite action the UI can request onto the prompt text sent to the image model. Edit this file to change how an action looks; no code change is needed.",
+    "purpose": "Single source of truth for what each sprite action IS. Two pipelines read it: the ControlNet img2img path (tasks.generate_spritesheet_task) reads `match`/`prompt`/`strength`/`ip_adapter_scale`/`view`, and the 2D Qwen-Image-Edit conveyor (build-sheet.py, the one the UI drives) reads `sheet_id`/`sheet_label`/`frames`. Edit this file to change how an action looks or animates; no code change is needed.",
     "reload": "Re-read automatically when this file's mtime changes, so edits take effect on the next sheet WITHOUT restarting the sprite_worker container. Malformed JSON is logged and the previous good version stays loaded.",
     "matching": "actions[] is ORDERED and matched in order. An action name from the UI is lowercased, then the first entry with any of its `match` substrings contained in that name wins. Specific entries must come before general ones: 'move right' has to win before a bare 'move' would.",
     "fallback": "An action matching nothing is sent to the model as its own raw text, so a hand-typed custom action still works.",
@@ -42,7 +42,17 @@
       "where_it_helps": "Actions that only change POSE, where there is no added effect for it to suppress and identity anchoring is therefore free: the walks, idle, and close melee. Start around 0.4-0.6.",
       "tuning": "Higher means the output clings harder to the core. Too high and every frame converges on the core's own pose and the animation stops moving, because the adapter fights ControlNet as well."
     },
-    "view": "Which way the character FACES: front | back | left | right. Used two ways. (1) On a checkpoint listing this view in tasks.VIEW_TRIGGERS, the matching trained trigger is prepended to the frame prompt - that is how a real back view is obtained rather than a hallucinated one. (2) On a checkpoint without view triggers it falls back to derive_side_core for profile views. Omit for actions with no meaningful facing."
+    "view": "Which way the character FACES: front | back | left | right. Used two ways. (1) On a checkpoint listing this view in tasks.VIEW_TRIGGERS, the matching trained trigger is prepended to the frame prompt - that is how a real back view is obtained rather than a hallucinated one. (2) On a checkpoint without view triggers it falls back to derive_side_core for profile views. Omit for actions with no meaningful facing.",
+    "sheet_frames": {
+      "what": "The `frames` block is the CONVEYOR's animation table: an ordered list of poses per view family. actions.py builds its ACTIONS dict from every entry that has one, keyed by `sheet_id`.",
+      "why_here": "These poses used to be a hardcoded dict in actions.py while this file sat unread by the conveyor - two action tables, and the UI drove the one you could not edit. Adding an action meant a code change and a worker rebuild.",
+      "reload": "Same mtime-cache discipline as the prompts above: edits take effect on the next sheet without restarting sprite_worker, and malformed JSON keeps the last good version loaded.",
+      "families": "Keys are view families, not directions: front | back | side. `view_families` below maps the eight compass directions onto them. `side` is REQUIRED and is the fallback for any family an action does not list - correct for genuinely view-independent actions (idle, sway) and a visible but harmless approximation otherwise.",
+      "frame_count": "The length of the list IS the maximum frame count for that action. /api/jobs refuses a request for more, and the UI caps its input from /api/action-catalog. Lists of different lengths across families are safe - each renders its own length.",
+      "rule": "A frame pose must change the SILHOUETTE as seen from THAT camera. Motion along the view axis does not exist in the output. Profile cameras get sagittal motion (strides, thrusts, lunges); front and back get vertical and lateral motion (knee lifts, overhead swings, arms going wide). Ask a front camera for a forward punch and the model draws the nearest thing it can see - measured, a literal T-pose in six of eight directions.",
+      "write_poses_not_verbs": "'walking' is a process and the model picks the same instant of it every time, so four frames of a walk come back as four frames of standing. Name limb positions instead, so each frame is a different, checkable target."
+    },
+    "view_families": "Which prompt set each compass direction uses. Left and right profiles share one: they are the same view family, mirrored (see domain.md)."
   },
   "actions": [
     {
@@ -120,7 +130,29 @@
       "ip_adapter_scale": 0.5,
       "_why_ip_adapter": "Same WALK_FRONT cycle as move_up.",
       "_why_strength": "Uses the POSED_STRENGTH default (0.75). At the old 0.60 default the walk skeleton was ignored and the legs stayed planted.",
-      "view": "front"
+      "view": "front",
+      "sheet_id": "walk",
+      "sheet_label": "Walk",
+      "frames": {
+        "side": [
+          "left leg forward, right arm forward, mid stride",
+          "legs together, passing pose, arms at sides",
+          "right leg forward, left arm forward, mid stride",
+          "legs together, passing pose, arms at sides"
+        ],
+        "front": [
+          "left knee raised, left foot off the ground, right foot planted",
+          "both feet flat on the ground, standing upright",
+          "right knee raised, right foot off the ground, left foot planted",
+          "both feet flat on the ground, standing upright"
+        ],
+        "back": [
+          "left knee raised, left foot off the ground, right foot planted",
+          "both feet flat on the ground, standing upright",
+          "right knee raised, right foot off the ground, left foot planted",
+          "both feet flat on the ground, standing upright"
+        ]
+      }
     },
     {
       "id": "attack_bow",
@@ -185,7 +217,29 @@
       "_why_strength": "Must ADD a channelled glow and projectile that are not in the core image. Swept against the bow row: 0.72 rendered an obvious bow but lost the character outright (a green zombie came back as a pale bald human); 0.66 keeps the character at the cost of a fainter weapon.",
       "prompt": "casting a long range spell, arms raised channelling a glowing magic orb overhead, radiant arcane light, hurling energy",
       "_why_ip_adapter": "OFF: this action must ADD something absent from the core, which the adapter actively suppresses. See _readme.ip_adapter_scale.critical_warning.",
-      "view": "front"
+      "view": "front",
+      "sheet_id": "cast",
+      "sheet_label": "Cast Spell",
+      "frames": {
+        "side": [
+          "one arm drawn back low, gathering glowing energy in the hand",
+          "arm sweeping forward, bright magical light building at the hand",
+          "arm fully extended forward, a blast of arcane energy released",
+          "arm lowering, faint sparks fading"
+        ],
+        "front": [
+          "both arms raised overhead, glowing energy gathering above the head",
+          "arms held high and wide, bright arcane light between the hands",
+          "arms swept down and out to the sides, energy discharged outward",
+          "arms returning to the sides, faint sparks fading"
+        ],
+        "back": [
+          "both arms raised overhead, glowing energy gathering above the head",
+          "arms held high and wide, bright arcane light between the hands",
+          "arms swept down and out to the sides, energy discharged outward",
+          "arms returning to the sides, faint sparks fading"
+        ]
+      }
     },
     {
       "id": "attack_melee",
@@ -200,7 +254,29 @@
       "pose_cycle": "ATTACK",
       "prompt": "aggressive close melee attack, mid swing, striking forward with force, fierce snarling expression, lunging",
       "_why_ip_adapter": "OFF: A/B was a wash (frame-to-frame 3.90 -> 3.36 better, loop-gap 3.92 -> 4.30 worse). Left off as the conservative default; turn on if you prefer the steadier adjacent frames.",
-      "view": "right"
+      "view": "right",
+      "sheet_id": "attack",
+      "sheet_label": "Attack",
+      "frames": {
+        "side": [
+          "arms drawn back, winding up to strike",
+          "arms swinging forward, mid strike",
+          "arms fully extended forward, strike landed",
+          "arms lowering, recovering from the strike"
+        ],
+        "front": [
+          "both arms raised high overhead, leaning back",
+          "arms coming down, elbows bent, weight shifting forward",
+          "arms swung down low in front, body hunched forward",
+          "arms returning to the sides"
+        ],
+        "back": [
+          "both arms raised high overhead, leaning back",
+          "arms coming down, elbows bent, weight shifting forward",
+          "arms swung down low in front, body hunched forward",
+          "arms returning to the sides"
+        ]
+      }
     },
     {
       "id": "burning",
@@ -228,7 +304,29 @@
       "prompt": "struck by a heavy hit, recoiling backward in pain, staggering off balance, pained expression, impact",
       "ip_adapter_scale": 0.5,
       "_why_ip_adapter": "A/B on this action: frame-to-frame 3.16 -> 2.18, loop-gap 3.58 -> 2.36. Best result of any action.",
-      "view": "front"
+      "view": "front",
+      "sheet_id": "damage",
+      "sheet_label": "Receive Damage",
+      "frames": {
+        "side": [
+          "struck, head snapped back, torso bent backward, arms flung out",
+          "staggering backward, one foot dragged back for balance",
+          "doubled over forward, arms clutched against the body, knees bent",
+          "straightening up, arms lowering, weight recentred"
+        ],
+        "front": [
+          "flinching, head tilted away, both arms thrown up and out wide",
+          "hunched low, both arms pulled tight across the chest, knees bent",
+          "crouched down, head lowered, shoulders drawn up high",
+          "rising back upright, arms lowering to the sides"
+        ],
+        "back": [
+          "flinching, head tilted away, both arms thrown up and out wide",
+          "hunched low, both arms pulled tight across the chest, knees bent",
+          "crouched down, head lowered, shoulders drawn up high",
+          "rising back upright, arms lowering to the sides"
+        ]
+      }
     },
     {
       "id": "idle",
@@ -241,7 +339,88 @@
       "prompt": "front view, facing the camera, standing still at rest, calm neutral idle stance, relaxed shoulders, alert",
       "_why_ip_adapter": "ON: idle adds no effect for the adapter to suppress, and it is what holds identity at the 0.75 default. An earlier A/B rejected it on a frame-to-frame metric, but that metric rewards an animation that freezes and was not measuring quality; at 0.60 without it idle rendered as mush.",
       "ip_adapter_scale": 0.5,
-      "view": "front"
+      "view": "front",
+      "sheet_id": "idle",
+      "sheet_label": "Idle",
+      "frames": {
+        "side": [
+          "standing still, arms at sides",
+          "standing still, shoulders slightly raised",
+          "standing still, arms at sides",
+          "standing still, shoulders slightly lowered"
+        ]
+      }
+    },
+    {
+      "id": "use_item",
+      "label": "Use / Interact",
+      "match": [
+        "use item",
+        "interact",
+        "use"
+      ],
+      "_why_last": "'use' is a short key and matching is contiguous-substring. Kept at the end of actions[] so it cannot shadow an earlier entry; do not move it up.",
+      "pose_cycle": null,
+      "_why_no_pose_cycle": "Conveyor-only for now: poses.POSE_LIBRARY has no USE cycle, so the ControlNet path falls back to unposed img2img. The `frames` block below is what the 2D conveyor animates from and is complete.",
+      "prompt": "reaching out and using a held object, deliberate purposeful gesture, focused expression",
+      "view": "front",
+      "sheet_id": "use",
+      "sheet_label": "Use / Interact",
+      "frames": {
+        "side": [
+          "one arm reaching forward, hand open",
+          "arm extended forward, hand closed around an object",
+          "arm drawn back toward the chest, holding the object close",
+          "arms returning to the sides"
+        ],
+        "front": [
+          "both hands raised to chest height, holding an object out in front",
+          "arms lifted high overhead, holding the object up",
+          "arms lowered to the waist, head bowed toward the hands",
+          "arms returning to the sides"
+        ],
+        "back": [
+          "both hands raised to chest height, holding an object out in front",
+          "arms lifted high overhead, holding the object up",
+          "arms lowered to the waist, head bowed toward the hands",
+          "arms returning to the sides"
+        ]
+      }
+    },
+    {
+      "id": "sway_wind",
+      "label": "Sway (Wind)",
+      "match": [
+        "swaying in the light wind",
+        "swaying",
+        "sway",
+        "wind"
+      ],
+      "_why_last": "Same reason as use_item: short keys, appended so they cannot shadow earlier entries. 'sway' does not contain and is not contained by 'swing' (attack_melee), which was the near miss.",
+      "pose_cycle": null,
+      "_why_no_pose_cycle": "Conveyor-only: no WIND cycle in poses.POSE_LIBRARY, and a skeleton would be the wrong tool anyway - this action is written for subjects with no skeleton.",
+      "prompt": "swaying gently in a light breeze, leaning with the wind, calm drifting motion",
+      "view": "front",
+      "sheet_id": "sway",
+      "sheet_label": "Sway (Wind)",
+      "frames": {
+        "side": [
+          "leaning gently to the left, top bending with the breeze",
+          "upright, settling back through centre",
+          "leaning gently to the right, top bending with the breeze",
+          "upright, settling back through centre"
+        ]
+      }
     }
-  ]
+  ],
+  "view_families": {
+    "s": "front",
+    "se": "front",
+    "sw": "front",
+    "n": "back",
+    "ne": "back",
+    "nw": "back",
+    "e": "side",
+    "w": "side"
+  }
 }

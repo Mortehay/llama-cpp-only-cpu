@@ -53,6 +53,34 @@ def _embeds_path(work, name):
     return os.path.join(work, f"embeds_{name}.pt")
 
 
+def _action_plan(cfg, actions=None, frames=None):
+    """Every (action, direction, frame index, pose) the action stages produce.
+
+    ONE function, called by encode, denoise and compose, because they used to
+    derive this list independently and drifted:
+
+        encode   for f_i, pose in enumerate(action_lib.frames(act, d, frames))
+        denoise  for f_i in range(cfg["frames"])
+        compose  for f_i in range(cfg["frames"])
+
+    `action_lib.frames()` truncates to the poses that exist - four for every
+    action today - while `range()` does not. A job asking for six frames
+    therefore encoded keys 0..3 and then looked up 0..5, and died eight minutes
+    into the GPU pass with `KeyError: 'idle|s|4'`, having already paid for the
+    turnaround. Compose would have gone on to emit two empty columns per row.
+
+    Deriving all three from the library also makes a ragged library safe: an
+    action with six poses beside one with four now renders six and four,
+    instead of over-reading the shorter one.
+    """
+    actions = cfg["actions"] if actions is None else actions
+    frames = cfg["frames"] if frames is None else frames
+    return [(act, d, f_i, pose)
+            for d in cfg["directions"]
+            for act in actions
+            for f_i, pose in enumerate(action_lib.frames(act, d, frames))]
+
+
 def stage_turnaround_encode(a):
     import torch
 
@@ -126,30 +154,34 @@ def stage_actions(a):
             raise SystemExit(f"unknown action {act!r}; "
                              f"have {sorted(action_lib.ACTIONS)}")
 
-    cells = []
-    for d in directions:
-        view = Image.open(os.path.join(a.work, f"dir_{d}.png"))
-        camera = qwen_edit.angle_prompt(d)
-        for act in actions:
-            # Poses are chosen per VIEW FAMILY: a stride reads in profile and
-            # vanishes head-on, where the same walk has to be a knee lift.
-            for f_i, pose in enumerate(
-                    action_lib.frames(act, d, a.frames)):
-                cells.append({
-                    "key": f"{act}|{d}|{f_i}",
-                    "image": view,
-                    # The camera prompt is carried into EVERY action prompt.
-                    # Without it the model reverts to its own framing and the
-                    # cells stop matching each other.
-                    "prompt": f"{camera}, the character is {pose}",
-                    "action": act, "direction": d, "frame": f_i,
-                })
+    # Poses are chosen per VIEW FAMILY: a stride reads in profile and vanishes
+    # head-on, where the same walk has to be a knee lift.
+    views = {d: Image.open(os.path.join(a.work, f"dir_{d}.png"))
+             for d in directions}
+    cameras = {d: qwen_edit.angle_prompt(d) for d in directions}
+    plan = _action_plan({**cfg, "actions": actions}, frames=a.frames)
+    cells = [{
+        "key": f"{act}|{d}|{f_i}",
+        "image": views[d],
+        # The camera prompt is carried into EVERY action prompt. Without it the
+        # model reverts to its own framing and the cells stop matching.
+        "prompt": f"{cameras[d]}, the character is {pose}",
+        "action": act, "direction": d, "frame": f_i,
+    } for act, d, f_i, pose in plan]
 
     import torch
     log.info("actions: %d cell(s)", len(cells))
     torch.save(qwen_edit.encode_cells(cells), _embeds_path(a.work, "act"))
 
-    cfg.update({"actions": actions, "frames": a.frames})
+    # Record the count the library ACTUALLY supplied, not the count requested.
+    # cfg is what every later stage and the atlas read; storing the request
+    # there is what let compose lay out columns nothing ever rendered.
+    effective = max((f_i for _, _, f_i, _ in plan), default=-1) + 1
+    if effective < a.frames:
+        log.warning("requested %d frame(s), pose library supplies %d; "
+                    "building at %d", a.frames, effective, effective)
+    cfg.update({"actions": actions, "frames": effective,
+                "frames_requested": a.frames})
     with open(_cfg_path(a.work), "w") as f:
         json.dump(cfg, f, indent=2)
     log.info("encoded %d action prompt(s)", len(cells))
@@ -163,14 +195,11 @@ def stage_actions_denoise(a):
     with open(_cfg_path(a.work)) as f:
         cfg = json.load(f)
 
-    cells = []
-    for d in cfg["directions"]:
-        view = Image.open(os.path.join(a.work, f"dir_{d}.png"))
-        for act in cfg["actions"]:
-            for f_i in range(cfg["frames"]):
-                cells.append({"key": f"{act}|{d}|{f_i}", "image": view,
-                              "prompt": "", "action": act,
-                              "direction": d, "frame": f_i})
+    views = {d: Image.open(os.path.join(a.work, f"dir_{d}.png"))
+             for d in cfg["directions"]}
+    cells = [{"key": f"{act}|{d}|{f_i}", "image": views[d],
+              "prompt": "", "action": act, "direction": d, "frame": f_i}
+             for act, d, f_i, _ in _action_plan(cfg)]
 
     rendered = qwen_edit.denoise_cells(
         cells, torch.load(_embeds_path(a.work, "act")), seed=cfg["seed"],
@@ -192,27 +221,29 @@ def stage_compose(a):
         cfg = json.load(f)
     cw, ch = (int(x) for x in a.cell.lower().split("x"))
 
-    b = sheet_mod.SheetBuilder(cell=(cw, ch), frames=cfg["frames"],
+    plan = _action_plan(cfg)
+    # Grid width is the widest row actually rendered. Taking it from the
+    # request instead would append empty columns for frames no stage produced,
+    # and something2 rejects a sheet whose cells do not fill it.
+    grid_frames = max((f_i for _, _, f_i, _ in plan), default=-1) + 1
+    b = sheet_mod.SheetBuilder(cell=(cw, ch), frames=grid_frames,
                                directions=cfg["directions"],
                                n_colors=a.colors)
-    for act in cfg["actions"]:
-        for d in cfg["directions"]:
-            for f_i in range(cfg["frames"]):
-                path = os.path.join(a.work, f"cell_{act}_{d}_{f_i}.png")
-                if not os.path.isfile(path):
-                    log.warning("missing %s", path)
-                    continue
-                cell = pixelate.key_background(Image.open(path),
-                                               tolerance=a.key_tolerance)
-                if a.strip_ground:
-                    # Safe on action frames now, which it was NOT under the old
-                    # rule. That compared the patch against the body median, so
-                    # a wide stance looked like ground; the shin reference
-                    # moves with the legs, so a wide stance raises the
-                    # threshold instead of tripping it.
-                    cell = pixelate.strip_ground_patch(
-                        cell, width_ratio=a.ground_ratio)
-                b.add(act, d, f_i, cell)
+    for act, d, f_i, _ in plan:
+        path = os.path.join(a.work, f"cell_{act}_{d}_{f_i}.png")
+        if not os.path.isfile(path):
+            log.warning("missing %s", path)
+            continue
+        cell = pixelate.key_background(Image.open(path),
+                                       tolerance=a.key_tolerance)
+        if a.strip_ground:
+            # Safe on action frames now, which it was NOT under the old rule.
+            # That compared the patch against the body median, so a wide stance
+            # looked like ground; the shin reference moves with the legs, so a
+            # wide stance raises the threshold instead of tripping it.
+            cell = pixelate.strip_ground_patch(
+                cell, width_ratio=a.ground_ratio)
+        b.add(act, d, f_i, cell)
 
     gaps = b.missing()
     if gaps:

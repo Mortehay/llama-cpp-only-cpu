@@ -20,6 +20,7 @@ from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    read_device_snapshot,
                    warm_model_task, edit_image_task, EDIT_LORAS,
                    EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
+from core_models import roster as core_model_roster, unavailable_reason
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -152,10 +153,14 @@ def fetch_gallery_rows(limit=None):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    # The core-model dropdown is rendered from the roster, not hardcoded in the
+    # template, so an archived checkpoint is shown as unselectable rather than
+    # offered and then failed on by the worker. Both containers mount the same
+    # /models cache, so this is a stat() here, not a Celery round-trip.
     return templates.TemplateResponse(
-        request=request, 
-        name="index.html", 
-        context={"active_page": "gen"}
+        request=request,
+        name="index.html",
+        context={"active_page": "gen", "core_models": core_model_roster()}
     )
 
 @app.get("/gallery", response_class=HTMLResponse)
@@ -256,8 +261,28 @@ async def save_settings(request: Request):
     finally: conn.close()
 
 
+@app.get("/api/core-models")
+def core_models():
+    """The step-1 model roster with live availability.
+
+    Lets the page re-check after a restore without a container restart, and
+    gives any other client the same answer the dropdown was rendered from.
+    """
+    return JSONResponse({"models": core_model_roster()})
+
+
 @app.post("/api/generate_core")
 def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
+    # Refuse a model that is not on disk instead of queueing work that cannot
+    # succeed. Offline, a missing checkpoint is not a transient failure: the
+    # worker would log a load error, write "Model failed to load on worker" to
+    # the task row, and leave a dead entry in the queue panel that invites a
+    # Retry which fails identically. Say why here, where the operator is.
+    reason = unavailable_reason(llm_name)
+    if reason:
+        logger.warning(f"Refusing generate_core for '{llm_name}': {reason}")
+        raise HTTPException(status_code=409, detail=reason)
+
     task = generate_core_task.delay(prompt, llm_name)
     conn = get_db()
     if conn:

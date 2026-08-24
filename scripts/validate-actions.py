@@ -121,6 +121,23 @@ def main():
         from transformers import CLIPTokenizer
         tok = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14",
                                             cache_dir="/models")
+
+        # Refuse a degenerate tokenizer instead of counting with it.
+        #
+        # When the CLIP weights are archived off /models, from_pretrained does
+        # NOT raise - it returns a tokenizer with an EMPTY vocab (vocab_size 2),
+        # which then encodes roughly one token per character. Measured
+        # 2026-08-25: every action reported ~220/77 and this check failed 12
+        # times with numbers that were pure fiction, while looking exactly like
+        # a real budget failure. A tokenizer that cannot tokenise must be an
+        # error about the tokenizer, not a verdict about the prompts.
+        if tok.vocab_size < 1000:
+            raise RuntimeError(
+                f"CLIP tokenizer loaded with vocab_size={tok.vocab_size}; the "
+                f"weights are not really on /models. Restore them with "
+                f"./scripts/archive-models.sh restore "
+                f"models--openai--clip-vit-large-patch14")
+
         base = ("green zombie, tattered clothes, solid transparent background, "
                 "only zombie, high quality pixel art, sharp focus")
         worst = 0
