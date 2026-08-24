@@ -83,96 +83,76 @@
       </div>
     </div>
 
+    <!--
+      SHEET TAB - drives the ASYNC JOB API (/api/jobs), not the old
+      /api/generate_sheet Celery task.
+      
+      The old controls are gone on purpose, not merely restyled:
+        - the SD1.5/SDXL model dropdown. The conveyor is Qwen-Image-Edit-2511
+          plus two LoRAs and is not a per-request choice.
+        - free-text actions ("move right", "burning"). Direction and action are
+          now separate axes, which is what lets one action render into eight
+          directions instead of being eight different actions.
+        - "frame size" in render pixels. What matters is the CELL size of the
+          finished sheet; render resolution is an internal detail.
+      See .ai/decisions/0005.
+    -->
     <div class="card tab-content" id="tab-sheet">
-      <label>Select Animation Model</label>
-      <select id="sheet-llm" class="select-field">
-        <!--
-          The Flux.2 Klein option was removed: tasks.py expected
-          flux1-schnell.safetensors plus a hardcoded snapshot hash, while
-          models.txt downloaded a GGUF that was never loaded, so it could not
-          run at all. The pixel-art model is measured at ~7s for a consistent
-          4-frame row, which is what this step needs.
-        -->
-        <!--
-          KEEP THIS DROPDOWN ON SD1.5. get_sd_pipeline can now drive ControlNet
-          on SDXL too, but the SDXL openpose checkpoint is measurably 3.6x weaker:
-          at POSED_STRENGTH 0.75, SD1.5 + control_v11p_sd15_openpose scores
-          motion 34.02, while SDXL + controlnet-openpose-sdxl-1.0 scores 9.57 -
-          the same as SD1.5 with conditioning switched off entirely.
-
-          So step 1 gets SDXL (best art) and step 2 gets SD1.5 (only working
-          pose). The cost is that step 2 re-renders the core in this model's
-          weaker style. See .ai/decisions/0002.
-
-          Onodofthenorth was removed for returning four characters in a row.
-          That was measured, but in STEP 1 - txt2img with nothing constraining
-          composition. Step 2 is img2img from a single-character core AND a
-          single ControlNet skeleton, which both pin composition; rendering
-          FSS/BSS/RSS through that path returns single characters. It is back,
-          and it is the only checkpoint here with TRAINED directional views
-          (tasks.VIEW_TRIGGERS) - which is what All-In-One cannot do: it has
-          never seen this character from behind, so 'move up' renders a face no
-          matter what the prompt asks for.
-        -->
-        <option value="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator" selected>
-          Pixel SpriteSheet (SD1.5) - trained front/back/left/right views
-        </option>
-        <option value="PublicPrompts/All-In-One-Pixel-Model">
-          All-In-One Pixel (SD1.5) - no back view, 'move up' shows a face
-        </option>
-        <option value="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl">
-          SDXL + pixel-art LoRA - better art, but pose barely moves
-        </option>
-      </select>
-
-      <label>Select Core Image</label>
+      <label>Select Concept Image</label>
       <div class="core-grid" id="core-picker">
         <span style="color:var(--muted); font-size: 13px;">Loading cores...</span>
       </div>
 
-      <label>Select Actions</label>
+      <label>Actions</label>
       <div class="actions-grid">
         <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="move right" /> Move Right</label>
+            value="walk" checked /> Walk</label>
         <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="move left" /> Move Left</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="move down" /> Move Down</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="move up" /> Move Up</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="close melee attack" /> Melee (Close)</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="distant attack with bow" /> Bow (Ranged)</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="distant attack with sling" /> Sling (Ranged)</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="close magic attack" /> Magic (Close)</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="distant magic attack" /> Magic (Ranged)</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="got damage" /> Get Damage</label>
+            value="attack" /> Attack</label>
         <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
             value="idle" /> Idle</label>
-        <label class="action-cb"><input type="checkbox" name="action" onclick="updateGenSheetButtonState()"
-            value="burning" /> Burning</label>
+      </div>
+
+      <label>Directions</label>
+      <div class="actions-grid">
+        <label class="action-cb"><input type="checkbox" name="direction" value="s" checked /> S (front)</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="se" checked /> SE</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="e" checked /> E (right)</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="ne" checked /> NE</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="n" checked /> N (back)</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="nw" checked /> NW</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="w" checked /> W (left)</label>
+        <label class="action-cb"><input type="checkbox" name="direction" value="sw" checked /> SW</label>
       </div>
 
       <div style="display: flex; gap: 16px; margin-bottom: 16px;">
         <div style="flex: 1;">
-          <label>Frame Size</label>
-          <select id="sheet-frame-size" class="select-field">
-            <option value="64">64 x 64 px</option>
-            <option value="128" selected>128 x 128 px (Default)</option>
-            <option value="256">256 x 256 px</option>
-            <option value="512">512 x 512 px</option>
+          <label>Cell Size</label>
+          <select id="sheet-cell" class="select-field">
+            <option value="32x32">32 x 32 px</option>
+            <option value="48x64" selected>48 x 64 px (Default)</option>
+            <option value="64x64">64 x 64 px</option>
+            <option value="64x96">64 x 96 px</option>
           </select>
         </div>
         <div style="flex: 1;">
-          <label>Motion Steps Counter</label>
-          <input type="number" id="sheet-motion-steps" class="select-field" value="4" min="1" max="16" style="width: 100%; border-radius: 4px; padding: 6px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border);">
+          <label>Frames per Action</label>
+          <input type="number" id="sheet-frames" class="select-field" value="4" min="2" max="8"
+            onchange="updateGenSheetButtonState()"
+            style="width: 100%; border-radius: 4px; padding: 6px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border);">
+        </div>
+        <div style="flex: 1;">
+          <label>Palette Colours</label>
+          <input type="number" id="sheet-colors" class="select-field" value="24" min="4" max="64"
+            style="width: 100%; border-radius: 4px; padding: 6px; box-sizing: border-box; background: var(--surface); color: var(--text); border: 1px solid var(--border);">
         </div>
       </div>
+
+      <!--
+        An honest estimate up front. A full character is ~1 hour on this card,
+        and a UI that hides that invites people to think it has hung.
+      -->
+      <div id="sheet-estimate" style="color: var(--muted); font-size: 13px; margin-bottom: 12px;"></div>
 
       <button class="btn" id="gen-sheet-btn" onclick="generateSheet()" disabled>⚡ Generate Spritesheet</button>
       <div class="status" id="sheet-status"></div>

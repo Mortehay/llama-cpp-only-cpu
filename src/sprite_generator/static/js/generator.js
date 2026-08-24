@@ -6,12 +6,13 @@ document.addEventListener('DOMContentLoaded', () => {
     updateQueue();
     setInterval(updateQueue, 3000);
     
-    // Listen for action checkbox changes to toggle button
-    const actionCbs = document.querySelectorAll('input[name="action"]');
-    actionCbs.forEach(cb => {
-        cb.addEventListener('change', updateGenSheetButtonState);
-    });
+    // Both axes toggle the button and move the estimate.
+    document.querySelectorAll('input[name="action"], input[name="direction"]')
+        .forEach(cb => cb.addEventListener('change', updateGenSheetButtonState));
     updateGenSheetButtonState();
+    // A running job outlives this page, so reattach to it instead of leaving it
+    // orphaned with the button re-enabled as though nothing were happening.
+    resumeSheetJob();
     loadCores(); // Fetch initial core images
     updateDiagnostics();
     // 15s, not 5s: each call is a Celery round-trip to the inference worker, and
@@ -87,8 +88,13 @@ async function updateDiagnostics() {
 function updateGenSheetButtonState() {
     const btn = document.getElementById('gen-sheet-btn');
     if (!btn) return;
-    const checked = document.querySelectorAll('input[name="action"]:checked');
-    btn.disabled = (checked.length === 0);
+    // Both axes are required now. An action with no direction - or a direction
+    // with no action - is zero cells, which submits happily and produces a job
+    // that finishes in seconds having written nothing.
+    const acts = document.querySelectorAll('input[name="action"]:checked');
+    const dirs = document.querySelectorAll('input[name="direction"]:checked');
+    btn.disabled = (acts.length === 0 || dirs.length === 0);
+    if (typeof updateSheetEstimate === 'function') updateSheetEstimate();
 }
 
 function switchTab(tabId) {
@@ -321,50 +327,167 @@ async function generateCore() {
   }
 }
 
+// --- sheet generation: async job API -------------------------------------
+//
+// Sheets go through POST /api/jobs, not the old /api/generate_sheet Celery
+// task. The reason is duration, not tidiness: a full character is ~96 cells at
+// roughly 33s each, so about an hour. Nothing survives that synchronously, and
+// the old path also had no way to report which cell it was on.
+//
+// The job id is the durable handle. It resolves after a page reload, a worker
+// restart or a broker flush, which is what lets this poller be re-attachable
+// and is why something2 can poll the same endpoints.
+
+let sheetJobId = null;
+let sheetPoll = null;
+
+function selectedActions() {
+  return Array.from(document.querySelectorAll('input[name="action"]:checked'))
+              .map(c => c.value);
+}
+
+function selectedDirections() {
+  return Array.from(document.querySelectorAll('input[name="direction"]:checked'))
+              .map(c => c.value);
+}
+
+// Shown before submitting. ~33s/cell measured, plus roughly four model loads
+// at ~90s across the five build stages.
+function updateSheetEstimate() {
+  const el = document.getElementById('sheet-estimate');
+  if (!el) return;
+  const framesEl = document.getElementById('sheet-frames');
+  const frames = framesEl ? parseInt(framesEl.value, 10) || 4 : 4;
+  const cells = selectedActions().length * selectedDirections().length * frames;
+  if (!cells) { el.innerText = ''; return; }
+  const mins = Math.round((cells * 33 + 360) / 60);
+  el.innerText = `${cells} cells — roughly ${mins} min on this card. `
+               + `The job keeps running if you close this page.`;
+}
+
 async function generateSheet() {
-  if (!selectedCoreId) { alert("Please select a core image first!"); return; }
-  const checkboxes = document.querySelectorAll('input[name="action"]:checked');
-  if (checkboxes.length === 0) { alert("Select at least one action!"); return; }
-  
-  const actions = Array.from(checkboxes).map(c => c.value);
-  
+  if (!selectedCoreId) { alert("Please select a concept image first!"); return; }
+  const actions = selectedActions();
+  const directions = selectedDirections();
+  if (!actions.length) { alert("Select at least one action!"); return; }
+  if (!directions.length) { alert("Select at least one direction!"); return; }
+
   const resultDiv = document.getElementById('sheet-result');
   const statusDiv = document.getElementById('sheet-status');
   const btn = document.getElementById('gen-sheet-btn');
 
-  if (resultDiv) resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Sending task to worker...</span>';
-  if (statusDiv) statusDiv.innerText = 'Initializing...';
-  if (btn) btn.disabled = true;
+  resultDiv.innerHTML = '<span class="preview-placeholder pulse">⏳ Queueing job...</span>';
+  statusDiv.innerText = 'Submitting...';
+  btn.disabled = true;
 
   try {
-    const llmElem = document.getElementById('sheet-llm');
-    const llm_name = llmElem ? llmElem.value : 'stabilityai/sdxl-turbo';
-    const sizeElem = document.getElementById('sheet-frame-size');
-    const size = sizeElem ? sizeElem.value : 128;
-    const motionElem = document.getElementById('sheet-motion-steps');
-    const motion_steps = motionElem ? motionElem.value : 4;
-    
-    const fd = new FormData();
-    fd.append('parent_id', selectedCoreId);
-    fd.append('actions', JSON.stringify(actions));
-    fd.append('llm_name', llm_name);
-    fd.append('width', size);
-    fd.append('height', size);
-    fd.append('motion_steps', motion_steps);
-    const req = await fetch('/api/generate_sheet', { method: 'POST', body: fd });
+    // The job API takes the concept as a FILENAME under images/, not the
+    // sprite_images row id the old endpoint used - a job has to stay
+    // resolvable without a DB join.
+    const coreRes = await fetch('/api/cores');
+    const cores = await coreRes.json();
+    const core = cores.find(c => c.id === selectedCoreId);
+    if (!core) { throw new Error('selected concept no longer exists'); }
 
-    if (req.ok) {
-      const data = await req.json();
-      pollTaskStatus(data.task_id, 'sheet');
-      updateQueue();
-    } else {
+    const body = {
+      concept_image: core.file_path.split('/').pop(),
+      actions: actions,
+      directions: directions,
+      frames: parseInt(document.getElementById('sheet-frames').value, 10) || 4,
+      cell: document.getElementById('sheet-cell').value,
+      colors: parseInt(document.getElementById('sheet-colors').value, 10) || 24,
+    };
+
+    const req = await fetch('/api/jobs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!req.ok) {
       statusDiv.innerText = '❌ Error: ' + await req.text();
       btn.disabled = false;
+      return;
     }
+
+    const job = await req.json();
+    sheetJobId = job.job_id;
+    // Survive a reload. The job outlives the page, so the page should be able
+    // to find its way back to it.
+    try { localStorage.setItem('sheetJobId', sheetJobId); } catch (e) {}
+    pollSheetJob(sheetJobId);
+    updateQueue();
   } catch (e) {
     statusDiv.innerText = '❌ Error: ' + e.message;
     btn.disabled = false;
   }
+}
+
+function pollSheetJob(jobId) {
+  const statusDiv = document.getElementById('sheet-status');
+  const resultDiv = document.getElementById('sheet-result');
+  const btn = document.getElementById('gen-sheet-btn');
+
+  if (sheetPoll) clearInterval(sheetPoll);
+  sheetPoll = setInterval(async () => {
+    try {
+      const res = await fetch(`/api/jobs/${jobId}`);
+      if (res.status === 404) {
+        clearInterval(sheetPoll);
+        statusDiv.innerText = 'Job no longer exists.';
+        btn.disabled = false;
+        try { localStorage.removeItem('sheetJobId'); } catch (e) {}
+        return;
+      }
+      const job = await res.json();
+
+      if (job.status === 'done') {
+        clearInterval(sheetPoll);
+        // sheet_url is only present when finished, so its presence is the
+        // readiness signal - no need to string-match on status.
+        resultDiv.innerHTML = `
+            <img src="${job.sheet_url}" alt="Spritesheet" onerror="retryImage(this)" />
+            <div class="crop-btn-container">
+                <a class="btn-crop" href="${job.atlas_url}" download>⬇ atlas.json</a>
+            </div>`;
+        statusDiv.innerText = '✅ Complete';
+        btn.disabled = false;
+        try { localStorage.removeItem('sheetJobId'); } catch (e) {}
+        updateQueue();
+        return;
+      }
+
+      if (job.status === 'failed' || job.status === 'cancelled') {
+        clearInterval(sheetPoll);
+        statusDiv.innerText = `❌ ${job.status}: ${job.error || ''}`;
+        btn.disabled = false;
+        try { localStorage.removeItem('sheetJobId'); } catch (e) {}
+        updateQueue();
+        return;
+      }
+
+      statusDiv.innerHTML = `
+        <div style="font-weight: 700; color: var(--accent2);">
+          ${job.stage || job.status} — ${job.progress_msg || ''}
+        </div>
+        <div class="progress-bg" style="width: 240px; margin: 8px auto;">
+          <div class="progress-fill" style="width: ${job.progress_pct || 0}%"></div>
+        </div>`;
+    } catch (e) { console.error(e); }
+    // 3s, not the 1.5s the old task poller used: these jobs run for an hour and
+    // a cell takes ~33s, so a faster poll only adds requests.
+  }, 3000);
+}
+
+// Re-attach after a reload rather than orphaning a running job.
+function resumeSheetJob() {
+  let saved = null;
+  try { saved = localStorage.getItem('sheetJobId'); } catch (e) {}
+  if (!saved) return;
+  const btn = document.getElementById('gen-sheet-btn');
+  if (btn) btn.disabled = true;
+  sheetJobId = saved;
+  pollSheetJob(saved);
 }
 
 function pollTaskStatus(taskId, mode) {
