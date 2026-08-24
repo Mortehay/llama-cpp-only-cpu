@@ -217,25 +217,31 @@ def strip_ground_patch(img: Image.Image, width_ratio: float = 1.8,
     # cutting only above the high threshold leaves that taper behind - which
     # then reads as a fresh shadow. Legs are NARROWER than the body median, so
     # they cannot sustain this walk; the taper can.
-    # Walk threshold, and it is NOT 1.05 x reference any more.
-    #
-    # 1.05 assumed legs are narrower than the shin reference, which is true of a
-    # slim figure and false of a stocky one - its calves and boots are always
-    # wider than that, so the walk never stopped and the cut ran up through the
-    # feet. Measured 2026-08-24 on core_21f88cbbe9b4: the sprite came back
-    # amputated at mid-thigh in several directions, which is a worse failure
-    # than the patch it was removing.
-    #
-    # Halfway between the reference and the detection threshold stops on the
-    # first row that is merely leg-shaped. On that character: reference 165,
-    # walk threshold 231, the row above the shadow is 205 -> stops immediately
-    # and keeps the feet.
-    walk_threshold = reference * (1.0 + (width_ratio - 1.0) * 0.5)
-    floor = max(top, bot - int(height * max_band_frac))
-    while cut - 1 >= floor and widths[cut - 1] > walk_threshold:
-        cut -= 1
-
     arr[cut:bot + 1, :, 3] = 0
+
+    # The taper, handled PER ROW rather than by walking upward.
+    #
+    # A shadow does not stop abruptly at the detection threshold - it narrows
+    # over a few rows - so something has to clear those too. The original
+    # version walked upward from the cut while rows stayed above a low
+    # threshold, and that is a runaway: once it starts it keeps going as long as
+    # each next row qualifies. On a stocky character whose calves are wider than
+    # the low threshold it never stopped and took the legs off at mid-thigh
+    # (measured 2026-08-24 on core_21f88cbbe9b4).
+    #
+    # Testing each row independently cannot run away. A taper row is still much
+    # wider than the legs and gets cleared; a leg row is near the reference and
+    # is kept, no matter what the row below it did.
+    #
+    # Measured shadow-to-shin ratios: 2.4 (slim), 2.15 (stocky) - so detection
+    # at 1.8 generalises across both body types, and the taper sits between the
+    # legs (~1.0) and the shadow. Halfway is the separator.
+    taper_threshold = reference * (1.0 + (width_ratio - 1.0) * 0.5)
+    band_rows = np.arange(max(bot - int(height * max_band_frac), top), cut)
+    if band_rows.size:
+        taper = band_rows[widths[band_rows] > taper_threshold]
+        arr[taper, :, 3] = 0
+
     return Image.fromarray(arr)
 
 

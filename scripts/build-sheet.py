@@ -62,6 +62,26 @@ def stage_turnaround_encode(a):
     directions = [s.strip() for s in a.directions.split(",")]
     concept = Image.open(a.concept)
 
+    # Clean the CONCEPT once, rather than fighting its shadow in every cell.
+    #
+    # Qwen-Image-Edit preserves what it is given - that is the whole reason it
+    # holds identity across a sheet - so a concept with a shadow ellipse baked
+    # in propagates that shadow into all ~96 outputs, where the per-cell width
+    # rule then has to remove it 96 times and cannot fully (measured on
+    # core_21f88cbbe9b4: remnants survive because they are no wider than the
+    # character's own legs).
+    #
+    # One strip on the input is both cheaper and more reliable. It also cannot
+    # amputate anything the way a per-cell rule can, because the concept is a
+    # single known-good rest pose rather than 96 poses of varying width.
+    if a.clean_concept:
+        import pixelate
+        before = concept.size
+        concept = pixelate.strip_ground_patch(
+            pixelate.key_background(concept, tolerance=10))
+        log.info("cleaned concept %s -> %s", before, concept.size)
+        concept.save(os.path.join(a.work, "concept_clean.png"))
+
     cells = [{"key": d, "image": concept, "prompt": qwen_edit.angle_prompt(d)}
              for d in directions]
     torch.save(qwen_edit.encode_cells(cells), _embeds_path(a.work, "turn"))
@@ -216,6 +236,11 @@ def main():
     te.add_argument("--directions", default="s,e,n,w")
     te.add_argument("--size", type=int, default=512)
     te.add_argument("--seed", type=int, default=0)
+    te.add_argument("--no-clean-concept", dest="clean_concept",
+                    action="store_false", default=True,
+                    help="skip keying and ground-stripping the concept. The "
+                         "editor preserves what it is given, so a shadow left "
+                         "on the concept propagates into every cell")
 
     td = sub.add_parser("turnaround-denoise")
 

@@ -867,6 +867,47 @@ a constant was calibrated on one body shape and applied to another (body median
 vs shoulders, then 1.05 vs stocky calves). Every threshold in it should be
 expressed relative to something the character supplies, not as a literal.
 
+### The actual fix: clean the CONCEPT, not every cell
+
+Chasing the remnants further was the wrong direction. They did not come from the
+angles LoRA at all - **`core_21f88cbbe9b4` has a shadow ellipse baked into the
+concept**, and Qwen-Image-Edit preserves what it is given. That is the same
+property that holds identity across a sheet, so it faithfully copied the shadow
+into all 32 outputs, where a per-cell width rule then had to remove it 32 times
+and could not fully (the remnants are no wider than the character's own legs).
+
+The slim zombie's concept had no shadow, which is the entire reason it looked
+clean and this one did not. Two characters, one difference, and it was in the
+input.
+
+`build-sheet.py turnaround-encode` now keys and ground-strips the concept once,
+before anything is generated (`--no-clean-concept` opts out). Verified: the
+cleaned concept keeps its legs and boots, and a turnaround generated from it
+comes back with **no shadow at all** rather than one that has to be chased.
+
+Two things follow:
+
+- **The per-cell rule is now a backstop, not the primary defence.** It still
+  earns its place for shadows the LoRA invents at elevated angles, but it is no
+  longer carrying the load it was failing to carry.
+- **Keying tolerance matters more on a concept than on a cell.** At tolerance 30
+  the strip punched holes through this character's light interior colours; at
+  10 it is clean. The pipeline uses 10.
+
+### Ratios worth keeping
+
+Measured shadow-width against shin-width on both body types:
+
+| | shadow / shins | shadow / body max |
+|---|---|---|
+| slim | 2.4 | 1.11 |
+| stocky | 2.15 | 1.40 |
+
+The shin reference is consistent across both (2.15 vs 2.4, both clearing 1.8)
+while body-max is not (1.11 vs 1.40). So detection does NOT need to be
+per-character, and `--ground-ratio` is a lever for odd cases rather than a knob
+every character needs turned.
+
 ## Two self-inflicted regressions from this session
 
 Recorded because both were introduced by a change that looked purely
