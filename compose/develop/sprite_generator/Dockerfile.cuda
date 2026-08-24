@@ -10,10 +10,24 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # libgl1/libglib2.0-0 are required by rembg's OpenCV dependency.
+#
+# build-essential is NOT optional on this image, and the reason is not obvious:
+# torch dispatches some ops (bmm_outer_product among them) to Triton, and Triton
+# JIT-COMPILES its CUDA driver shim at first use with the system C compiler.
+# python:3.10-slim has none, so the failure lands at inference time rather than
+# build time, deep in a stack of torch -> triton -> driver frames:
+#
+#   RuntimeError: Failed to find C compiler. Please specify via CC environment
+#   variable or set triton.knobs.build.impl
+#
+# Nothing about that message suggests a missing apt package, and it does not
+# appear until a model actually runs - measured 2026-08-23, on the first
+# Qwen-Image-Edit turnaround, after a 16GB download.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     libgl1 \
     libglib2.0-0 \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # torch in its own layer: it is large and changes rarely, unlike the app deps

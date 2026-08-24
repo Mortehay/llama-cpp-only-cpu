@@ -28,7 +28,7 @@
 # --- Text LLM (current) -------------------------------------------------
 # Qwen3, Q8_0: 8.11GB, near-lossless quantisation, fits the 12GB card with
 # room for llama.cpp KV cache alongside.
-Qwen/Qwen3-8B-GGUF Qwen3-8B-Q8_0.gguf
+# Qwen/Qwen3-8B-GGUF Qwen3-8B-Q8_0.gguf
 
 # Verified alternatives, same size class. Uncomment to add — each is a separate
 # multi-GB download that `make up` blocks on, and `--models-max 1` means only

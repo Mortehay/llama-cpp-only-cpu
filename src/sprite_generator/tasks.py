@@ -135,6 +135,9 @@ PipelineOutput = namedtuple("PipelineOutput", ["images"])
 # (20 steps / cfg 7) do not error, they just produce over-guided, washed-out
 # images — which is worse, because it looks like a prompt problem.
 import poses
+# Geometric cleanup shared with the 2D conveyor. pixelate depends only on PIL
+# and numpy, so the dependency runs this way round and never back.
+from pixelate import strip_ground_patch  # noqa: F401  (re-exported for callers)
 
 # Sampling for pose-conditioned frames. Kept as constants because they are the
 # two knobs worth sweeping when output quality drifts:
@@ -175,6 +178,32 @@ import poses
 # upward per action in action_prompts.json.
 POSED_STRENGTH = 0.75
 CONTROLNET_SCALE = 1.0
+
+# --- pixelation (ADR 0005) ----------------------------------------------
+# Applied to the finished sheet, after every frame is composed. Deterministic,
+# no GPU. Off only for debugging what the model actually produced - the
+# pre-pixelation sheet is saved as <name>_raw.png either way.
+#
+# PIXEL_CELL deliberately does NOT default to the requested frame_width /
+# frame_height. Those come from the UI and are typically 256, and pixel art is
+# not a 256px render with flat colours - it is a small grid. 48x64 matches the
+# supplied reference sheets (taller than wide, because characters are).
+PIXELATE_SHEETS = os.environ.get("PIXELATE_SHEETS", "1").lower() not in (
+    "0", "false", "no", "off")
+PIXEL_COLORS = int(os.environ.get("PIXEL_COLORS", "24"))
+
+
+def _parse_cell(spec: str, default=(48, 64)):
+    try:
+        w, h = spec.lower().split("x")
+        return int(w), int(h)
+    except Exception:
+        logger.warning("PIXEL_CELL=%r is not WxH; using %dx%d",
+                       spec, *default)
+        return default
+
+
+PIXEL_CELL = _parse_cell(os.environ.get("PIXEL_CELL", "48x64"))
 
 # IP-ADAPTER WAS TRIED HERE AND REJECTED. Do not reach for it again without
 # reading this.
@@ -1270,112 +1299,14 @@ def derive_view_core(pipe, core_rgb, control, base_prompt, seed, view,
         return None
 
 
-def strip_ground_patch(img, width_ratio: float = 1.8, max_band_frac: float = 0.25):
-    """Delete a ground/shadow patch fused to the bottom of a sprite.
-
-    NEGATIVE_SINGLE now asks step 1 not to draw one, but prompting is a request
-    rather than a guarantee, and every core generated before that change still
-    has one baked in. This is the geometric backstop, and it is needed because
-    the two existing cleanups both structurally cannot see this:
-    remove_background only clears regions reachable from the border and the
-    patch is enclosed by the sprite; _isolate_largest_sprite keeps the largest
-    connected blob and the patch is JOINED to the feet, so it is part of it.
-
-    Detection is by WIDTH, not colour. Colour would have to know that this
-    particular ground is brown, which does not generalise past one character -
-    a stone slab or a pool of shadow is not brown. Width does generalise: feet
-    are narrow and the thing they stand on spreads out. Measured on the zombie
-    core, legs run ~99px and the patch peaks at 319px, a 3.2x step that no
-    part of a character body produces.
-
-    `width_ratio` is how much wider than the body a row must be to count as
-    ground; 1.5 and 1.8 both cleared this core, 2.2 left a rim behind, and 2.6
-    missed it entirely. `max_band_frac` caps the damage at the bottom quarter
-    of the sprite, so a misfire cannot eat the legs.
-
-    Deliberately NOT applied to generated frames - a wide attack or a flared
-    robe genuinely is wider at the bottom, and clipping that would be worse
-    than the patch. It runs on the core, once, and every frame inherits the
-    clean version through img2img.
-
-    KNOWN GAP - measured on core_21f88cbbe9b4 (stocky zombie, arm outstretched):
-
-        body median (reference)  194    <- inflated by the raised arm
-        patch peak               344    <- ratio 1.77, just under width_ratio
-        boots                    206-209 <- ratio 1.06, just over the 1.05 walk
-
-    Both numbers land on the wrong side of their limit at the same time, so the
-    patch is missed AND lowering width_ratio does not rescue it: the hysteresis
-    walk would then run up through the boots and amputate the feet. The rule
-    assumes a body whose reference width is dominated by the torso and whose
-    feet are clearly narrower than it - true for the slim zombie it was tuned on
-    (legs 0.77x, patch 3.2x), false for a stocky character holding an arm out.
-
-    A per-row gradient detector was tried as a replacement and rejected: the
-    shadow ramps in over ~12 rows rather than stepping, so the largest single
-    row jump is the ankle-to-boot flare (+20%), not the ground. A windowed
-    version would need a threshold that separates +36% (boots) from +66%
-    (ground) - another number fitted to two samples, so it was not adopted.
-
-    This is cosmetic in 2D. It is NOT cosmetic for the 3D path, where the patch
-    reconstructs as a disc fused to the soles: on charB it took silhouette IoU
-    from 0.908 to 0.412 and turned a 19-bone branching skeleton into a 6-bone
-    straight chain. Anything feeding TripoSR should be visually checked until
-    this gap is closed.
-    """
-    import numpy as np
-
-    arr = np.array(img.convert("RGBA"))
-    opaque = arr[:, :, 3] > 0
-    rows = np.where(opaque.any(axis=1))[0]
-    if rows.size == 0:
-        return img
-
-    top, bot = int(rows[0]), int(rows[-1])
-    height = bot - top + 1
-    widths = opaque.sum(axis=1).astype(float)
-
-    # Reference body width, measured ABOVE the bottom quarter so the patch
-    # cannot inflate the very number it is being compared against.
-    body = widths[top:max(bot + 1 - int(height * 0.25), top + 1)]
-    body = body[body > 0]
-    if body.size == 0:
-        return img
-    reference = float(np.median(body))
-    if reference <= 0:
-        return img
-
-    band = np.arange(max(bot - int(height * max_band_frac), top), bot + 1)
-    wide = band[widths[band] > reference * width_ratio]
-    if wide.size == 0:
-        return img
-
-    # Cut from the TOPMOST offending row, not upward from the bottom: the patch
-    # tapers to a few pixels of grass at its lowest rows, so a scan starting at
-    # the bottom edge stops on the first narrow row and removes nothing.
-    cut = int(wide.min())
-
-    # Then walk further up with a LOWER threshold. Two thresholds, because one
-    # cannot do both jobs: the high one has to be high enough that a wide stance
-    # or a flared coat is not mistaken for ground, but the patch does not stop
-    # abruptly at that width - it tapers. Cutting only where it exceeds the high
-    # threshold left the taper behind, which is exactly the residual shadow that
-    # then looked like step 2 drawing a fresh one.
-    #
-    # Measured on the zombie core: body median 128, legs ~99, patch 134-319. The
-    # high threshold (230) first fires at row 464; extending up while rows stay
-    # above 1.05x the body width carries the cut to the leg/ground boundary near
-    # 447, where the width drops to 91 and stops it. Legs are NARROWER than the
-    # body median, so they cannot sustain this walk - the taper can.
-    floor = max(top, bot - int(height * max_band_frac))
-    while cut - 1 >= floor and widths[cut - 1] > reference * 1.05:
-        cut -= 1
-    removed = int(opaque[cut:bot + 1].sum())
-    arr[cut:bot + 1, :, 3] = 0
-    logger.info(f"Stripped ground patch: {removed} px below row {cut} "
-                f"(body width {reference:.0f}, cut threshold "
-                f"{reference * width_ratio:.0f}).")
-    return Image.fromarray(arr)
+# strip_ground_patch now lives in pixelate.py and is imported above.
+#
+# It moved because the 2D conveyor (ADR 0005) needs it OUTSIDE this module:
+# importing tasks pulls in celery, psycopg2, torch and a CUDA availability
+# check that raises when COMPUTE_DEVICE=cuda is set without a card. pixelate
+# depends only on PIL and numpy, so every stage can use it. Behaviour, tuning
+# constants and the documented stocky-character gap are unchanged - the
+# docstring travelled with the code.
 
 
 def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
@@ -2065,8 +1996,42 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     filename = f"sheet_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
     os.makedirs(IMAGES_DIR, exist_ok=True)
+
+    # --- pixelation -----------------------------------------------------
+    #
+    # The stage this conveyor never had. Without it the sheet is a 256px
+    # anti-aliased render that reads as a PAINTING of pixel art: measured on
+    # sheet_3025b822691a.png, 99,092 colours and 2,080 partial-alpha pixels
+    # against a reference sheet's 16-32 colours and none. See ADR 0005.
+    #
+    # Note the palette is taken from the WHOLE sheet, not from core_img: by
+    # this point core_img has been composited onto a background and converted
+    # to RGB (it is the img2img init), so it has no alpha left to separate the
+    # character from its backdrop, and a third of the palette would be spent on
+    # background colours that the alpha threshold then discards.
+    if PIXELATE_SHEETS:
+        raw_path = os.path.join(IMAGES_DIR, filename.replace(".png", "_raw.png"))
+        master.save(raw_path, format="PNG")
+        try:
+            import pixelate as _px
+            cell_w, cell_h = PIXEL_CELL
+            master = _px.pixelate_sheet(
+                master, motion_steps, len(action_strips), cell_w, cell_h,
+                n_colors=PIXEL_COLORS,
+            )
+            logger.info("Pixelated: %dx%d cells of %dx%d, %d colours "
+                        "(pre-pixelation sheet kept at %s)",
+                        motion_steps, len(action_strips), cell_w, cell_h,
+                        PIXEL_COLORS, os.path.basename(raw_path))
+        except Exception as e:
+            # Ship the un-pixelated sheet rather than nothing. This stage is
+            # pure post-processing, so a failure here must not discard a
+            # multi-minute GPU job.
+            logger.error("Pixelation failed, saving the raw sheet instead: %s",
+                         e, exc_info=True)
+
     master.save(filepath, format="PNG")
-    
+
     # duration_ms was never passed here, so the column kept its default and the
     # UI rendered "Completed in 0s" for a job that took half a minute - which
     # reads as a cache hit and hid what a sheet actually costs.
@@ -2074,6 +2039,129 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     update_task_record(task_id, file_path=filepath, duration_ms=duration_ms, progress_pct=100, progress_msg="Complete", image_type="spritesheet", requested_actions=actions, parent_id=parent_id)
     logger.info(f"Sheet generated {filepath} in {duration_ms/1000:.1f}s")
     return {"status": "success", "url": f"/images/{filename}", "duration_ms": duration_ms}
+
+
+JOB_STAGES = [
+    ("turnaround-encode", 10),
+    ("turnaround-denoise", 30),
+    ("actions-encode", 40),
+    ("actions-denoise", 90),
+    ("compose", 100),
+]
+
+
+def _job_update(job_id: str, **fields):
+    """Patch a jobs row. Silently no-ops if the table is absent."""
+    if not fields:
+        return
+    sets = ", ".join(f"{k} = %s" for k in fields)
+    try:
+        conn = get_db()
+        with conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE jobs SET {sets} WHERE id = %s",
+                        (*fields.values(), job_id))
+        conn.close()
+    except Exception as e:
+        logger.warning("could not update job %s: %s", job_id, e)
+
+
+@celery_app.task(name="tasks.build_sheet_job", bind=True)
+def build_sheet_job(self, job_id: str):
+    """Run the five-stage sheet build for one job row.
+
+    EACH STAGE IS A SUBPROCESS, and that is not incidental.
+
+    Loading and releasing a large quantised model fragments the CUDA allocator
+    under WSL badly enough that a later load fails on a 30 MiB allocation with
+    gigabytes free (measured, ADR 0005). Running the stages inside this worker
+    would reintroduce exactly that. A fresh interpreter per stage is the only
+    thing that reliably clears it, so this task orchestrates rather than
+    computes - it holds no CUDA context of its own.
+
+    It also means a crashed stage cannot take the worker down with it, and the
+    job's error is whatever that stage printed rather than a traceback from
+    inside a shared process.
+    """
+    import json as _json
+    import subprocess
+
+    conn = get_db()
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT spec, status FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+    conn.close()
+    if not row:
+        logger.error("job %s vanished before it started", job_id)
+        return {"error": "job not found"}
+    spec = row[0] if isinstance(row[0], dict) else _json.loads(row[0])
+    if row[1] == "cancelled":
+        logger.info("job %s was cancelled before starting", job_id)
+        return {"status": "cancelled"}
+
+    work = os.path.join(IMAGES_DIR, f"_job_{job_id}")
+    os.makedirs(work, exist_ok=True)
+    sheet_path = os.path.join(IMAGES_DIR, f"sheet_{job_id}.png")
+    atlas_path = os.path.splitext(sheet_path)[0] + ".json"
+
+    concept = spec.get("concept_image")
+    if not concept:
+        _job_update(job_id, status="failed", finished_at=_now(),
+                    error="no concept_image; prompt-to-concept is not wired yet")
+        return {"error": "concept_image required"}
+    if not os.path.isabs(concept):
+        concept = os.path.join(IMAGES_DIR, os.path.basename(concept))
+    if not os.path.isfile(concept):
+        _job_update(job_id, status="failed", finished_at=_now(),
+                    error=f"concept image not found: {concept}")
+        return {"error": "concept not found"}
+
+    base = ["python", "/app/scripts/build-sheet.py"]
+    common = ["--work", work]
+    per_stage = {
+        "turnaround-encode": [concept, "--directions",
+                              ",".join(spec.get("directions", ["s"])),
+                              "--seed", str(spec.get("seed", 0))],
+        "actions-encode": ["--actions", ",".join(spec.get("actions", ["walk"])),
+                           "--frames", str(spec.get("frames", 4))],
+        "compose": [sheet_path, "--cell", spec.get("cell", "48x64"),
+                    "--colors", str(spec.get("colors", 24))],
+    }
+
+    _job_update(job_id, status="running", started_at=_now(), progress_pct=0,
+                progress_msg="starting")
+
+    for stage, pct in JOB_STAGES:
+        if is_cancelled(self.request.id):
+            _job_update(job_id, status="cancelled", finished_at=_now(),
+                        progress_msg=f"cancelled during {stage}")
+            return {"status": "cancelled"}
+
+        _job_update(job_id, stage=stage, progress_msg=f"running {stage}")
+        cmd = base + [stage] + per_stage.get(stage, []) + common
+        logger.info("job %s: %s", job_id, " ".join(cmd))
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            # The last few lines are what identifies the failure; the full
+            # stdout of a denoise stage is hundreds of progress-bar lines.
+            tail = "\n".join((proc.stderr or proc.stdout).strip().splitlines()[-6:])
+            logger.error("job %s failed in %s:\n%s", job_id, stage, tail)
+            _job_update(job_id, status="failed", stage=stage,
+                        finished_at=_now(), error=f"{stage}: {tail}")
+            return {"error": f"{stage} failed"}
+
+        _job_update(job_id, progress_pct=pct)
+
+    _job_update(job_id, status="done", progress_pct=100, stage="compose",
+                progress_msg="complete", sheet_path=sheet_path,
+                atlas_path=atlas_path, finished_at=_now())
+    logger.info("job %s done -> %s", job_id, sheet_path)
+    return {"status": "done", "sheet": sheet_path}
+
+
+def _now():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
 
 
 @celery_app.task(name="tasks.generate_raw_task", bind=True)

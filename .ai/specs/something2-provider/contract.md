@@ -1,12 +1,68 @@
 # something2 provider registration
 
-How to point the something2 admin panel at this service. No code changes are
-needed on the something2 side — this service impersonates Automatic1111, which
-its provider system already supports as a stock preset.
+> **CORRECTED 2026-08-23. This document previously said something2 is
+> synchronous-only and cannot poll**, citing their `docs/ai-providers.md` and
+> their SOMET-334. That was read from published docs, with an explicit caveat
+> that their actual calling code had never been reviewed — and the caveat was
+> the accurate part. **The project owner states something2 queues the task, does
+> not wait, and polls later** — either for one task or for every task it has
+> sent. All it needs back immediately is a task number.
+>
+> That is now implemented as the **job API** below. The A1111 façade is kept for
+> single-image txt2img, which genuinely fits in one request.
 
-Source of truth for the consumer side is something2's `docs/ai-providers.md`.
-**Caveat: that doc was read from `main`; their actual calling code has not been
-reviewed.** Verify against a real job before trusting these values.
+There are therefore TWO surfaces, for two different jobs:
+
+| Surface | For | Shape |
+|---|---|---|
+| **Job API** (`/api/jobs`) | Character sheets | Async: submit, get an id, poll |
+| A1111 façade (`/sdapi/v1/txt2img`) | One image | Synchronous, 240 s budget |
+
+**Use the job API for anything with actions or directions.** A full character is
+~2 hours of GPU time on this hardware (measured, ADR 0005); no HTTP timeout
+makes that synchronous, which is why the façade cannot serve it whatever the
+timeout is set to.
+
+## Job API
+
+    POST   /api/jobs                 -> 202 {"job_id", "status":"queued",
+                                             "cells", "estimated_seconds", "poll"}
+    GET    /api/jobs/{id}            -> one job
+    GET    /api/jobs?ids=a,b,c       -> a known set        (poll what you sent)
+    GET    /api/jobs?since=<iso>     -> anything changed   (poll for updates)
+    GET    /api/jobs?status=running  -> by state
+    GET    /api/jobs/{id}/sheet      -> the PNG   (409 until done)
+    GET    /api/jobs/{id}/atlas      -> the JSON  (409 until done)
+    DELETE /api/jobs/{id}            -> cooperative cancel
+
+Submit body (every field optional except `concept_image`):
+
+```json
+{
+  "concept_image": "meshtest_core.png",
+  "actions": ["walk", "attack"],
+  "directions": ["s", "se", "e", "ne", "n", "nw", "w", "sw"],
+  "frames": 4,
+  "cell": "48x64",
+  "colors": 24,
+  "seed": 0
+}
+```
+
+Three details worth knowing on the consumer side:
+
+- **`sheet_url` appears only when the job is done.** Treat its presence as
+  "ready" rather than string-matching on `status`.
+- **Asking for the sheet early returns 409, not 404.** The job exists, it is
+  just not finished. A client that conflates those will abandon live jobs.
+- **List responses carry `server_time`.** Use it as the next `since` rather than
+  the client's own clock.
+
+Verify the whole contract with `scripts/verify-jobs-api.py --submit`.
+
+## A1111 façade (single images only)
+
+Source of truth for this half remains something2's `docs/ai-providers.md`.
 
 ## Values to enter in the admin
 

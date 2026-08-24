@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -164,6 +164,74 @@ models:
 sync-models:
 	@echo "Checking models.txt for any missing models..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
+
+# --- 2D conveyor (ADR 0005) ---------------------------------------------
+#
+# These run inside sprite-worker rather than on the host: PIL, numpy and
+# diffusers are in the image and nowhere else on this machine.
+
+# Fetch the Qwen-Image-Edit-2511 stack, assembled from two publishers so it fits
+# a 12GB card. ~16.5GB. See scripts/fetch-qwen-edit.py for why it is not a
+# single snapshot_download.
+#
+# --models-dir is passed EXPLICITLY and must stay that way. --env-file puts the
+# host's MODELS_DIR into the container, where it names a path that is not the
+# bind mount, and the download then lands in a layer `--rm` discards.
+fetch-qwen:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/fetch-qwen-edit.py --models-dir /models
+
+# One concept image -> 8 directions. ~33s per direction plus a ~90s model load.
+# core=<path> is any images/core_*.png; dirs=s,e limits it for a quick check.
+#
+# Verified working 2026-08-23 on the 3060: Q2_K resident on the GPU, no offload.
+# See .ai/decisions/0005 for why offloading is the wrong call on this machine.
+turnaround:
+	@if [ -z "$(core)" ]; then echo "Usage: make turnaround core=images/core_XXXX.png [dirs=s,e] [size=512]"; exit 1; fi
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/qwen_edit.py --selftest --image /app/$(core) \
+		--size $(or $(size),512) \
+		$(if $(dirs),--directions $(dirs),) \
+		--out /app/images/_turnaround.png
+
+# The whole conveyor on one character: turnaround -> key -> pixelate -> sheet.
+# Produces a transparent, palette-locked 8-direction sheet and checks it.
+sheet8:
+	@if [ -z "$(core)" ]; then echo "Usage: make sheet8 core=images/core_XXXX.png"; exit 1; fi
+	$(MAKE) turnaround core=$(core)
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker /app/pixelate.py \
+		/app/images/_turnaround.png /app/images/_sheet8.png \
+		--grid 8x1 --cell 48x64 --colors 24 --key --key-tolerance 10 \
+		--preview-scale 6
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker /app/scripts/check-sprite.py \
+		/app/images/_sheet8.png --grid 8x1
+
+# Pixelate anything into a palette-locked, hard-alpha sheet. No GPU, no model.
+#   make pixelate src=images/foo.png grid=4x2 cell=48x48
+pixelate:
+	@if [ -z "$(src)" ]; then echo "Usage: make pixelate src=<png> [grid=4x2] [cell=48x48]"; exit 1; fi
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/pixelate.py /app/$(src) /app/$(basename $(src))_px.png \
+		--grid $(or $(grid),1x1) --cell $(or $(cell),48x48) --key --preview-scale 6
+
+# Assert a finished sheet really is transparent, palette-locked pixel art.
+# A viewer composites RGBA over white, so an unkeyed sheet LOOKS correct.
+check-sprite:
+	@if [ -z "$(src)" ]; then echo "Usage: make check-sprite src=<png> [grid=4x2]"; exit 1; fi
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/check-sprite.py /app/$(src) --grid $(or $(grid),1x1)
+
+# Composition + pixelation under test without any model involved.
+smoke-sheet:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/smoke-sheet.py images/sheet_3025b822691a.png images/_smoke_sheet.png
 
 # Shortcut to just rebuild the specific service without cache
 rebuild-app:

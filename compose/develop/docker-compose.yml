@@ -82,33 +82,46 @@ services:
       retries: 12
       start_period: 5s
 
-  # 5. Open WebUI (Chat Interface)
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open_webui
-    environment:
-      - OPENAI_API_BASE_URL=http://stats_collector:8000/v1
-      - OPENAI_API_KEY=sk-dummy
-      - WEBUI_AUTH=False
-      - ENABLE_OLLAMA_API=false
-      - ENABLE_SIGNUP=false
-    ports:
-      - "3000:8080"
-    restart: unless-stopped
-    depends_on:
-      - collector
+  # 5. Open WebUI (Chat Interface) - DISABLED
+  #
+  # Legacy from the llama.cpp era and not part of the sprite conveyor. Its image
+  # is 7.16 GB, which is worth reclaiming on a machine this tight on disk.
+  #
+  # The whole block must stay commented, key AND body. Commenting only the
+  # `open-webui:` line leaves the body indented under `redis:` above, and
+  # compose then refuses the entire file:
+  #   yaml: construct errors: line 87: mapping key "image" already defined at line 74
+  # That takes down every service, not just this one.
+  #
+  # open-webui:
+  #   image: ghcr.io/open-webui/open-webui:main
+  #   container_name: open_webui
+  #   environment:
+  #     - OPENAI_API_BASE_URL=http://stats_collector:8000/v1
+  #     - OPENAI_API_KEY=sk-dummy
+  #     - WEBUI_AUTH=False
+  #     - ENABLE_OLLAMA_API=false
+  #     - ENABLE_SIGNUP=false
+  #   ports:
+  #     - "3000:8080"
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - collector
 
-  # 6. Grafana (Stats Visualizer)
-  grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    ports:
-      - "3001:3000"
-    restart: unless-stopped
-    depends_on:
-      - db
+  # 6. Grafana (Stats Visualizer) - DISABLED
+  # Legacy metrics for the llama.cpp stack; nothing in the sprite conveyor uses
+  # it. Key AND body must stay commented - see the note on open-webui above.
+  #
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: grafana
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=admin
+  #   ports:
+  #     - "3001:3000"
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - db
 
   # 4. Collector
   collector:
@@ -156,6 +169,10 @@ services:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
+      # Operator tools (API verification, fetch, acceptance checks). Read-only
+      # and separate from /app: these are run via `docker exec` or
+      # `docker compose run`, not imported by the service.
+      - ../../scripts:/app/scripts:ro
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -165,6 +182,23 @@ services:
       - PYTHONUNBUFFERED=1
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      # Every weight is already cached, so stop huggingface_hub revalidating
+      # each file against the Hub on every pipeline load. Those calls are
+      # metadata-only (a few KB) but they put generation on the network path
+      # for no benefit and fail confusingly when the LAN is down. Override when
+      # fetching new models:
+      #   docker compose run -e HF_HUB_OFFLINE=0 ... scripts/fetch-qwen-edit.py
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      # Point the WHOLE huggingface_hub stack at the mounted cache, not just
+      # the calls that happen to pass cache_dir=.
+      #
+      # diffusers' from_single_file loads the architecture config through its
+      # own path and does NOT forward cache_dir to it. Online that is invisible
+      # - it just downloads the config into the container's default cache at
+      # ~/.cache/huggingface, which dies with the container. Offline it fails
+      # with "Qwen/Qwen-Image-Edit-2511 does not appear to have a file named
+      # config.json" while that file is demonstrably sitting in /models.
+      - HF_HUB_CACHE=/models
     ports:
       - "8001:8001"
     # No restart policy on purpose. A container that Docker *restarts* (at host
@@ -198,6 +232,11 @@ services:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
+      # Read-only, and separate from /app on purpose: these are operator tools
+      # (fetch, acceptance checks, smoke tests) run via `docker compose run`,
+      # not modules the worker imports. Mounted so the Makefile's 2D-conveyor
+      # targets have something to execute.
+      - ../../scripts:/app/scripts:ro
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
@@ -205,6 +244,23 @@ services:
       - PYTHONUNBUFFERED=1
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      # Every weight is already cached, so stop huggingface_hub revalidating
+      # each file against the Hub on every pipeline load. Those calls are
+      # metadata-only (a few KB) but they put generation on the network path
+      # for no benefit and fail confusingly when the LAN is down. Override when
+      # fetching new models:
+      #   docker compose run -e HF_HUB_OFFLINE=0 ... scripts/fetch-qwen-edit.py
+      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+      # Point the WHOLE huggingface_hub stack at the mounted cache, not just
+      # the calls that happen to pass cache_dir=.
+      #
+      # diffusers' from_single_file loads the architecture config through its
+      # own path and does NOT forward cache_dir to it. Online that is invisible
+      # - it just downloads the config into the container's default cache at
+      # ~/.cache/huggingface, which dies with the container. Offline it fails
+      # with "Qwen/Qwen-Image-Edit-2511 does not appear to have a file named
+      # config.json" while that file is demonstrably sitting in /models.
+      - HF_HUB_CACHE=/models
     # 1024 file descriptors is not enough for this worker, and running out does
     # not look like running out.
     #

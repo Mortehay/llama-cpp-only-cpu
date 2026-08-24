@@ -1,12 +1,25 @@
 # 0003 - Directional sprites: view cores, structured actions, and what blocks 8-way
 
 Date: 2026-08-22
-Status: SUPERSEDED IN PRACTICE by
+Status: SUPERSEDED by [0005](0005-back-to-2d-modern-editors.md).
+
+> **Read this correction first.** This document concluded that 8-way directional
+> sprites were unreachable in 2D on a 12 GB card, and 0004 spent the mesh+rig
+> conveyor on that conclusion. The conclusion was correct *about the models
+> surveyed here* and is now obsolete:
+> `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` renders 8 azimuths x 4
+> elevations from a single 2D image, and `Qwen-Image-Edit-2511` fits this card
+> in GGUF. The spike below did not find it because it did not exist yet.
+>
+> What remains true and worth reading: the *diagnosis* of why img2img cannot
+> change facing, and the action-matching collision that swallowed diagonals.
+
+(Previously: SUPERSEDED IN PRACTICE by
 [0004](0004-pivot-to-3d-conveyor.md), which moves directional sprites to a 3D
 intermediate. Kept, not deleted: this document is the evidence that the 2D route
 cannot reach whole-sheet consistency, and is therefore the justification for
 paying 0004's cost. The mechanisms below are still live in the code and still
-correct for anything that stays 2D.
+correct for anything that stays 2D.)
 
 (Previously: Accepted, 8-way deferred - the model spike found no viable
 off-the-shelf route on 12 GB; see "Spike results".)

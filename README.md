@@ -8,6 +8,88 @@ API for the home network and as a browser tool for iterating on prompts.
 > `collector`, and `orchestrator` services are legacy from that original
 > purpose. The previous README is kept at `README.md.bak`.
 
+## The conveyor
+
+Current direction is [ADR 0005](.ai/decisions/0005-back-to-2d-modern-editors.md),
+which reversed the 3D pivot. **The 3D route (`src/mesh_worker/`,
+`src/rig_worker/`) is retired** — it failed its own gate, rigging 1 of 5
+generated meshes. Its Docker images were deleted; the code stays in git.
+
+```
+concept        key          angles           poses            pixelate        pack
+------------   ----------   --------------   --------------   -------------   ------------
+Z-Image-Turbo  chroma-key   Qwen-Edit-2511   Qwen-Edit-2511   palette-lock    grid PNG
+6B, 8 steps    + RMBG-2.0   +Angles LoRA     +AnyPose LoRA    + NN downscale  + atlas JSON
+(or SDXL)      fallback     8 azimuths       N frames/action  + alpha thresh  + RGBA
+```
+
+Everything after `concept` **edits one image** rather than sampling a new one.
+That is what keeps ~150 cells looking like the same character, and it is the
+property the 3D detour was chasing.
+
+| Target | Does | Needs a GPU |
+|---|---|---|
+| `make fetch-qwen` | Pull the editor stack (~16.5 GB, two publishers) | no |
+| `make turnaround core=images/core_X.png` | One concept → 8 directions | yes |
+| `make pixelate src=<png> grid=4x2 cell=48x48` | Real pixel art: palette lock, hard alpha | no |
+| `make check-sprite src=<png> grid=4x2` | Assert it *is* transparent palette-locked pixel art | no |
+| `make smoke-sheet` | Composition + pixelation under test, no model | no |
+
+### Generating a sheet
+
+Two ways in, for two different situations.
+
+**From the command line**, five stages, resumable:
+
+```bash
+./scripts/build-sheet.sh images/core.png images/out.png s,e,n,w walk 4
+```
+
+**Over HTTP**, for something2 or anything else that wants to queue and walk
+away. Submit returns a job id immediately; poll for the rest:
+
+```bash
+python scripts/submit-job.py core.png --actions walk,attack --frames 4
+python scripts/await-job.py <job_id>
+```
+
+```
+POST   /api/jobs             -> 202 {job_id, cells, estimated_seconds, poll}
+GET    /api/jobs/{id}        -> one job
+GET    /api/jobs?ids=a,b,c   -> the set you sent
+GET    /api/jobs?since=<iso> -> anything that changed
+GET    /api/jobs/{id}/sheet  -> the PNG   (409 until done, not 404)
+DELETE /api/jobs/{id}        -> cancel
+```
+
+Full contract in [.ai/specs/something2-provider/contract.md](.ai/specs/something2-provider/contract.md);
+verify it with `scripts/verify-jobs-api.py --submit`.
+
+**Before a long run**, two things that are not optional on this machine:
+
+| | why |
+|---|---|
+| `wsl --shutdown` first | The text encoder needs a **1.02 GiB contiguous** allocation and WSL's GPU manager cannot always provide it once fragmented — it fails with gigabytes nominally free |
+| stop `llm_engine` | llama.cpp holds the same 12 GB card, and `stats_collector` polling it can trigger a model load mid-run. `build-sheet.sh` does this for you |
+
+Budget roughly **33 s per cell** plus ~90 s per model load. A full character
+(8 directions x 3 actions x 4 frames = 96 cells) is about an hour.
+
+### The two stages that were missing entirely
+
+`pixelate.py` and `sheet.py` are new, and their absence is most of why earlier
+output did not look like the reference sheets. Measured on the same sheet:
+
+| | before | after |
+|---|---|---|
+| colours | 99,092 | 24 |
+| partial-alpha (halo) pixels | 2,080 | 0 |
+| cell size | 256 px | 48 px |
+
+**Always run `make check-sprite` before believing a sheet.** A viewer
+composites RGBA over white, so a sheet with no alpha at all looks identical to a
+correctly keyed one.
+
 ## Requirements
 
 - **NVIDIA GPU** with a reasonably current driver (developed against a

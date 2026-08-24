@@ -27,14 +27,22 @@ Three deliverables, in priority order:
 The first external consumer is the admin panel of
 [Mortehay/something2](https://github.com/Mortehay/something2).
 
-> **These three predate [decisions/0004](decisions/0004-pivot-to-3d-conveyor.md)
-> and need revisiting.** The target is now whole-sheet consistency - ~150 cells
-> per character, all matching - via a 3D intermediate rather than 2D img2img.
-> Specifically: **deliverable 3 may be moot**, because LoRA training is the *2D*
-> answer to sprite consistency and the pivot removes that problem. Deliverable 1
-> is also in question: the something2 contract is a txt2img A1111 facade, and a
-> 3D conveyor does not fit that shape. Not rewritten yet - the pivot's
-> mesh -> rig -> animate chain is still unverified.
+> **Revised by [decisions/0005](decisions/0005-back-to-2d-modern-editors.md)
+> (2026-08-23).** The 3D pivot is reversed; the target is still whole-sheet
+> consistency (~150 cells per character, all matching) but it is now reached
+> with a 2026 instruction-editing model rather than a mesh.
+>
+> - **Deliverable 1 needs reshaping, not dropping.** The something2 contract is
+>   a *synchronous* A1111 facade with a 240s budget. A 150-cell sheet cannot be
+>   generated inside it on this hardware under any plan, so the facade becomes a
+>   cache reader in front of a background job.
+> - **Deliverable 2 stands**, and matters more than before: the conveyor now has
+>   more stages worth comparing side by side, not fewer.
+> - **Deliverable 3 (LoRA training) is deferred, not moot.** 0004 argued the 3D
+>   pivot removed the consistency problem LoRA training solves. With 2D back,
+>   the problem returns - but `Qwen-Image-Edit-2511` plus a locked palette is
+>   the cheaper answer, and training is only worth revisiting if that is
+>   measured to be insufficient.
 
 ## Measured hardware (2026-08-19)
 
@@ -241,12 +249,28 @@ come back.
   VHDX's **nominal** ~1007 GB, so a model download can look free when C: is
   nearly full. Check `Get-PSDrive C` on the Windows side before pulling weights.
 
-**D: is available as model overflow** (72.6 GB free, 2026-08-22). Nothing points
-at it yet — `MODELS_DIR` in `compose/develop/.env` is on the WSL ext4 volume,
-which lives on C:. Moving or symlinking the model cache to D: is the escape
-hatch when C: gets tight, and matters because model spikes are the main thing
-that consumes space: the IP-Adapter set is 2.6 GB (mostly its CLIP image
-encoder) and an SDXL turnaround candidate would be ~7 GB more.
+**D: now holds the models, and the way it holds them matters.** Updated
+2026-08-23. Two distinct uses of D:, which are easy to confuse:
+
+1. **Cold archive** — `/mnt/d/wsl-model-archive`, plain DrvFs, managed by
+   `scripts/archive-models.sh` and `scripts/archive-all-models.sh`. All 28 GB of
+   weights were parked here on 2026-08-23. **Never run a model from here** — 9p
+   measured at 44 MB/s against 3.9 GB/s on ext4, 62s to load a pipeline against
+   10s.
+2. **Live storage** — a dedicated **ext4 VHD** on D:, created by
+   `scripts/setup-models-vhd.ps1` and attached with `wsl --mount --vhd`. This is
+   what `MODELS_DIR` points at. Native ext4 (no 9p penalty), bytes on the D:
+   spindle (C: stops growing).
+
+The mount **does not survive a reboot**. Re-attach it in the same slot as
+`lan-expose.ps1`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-models-vhd.ps1 -AttachOnly
+```
+
+That is the price of this arrangement, and forgetting it looks like every model
+having vanished.
 - Reclaim with `scripts/compact-wsl-disk.ps1` (**Administrator** — `diskpart`
   cannot attach a vdisk otherwise).
 - **Do not use `wsl --manage <distro> --set-sparse true`.** WSL refuses it with

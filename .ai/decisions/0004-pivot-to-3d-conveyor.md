@@ -1,10 +1,29 @@
 # 0004 - Pivot the sprite conveyor to a 3D intermediate
 
 Date: 2026-08-22
-Status: Direction accepted.
+Status: **REVERSED by [0005](0005-back-to-2d-modern-editors.md) (2026-08-23).**
+
+> The 3D route is retired. Not because the reasoning here was wrong - it was
+> sound given what was available - but because its whole premise was that no 2D
+> model could hold a character across ~150 cells, and that premise expired.
+> `fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA` supplies the 8 azimuths
+> directly, on the 2D image, for a few hundred MB.
+>
+> This document is still worth reading twice over. It records (a) the measured
+> proof that SD1.5/SDXL img2img cannot hold identity across a sheet, which is
+> why 0005 also abandons that path, and (b) the rig gate below, where the
+> conveyor actually broke: **4 of 5 TripoSR reconstructions could not be
+> rigged**, with no measured input property predicting which would succeed.
+>
+> `src/mesh_worker/` and `src/rig_worker/` remain in git. Their Docker images
+> (21.2 GB and 24.6 GB) were deleted on 2026-08-23 to make room for the 2D
+> stack; rebuilding them means recompiling spconv and flash-attn on a 4-thread
+> i3-8100, so treat that as a real cost before reviving this route.
+
+(Previously: Direction accepted.
   - Stage "mesh" is BUILT AND VALIDATED (2026-08-22) - see "Mesh stage results".
   - Stage "rig" is next and unbuilt. The open question there is skeleton
-    CONSISTENCY across characters, not animatability - see "Gate result".
+    CONSISTENCY across characters, not animatability - see "Gate result".)
 
 A previous revision of this file said "ROUTE BLOCKED". That was wrong and is
 corrected below; it rested on a summarised paraphrase of the UniRig README

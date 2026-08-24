@@ -40,6 +40,11 @@ app = FastAPI(lifespan=lifespan)
 from a1111 import router as a1111_router
 app.include_router(a1111_router)
 
+# Async sheet jobs. The A1111 facade above stays for single-image txt2img,
+# which fits in one request; a full character is ~2 hours and cannot.
+from jobs import router as jobs_router
+app.include_router(jobs_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)
