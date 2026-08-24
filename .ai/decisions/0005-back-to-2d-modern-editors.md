@@ -836,16 +836,36 @@ partial-alpha px, baseline row 62 on all 32 cells.
 walk animating in every row, identity and art style held across the sheet.
 Nothing in the conveyor was tuned for this character and nothing needed to be.
 
-**What did not:** faint shadow remnants survive in roughly a third of cells. The
-shin reference is a real improvement over the body median - most cells ARE clean,
-where the old rule cleared none on a character like this - but a stocky figure
-has wide shins, which raises the reference until a thin shadow no longer clears
-`width_ratio`. The gap the docstring described has narrowed, not closed.
+**What did not, and a correction.** This was first reported here as "faint
+shadow remnants in about a third of cells". That was wrong and under-stated the
+defect: on several directions the rule was **amputating the legs at mid-thigh**.
+The character is short-legged enough that the missing feet did not read as
+obviously as they should have on first inspection.
 
-So the honest scope of the ground rule is: **reliable on slim characters,
-partial on stocky ones.** A per-character `--ground-ratio` is the cheap lever
-(this one wants roughly 1.4-1.5); a rule that needs no tuning would have to key
-on something other than width.
+The cause was the upward walk, not the detection threshold. Detection was fine -
+measured on `dir_s`, the shadow row is 339px against a 165px shin reference, a
+ratio of 2.1 that clears 1.8 comfortably. But the walk then continued upward
+while rows exceeded `reference * 1.05`, and a stocky figure's calves and boots
+are ALWAYS wider than 1.05x its shins, so the cut ran through the feet.
+
+Fixed by scaling the walk threshold with the detection threshold instead of
+pinning it just above the reference:
+
+    walk_threshold = reference * (1 + (width_ratio - 1) * 0.5)
+
+On this character that is 231px, and the row above the shadow is 205px, so the
+walk stops immediately. Verified on both characters: the stocky one keeps its
+legs and boots in all 8 directions (PASS, baseline 62 on all 32 cells), and the
+slim one is unchanged.
+
+Residual: a few faint shadow remnants remain on the stocky character. That is
+the right trade - a remnant is cosmetic, missing legs is not - and
+`--ground-ratio` remains the per-character lever if it matters.
+
+**The general lesson**: this rule has now failed three times, each time because
+a constant was calibrated on one body shape and applied to another (body median
+vs shoulders, then 1.05 vs stocky calves). Every threshold in it should be
+expressed relative to something the character supplies, not as a literal.
 
 ## Two self-inflicted regressions from this session
 

@@ -217,8 +217,22 @@ def strip_ground_patch(img: Image.Image, width_ratio: float = 1.8,
     # cutting only above the high threshold leaves that taper behind - which
     # then reads as a fresh shadow. Legs are NARROWER than the body median, so
     # they cannot sustain this walk; the taper can.
+    # Walk threshold, and it is NOT 1.05 x reference any more.
+    #
+    # 1.05 assumed legs are narrower than the shin reference, which is true of a
+    # slim figure and false of a stocky one - its calves and boots are always
+    # wider than that, so the walk never stopped and the cut ran up through the
+    # feet. Measured 2026-08-24 on core_21f88cbbe9b4: the sprite came back
+    # amputated at mid-thigh in several directions, which is a worse failure
+    # than the patch it was removing.
+    #
+    # Halfway between the reference and the detection threshold stops on the
+    # first row that is merely leg-shaped. On that character: reference 165,
+    # walk threshold 231, the row above the shadow is 205 -> stops immediately
+    # and keeps the feet.
+    walk_threshold = reference * (1.0 + (width_ratio - 1.0) * 0.5)
     floor = max(top, bot - int(height * max_band_frac))
-    while cut - 1 >= floor and widths[cut - 1] > reference * 1.05:
+    while cut - 1 >= floor and widths[cut - 1] > walk_threshold:
         cut -= 1
 
     arr[cut:bot + 1, :, 3] = 0
