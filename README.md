@@ -60,7 +60,48 @@ GET    /api/jobs?ids=a,b,c   -> the set you sent
 GET    /api/jobs?since=<iso> -> anything that changed
 GET    /api/jobs/{id}/sheet  -> the PNG   (409 until done, not 404)
 DELETE /api/jobs/{id}        -> cancel
+GET    /api/action-catalog   -> which actions exist and their frame ceilings
 ```
+
+`POST /api/jobs` answers **400** for a spec the pose library cannot build,
+rather than accepting it and failing mid-render:
+
+* an unknown action name — the old behaviour was a `SystemExit` from
+  `stage_actions`, minutes in;
+* more frames than the action defines poses for. A frame **is** a named pose,
+  not an interpolation, so asking for six of an action with four cannot produce
+  more motion. This used to encode keys 0..3, look up 0..5, and die with
+  `KeyError: 'idle|s|4'` after the turnaround pass had already been paid for.
+
+`directions: []` means the **front row only**. Omitting the field is different
+and still gives the full eight-way turnaround, so an existing consumer sees no
+change. Ticking nothing in the UI costs one row, not eight.
+
+### Adding or changing an action
+
+Everything an action *is* lives in
+[`src/sprite_generator/action_prompts.json`](src/sprite_generator/action_prompts.json) —
+its prompt, its per-view-family frame poses, and the overrides each pipeline
+reads. **No code change and no rebuild:** the file is re-read when its mtime
+changes, so an edit applies to the next sheet, and malformed JSON keeps the
+last good version loaded rather than taking the service down.
+
+Its `_readme` block carries the authoring rules. The one that gets violated is:
+
+> A frame pose must change the **silhouette** as seen from **that camera**.
+> Motion along the view axis does not exist in the output.
+
+Ask a front camera for a forward punch and the model does not fail loudly — it
+draws the nearest thing it can see, measured as a literal T-pose in six of eight
+directions. Profile cameras get strides and thrusts; front and back get knee
+lifts and overhead swings.
+
+Shipped: `walk`, `attack`, `idle`, `damage`, `use`, `cast`, `sway`. The last is
+written for subjects with no skeleton — a tree, a banner — and is the reason
+its poses name the whole silhouette rather than limbs.
+
+`scripts/validate-actions.py` asserts the tables agree with each other. It runs
+no model and needs no GPU.
 
 Full contract in [.ai/specs/something2-provider/contract.md](.ai/specs/something2-provider/contract.md);
 verify it with `scripts/verify-jobs-api.py --submit`.
