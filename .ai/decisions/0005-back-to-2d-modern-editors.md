@@ -529,10 +529,59 @@ these two views.
 
 **Default stays 1.8.** A remaining patch is cosmetic; amputated legs are not.
 
-Closing the last two properly needs a detector that is not width-based - the
-honest options are a per-direction rule, or keying against a chroma background
-generated for the purpose rather than the black the model chooses. Not attempted
-here.
+### Solved 2026-08-24, and the width rule was never going to do it
+
+Two more width rules were tried and failed (shin-band reference, then a pinch
+detector). Measuring instead of guessing is what ended it -
+`scripts/width-profile.py` on the back view:
+
+| from bottom | width / peak | |
+|---|---|---|
+| 0-38% | 0.39 -> **0.95** | ground patch, as wide as the shoulders |
+| 38% | 0.61 | pinch |
+| 41-60% | 0.87-0.95 | coat |
+
+**The patch reaches 95% of peak width and the legs are inside it.** Dark jeans
+and dark patch are one connected mass in the alpha channel. There is nothing
+for a width rule to separate - cutting at the 38% pinch takes the legs with it.
+That is why every geometric attempt failed, and no further tuning would have
+helped.
+
+**The cause is the camera.** `elevated shot` tilts the view down and exposes a
+large area of ground plane; the LoRA's Gaussian-Splatting prior fills it in. At
+`eye-level shot` the ground is edge-on and collapses to a thin strip at the
+feet, clear of the legs - which the existing width rule then removes cleanly.
+
+Verified over a full 8-direction turnaround at eye level: **no ground patch in
+any direction, profiles still correct, PASS** (24 colours, 0 partial-alpha,
+baseline row 62 on all 8).
+
+Prompt suppression was retried first, since the earlier attempt had failed on
+VRAM and that constraint was gone after the `no_grad` fix. It still does not
+work, and it is worse than it looks: "plain background" made the model paint a
+**textured grey** backdrop instead of black, which defeats the chroma key.
+
+**The open question is now aesthetic, not technical**: eye-level costs the
+raised isometric camera. See `QWEN_ISO_ELEVATION`.
+
+### There is no middle setting - the lever is binary
+
+The LoRA has four elevations (-30 / 0 / 30 / 60) and `elevated shot` IS the 30
+degree one, so there is nothing between it and eye level. `low-angle` (-30)
+looks UP at the character, which is wrong for a game camera.
+
+Distance was tested as the other lever, on the theory that a tighter crop might
+push the ground plane out of frame while keeping the tilt. It does not:
+`elevated` + `close-up` still renders the patch **and** crops the legs off,
+because it tightens around the subject rather than around the ground
+(`QWEN_ISO_DISTANCE`, wired 2026-08-24).
+
+So the choice is eye-level or elevated, with no compromise available from the
+model. A third route exists in post instead: at 30 degrees the patch is
+effectively a **shadow blob**, which an isometric game normally has - the defect
+is that it is dirt-coloured and varies per frame. Stripping what the width rule
+can reach and compositing a *uniform* ellipse under every cell would read as
+deliberate. Not attempted.
 
 ## Actions (2026-08-23): plain instructions work; AnyPose not needed
 

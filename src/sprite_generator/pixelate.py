@@ -41,6 +41,12 @@ DEFAULT_ALPHA_THRESHOLD = 128
 # Palette size. 16-32 is the range the supplied reference sheets sit in.
 DEFAULT_COLORS = 24
 
+# Fraction of the sprite's height above its bottom edge that counts as "shins",
+# used as the width reference when detecting a ground patch. 15-35% clears the
+# feet and the ground blob while staying below the hips on every character
+# tested here.
+SHIN_BAND = (0.15, 0.35)
+
 
 # --- colour -------------------------------------------------------------
 
@@ -168,13 +174,30 @@ def strip_ground_patch(img: Image.Image, width_ratio: float = 1.8,
     height = bot - top + 1
     widths = opaque.sum(axis=1).astype(float)
 
-    # Reference body width, measured ABOVE the bottom quarter so the patch
-    # cannot inflate the very number it is being compared against.
-    body = widths[top:max(bot + 1 - int(height * 0.25), top + 1)]
-    body = body[body > 0]
-    if body.size == 0:
+    # Reference width, measured on the SHINS - not the whole body.
+    #
+    # The original rule used the body median, and that is what made this fail on
+    # front and back views: those present the shoulders at full span, which
+    # inflates the median until the patch no longer clears width_ratio. Lowering
+    # the ratio to catch it then let the hysteresis walk run up through the
+    # boots and amputate the legs (measured 2026-08-23, both failure modes).
+    #
+    # The shins are the right thing to compare against, because the question is
+    # "is this wider than the thing standing on it" - and what stands on the
+    # ground is legs, not shoulders. A shin band is narrow from EVERY angle,
+    # which is exactly the property the body median lacks.
+    lo = bot - int(height * SHIN_BAND[1])
+    hi = bot - int(height * SHIN_BAND[0])
+    shins = widths[max(lo, top):max(hi, top + 1)]
+    shins = shins[shins > 0]
+    if shins.size == 0:
+        # Fall back to the old whole-body reference rather than refusing: a
+        # sprite too short to have a shin band is not necessarily broken.
+        shins = widths[top:max(bot + 1 - int(height * 0.25), top + 1)]
+        shins = shins[shins > 0]
+    if shins.size == 0:
         return img
-    reference = float(np.median(body))
+    reference = float(np.median(shins))
     if reference <= 0:
         return img
 

@@ -2050,6 +2050,61 @@ JOB_STAGES = [
 ]
 
 
+import re as _re
+
+# `  denoised 7/96  walk|s|2` - what denoise_cells logs per cell.
+_CELL_RE = _re.compile(r"denoised\s+(\d+)/(\d+)")
+
+
+def _run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6):
+    """Run one build stage, streaming its output to update job progress.
+
+    Returns (returncode, tail_of_output).
+
+    Streaming rather than `subprocess.run(capture_output=True)`, which was the
+    first version: the denoise stage runs for the better part of an hour and the
+    job sat at a single percentage the whole time, with nothing to distinguish
+    "working" from "hung". The stage already logs `denoised N/M` per cell, so
+    the information existed - it was just being swallowed until the process
+    exited.
+
+    Progress is interpolated between the stage's start and end percentages so
+    the number stays monotonic across stages.
+    """
+    import subprocess
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    recent = []
+    last_written = -1
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        # Keep only a short tail: a denoise stage emits hundreds of progress
+        # bar lines and none of them identify a failure.
+        recent.append(line)
+        if len(recent) > tail_lines:
+            recent.pop(0)
+
+        m = _CELL_RE.search(line)
+        if not m:
+            continue
+        done, total = int(m.group(1)), int(m.group(2))
+        if total <= 0:
+            continue
+        pct = pct_from + int((pct_to - pct_from) * done / total)
+        # Only write when the number actually moves - one UPDATE per cell is
+        # fine, one per output line is not.
+        if pct != last_written:
+            _job_update(job_id, progress_pct=pct,
+                        progress_msg=f"cell {done}/{total}")
+            last_written = pct
+
+    proc.wait()
+    return proc.returncode, "\n".join(recent)
+
+
 def _job_update(job_id: str, **fields):
     """Patch a jobs row. Silently no-ops if the table is absent."""
     if not fields:
@@ -2083,7 +2138,6 @@ def build_sheet_job(self, job_id: str):
     inside a shared process.
     """
     import json as _json
-    import subprocess
 
     conn = get_db()
     with conn, conn.cursor() as cur:
@@ -2130,6 +2184,7 @@ def build_sheet_job(self, job_id: str):
     _job_update(job_id, status="running", started_at=_now(), progress_pct=0,
                 progress_msg="starting")
 
+    pct_done = 0
     for stage, pct in JOB_STAGES:
         if is_cancelled(self.request.id):
             _job_update(job_id, status="cancelled", finished_at=_now(),
@@ -2140,16 +2195,15 @@ def build_sheet_job(self, job_id: str):
         cmd = base + [stage] + per_stage.get(stage, []) + common
         logger.info("job %s: %s", job_id, " ".join(cmd))
 
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            # The last few lines are what identifies the failure; the full
-            # stdout of a denoise stage is hundreds of progress-bar lines.
-            tail = "\n".join((proc.stderr or proc.stdout).strip().splitlines()[-6:])
+        # Interpolate this stage between the previous mark and its own.
+        rc, tail = _run_stage(cmd, job_id, pct_done, pct)
+        if rc != 0:
             logger.error("job %s failed in %s:\n%s", job_id, stage, tail)
             _job_update(job_id, status="failed", stage=stage,
                         finished_at=_now(), error=f"{stage}: {tail}")
             return {"error": f"{stage} failed"}
 
+        pct_done = pct
         _job_update(job_id, progress_pct=pct)
 
     _job_update(job_id, status="done", progress_pct=100, stage="compose",

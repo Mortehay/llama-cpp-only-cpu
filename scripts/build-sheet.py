@@ -182,9 +182,17 @@ def stage_compose(a):
                 if not os.path.isfile(path):
                     log.warning("missing %s", path)
                     continue
-                b.add(act, d, f_i,
-                      pixelate.key_background(Image.open(path),
-                                              tolerance=a.key_tolerance))
+                cell = pixelate.key_background(Image.open(path),
+                                               tolerance=a.key_tolerance)
+                if a.strip_ground:
+                    # Safe on action frames now, which it was NOT under the old
+                    # rule. That compared the patch against the body median, so
+                    # a wide stance looked like ground; the shin reference
+                    # moves with the legs, so a wide stance raises the
+                    # threshold instead of tripping it.
+                    cell = pixelate.strip_ground_patch(
+                        cell, width_ratio=a.ground_ratio)
+                b.add(act, d, f_i, cell)
 
     gaps = b.missing()
     if gaps:
@@ -225,6 +233,12 @@ def main():
     co.add_argument("--cell", default="48x64")
     co.add_argument("--colors", type=int, default=24)
     co.add_argument("--key-tolerance", type=int, default=10)
+    co.add_argument("--no-strip-ground", dest="strip_ground",
+                    action="store_false", default=True,
+                    help="keep the ground/shadow patch under each sprite")
+    co.add_argument("--ground-ratio", type=float, default=1.8,
+                    help="how much wider than the SHINS a row must be to count "
+                         "as ground")
 
     for sp in (te, td, ae, ad, co):
         sp.add_argument("--work", default="/app/images/_work")

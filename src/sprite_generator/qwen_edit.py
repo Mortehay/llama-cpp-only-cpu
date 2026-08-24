@@ -190,7 +190,29 @@ DISTANCES = {
 # An isometric game wants a raised camera, not eye level. "elevated" (30 deg) is
 # the closest trained elevation to the classic 30 deg isometric projection;
 # "high" (60) looks top-down and reads as a different genre.
-ISO_ELEVATION = os.environ.get("QWEN_ISO_ELEVATION", "elevated")
+# eye-level, not elevated, and the reason is ground patches rather than taste.
+#
+# The angles LoRA was trained on Gaussian-Splatting captures of real scenes, so
+# it renders a ground plane under the subject. `elevated shot` (30 deg) tilts
+# the camera down and puts a large area of that plane in frame, which comes back
+# as a dirt blob - and on front and back views the character's dark legs merge
+# into it, so no keying or width rule can separate them (measured: the patch
+# reaches 95% of the sprite's peak width).
+#
+# At eye level the ground is edge-on and collapses to a thin strip at the feet,
+# clear of the legs, which strip_ground_patch removes cleanly. Verified over a
+# full 8-direction turnaround: no patch anywhere, profiles still correct.
+#
+# The cost is the raised isometric angle. Distance was tested as a way to keep
+# the tilt (a tighter crop might push the ground out of frame) and does not
+# work - it crops the legs instead. Set QWEN_ISO_ELEVATION=elevated to go back.
+ISO_ELEVATION = os.environ.get("QWEN_ISO_ELEVATION", "eye")
+
+# Framing. Relevant to ground patches as well as to size: the LoRA renders a
+# ground plane under the subject, and how much of it lands in frame depends on
+# both the elevation AND the crop. A tighter shot can push it out entirely
+# while keeping the elevated angle an isometric game wants.
+ISO_DISTANCE = os.environ.get("QWEN_ISO_DISTANCE", "medium")
 
 # Per-azimuth prompt reinforcement. Measured, not decorative.
 #
@@ -924,6 +946,7 @@ def action_frames(image, frame_prompts: list[str], seed: int = 0,
 
 
 def turnaround_split(image, elevation: str = ISO_ELEVATION, seed: int = 0,
+                     distance: str = ISO_DISTANCE,
                      directions=None, size: int = 512, steps=None,
                      with_lightning: bool = True, sequential: bool = False):
     """One concept image -> one image per direction, in two memory-disjoint passes.
@@ -931,7 +954,7 @@ def turnaround_split(image, elevation: str = ISO_ELEVATION, seed: int = 0,
     This is the shape the whole conveyor has to take on this hardware.
     """
     dirs = list(directions or AZIMUTHS)
-    prompts = {d: angle_prompt(d, elevation) for d in dirs}
+    prompts = {d: angle_prompt(d, elevation, distance) for d in dirs}
 
     # ENCODE_SIZE, not `size`. Encoding is memory-bound on sequence length;
     # rendering is not. They are deliberately decoupled.
@@ -974,6 +997,10 @@ def _selftest(argv):
     p.add_argument("--size", type=int, default=512)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--elevation", default=ISO_ELEVATION, choices=sorted(ELEVATIONS))
+    p.add_argument("--distance", default=ISO_DISTANCE, choices=sorted(DISTANCES),
+                   help="framing. Worth trying against ground patches: a "
+                        "tighter crop can push the ground plane out of frame "
+                        "while keeping the elevated (isometric) angle")
     # Both of these exist to get UNDER the host-RAM ceiling, which is what
     # actually blocks this machine - not VRAM.
     p.add_argument("--no-lightning", action="store_true",
@@ -1021,11 +1048,11 @@ def _selftest(argv):
         # against it is how the split gets validated.
         pipe = load_pipeline(with_lightning=not a.no_lightning,
                              sequential=a.sequential)
-        views = {d: edit(src, angle_prompt(d, a.elevation), seed=a.seed,
+        views = {d: edit(src, angle_prompt(d, a.elevation, a.distance), seed=a.seed,
                          steps=steps, size=a.size, pipe=pipe)
                  for d in order}
     else:
-        views = turnaround_split(src, elevation=a.elevation, seed=a.seed,
+        views = turnaround_split(src, elevation=a.elevation, distance=a.distance, seed=a.seed,
                                  directions=order, size=a.size, steps=steps,
                                  with_lightning=not a.no_lightning,
                                  sequential=a.sequential)
