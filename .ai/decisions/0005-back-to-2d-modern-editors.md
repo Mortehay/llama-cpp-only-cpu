@@ -823,6 +823,30 @@ regression: with the ground gone, a cell's height is the character alone, so a
 raised-knee frame really is shorter than a standing one. The shared scale and
 the shared baseline are what keep it stable in playback, and both hold.
 
+### Second character (2026-08-24): the pipeline generalises, the ground rule partly
+
+`core_21f88cbbe9b4` - stocky, blocky, arm held out, a visibly different art
+style from the slim zombie everything else was tuned on. Deliberately chosen: it
+is the exact case `strip_ground_patch` documents as its known gap.
+
+`sheet_ec5d6096-*.png`, 8 directions x walk x 4 frames. PASS: 24 colours, 0
+partial-alpha px, baseline row 62 on all 32 cells.
+
+**What generalised cleanly:** all 8 directions correct including both profiles,
+walk animating in every row, identity and art style held across the sheet.
+Nothing in the conveyor was tuned for this character and nothing needed to be.
+
+**What did not:** faint shadow remnants survive in roughly a third of cells. The
+shin reference is a real improvement over the body median - most cells ARE clean,
+where the old rule cleared none on a character like this - but a stocky figure
+has wide shins, which raises the reference until a thin shadow no longer clears
+`width_ratio`. The gap the docstring described has narrowed, not closed.
+
+So the honest scope of the ground rule is: **reliable on slim characters,
+partial on stocky ones.** A per-character `--ground-ratio` is the cheap lever
+(this one wants roughly 1.4-1.5); a rule that needs no tuning would have to key
+on something other than width.
+
 ## Two self-inflicted regressions from this session
 
 Recorded because both were introduced by a change that looked purely
