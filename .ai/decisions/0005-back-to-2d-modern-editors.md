@@ -811,6 +811,18 @@ return, and the two profile rows are unchanged.
 
 **All three actions are now usable in all eight directions.**
 
+### Final character, eye-level (2026-08-24)
+
+`sheet_8df97c2a-*.png` - 192x1536, 8 directions x (walk, attack, idle) x 4
+frames, built through the job API with eye-level as the default and ground
+stripping in compose. PASS: 24 colours, 0 partial-alpha px, **baseline row 62 on
+all 96 cells**, and **no ground patch in any direction**.
+
+Cell-height spread is 11px against 5px on the elevated build. That is not a
+regression: with the ground gone, a cell's height is the character alone, so a
+raised-knee frame really is shorter than a standing one. The shared scale and
+the shared baseline are what keep it stable in playback, and both hold.
+
 ## Two self-inflicted regressions from this session
 
 Recorded because both were introduced by a change that looked purely
