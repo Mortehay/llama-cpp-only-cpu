@@ -198,9 +198,18 @@ down with `ModuleNotFoundError`, not a warning.
 Fixed twice over, deliberately:
 
   * `PYTHONPATH=/app` on both services in compose - the root cause, and it makes
-    `docker exec` and the worker behave identically.
+    `docker exec` and the worker behave identically. APPLIED 2026-08-25 via
+    `scripts/recreate-app.sh`; verified with `docker exec -w / sprite_worker`,
+    where every local module now imports from an unrelated working directory.
   * The three imports hoisted to module scope, which fixes it without needing
-    the containers recreated.
+    the containers recreated - kept as belt and braces, since a fresh clone
+    that skips the recreate still works.
+
+Note for whoever hits this next: `docker restart` does NOT apply an environment
+change. It restarts the process inside the existing container, which keeps the
+environment it was CREATED with, so the variable appears to have no effect and
+the fix looks broken rather than unapplied. `scripts/recreate-app.sh` exists to
+make that one command instead of a footgun.
 
 One trap inside the trap: `build_sheet_job` already binds a local name
 `concept` to the concept image PATH, so hoisting the module as `concept`
