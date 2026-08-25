@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Check the browser UI is wired to the job API, not the old Celery endpoint.
+"""Check the LEGACY browser UI is wired to the job API, not the old Celery endpoint.
+
+The React UI now serves /, and it renders client-side - these string assertions
+cannot see it. The legacy template lives at /legacy until React reaches parity,
+and this keeps testing that. A rendering check for React needs a real browser:
+    msedge --headless=new --dump-dom http://localhost:8001/
 
 The UI is plain HTML plus one JS file with no build step and no tests, so the
 failure mode is a page that loads fine and posts to a route that no longer does
@@ -16,7 +21,7 @@ import urllib.request
 
 # (label, must appear, must NOT appear) for each asset.
 CHECKS = {
-    "/": [
+    "/legacy": [
         ("directions are their own axis", r'name="direction"', None),
         ("cell size, not render size", r'id="sheet-cell"', None),
         ("runtime estimate shown", r'id="sheet-estimate"', None),

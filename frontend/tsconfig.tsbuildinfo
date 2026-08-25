@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/api.ts","./src/hooks.ts","./src/main.tsx","./src/components/StyleProfilePanel.tsx","./src/tabs/CoreGenerator.tsx","./src/tabs/Gallery.tsx","./src/tabs/ReferenceTab.tsx","./src/tabs/Settings.tsx","./src/tabs/SheetGenerator.tsx"],"version":"5.9.3"}

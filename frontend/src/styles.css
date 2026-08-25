@@ -1,0 +1,176 @@
+/* Same tokens as the legacy static/css/main.css, so the two UIs look like one
+   product while the migration is in flight. Deliberately not @import-ing that
+   file: it also carries the old layout, and inheriting it would make the React
+   tree depend on selectors nobody is maintaining any more. */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f0f17;
+  --surface: #1a1a2e;
+  --card: #212138;
+  --border: #2e2e50;
+  --accent: #7c6af7;
+  --accent2: #a78bfa;
+  --text: #e2e0f0;
+  --muted: #8884a8;
+  --success: #34d399;
+  --warn: #fbbf24;
+  --danger: #ef4444;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+a { color: var(--accent2); }
+
+/* --- shell --------------------------------------------------------------- */
+
+.nav {
+  display: flex; gap: 8px; align-items: center;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 28px;
+}
+.nav .brand { font-weight: 700; font-size: 16px; color: var(--accent2); margin-right: auto; }
+.nav .mode { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
+.mode.open { background: rgba(251,191,36,.15); color: #fcd34d; border: 1px solid rgba(251,191,36,.25); }
+.mode.locked { background: rgba(52,211,153,.15); color: #6ee7b7; border: 1px solid rgba(52,211,153,.25); }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 28px 64px; }
+
+h1 { font-size: 26px; font-weight: 700; }
+.sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+
+.tabs {
+  display: flex; gap: 4px; margin: 20px 0; background: var(--surface);
+  padding: 6px; border-radius: 10px; border: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.tab {
+  flex: 1 1 auto; min-width: 120px; text-align: center; padding: 10px;
+  font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer;
+  border-radius: 6px; border: none; background: none; font-family: inherit;
+}
+.tab:hover { color: var(--text); }
+.tab.active { background: var(--card); color: var(--text); }
+
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 20px; margin-bottom: 16px;
+}
+.card h2 { font-size: 16px; margin-bottom: 4px; }
+.card .hint { color: var(--muted); font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
+
+/* --- controls ------------------------------------------------------------ */
+
+label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 6px; }
+input[type=text], input[type=number], textarea, select {
+  width: 100%; padding: 9px 11px; font-family: inherit; font-size: 13px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
+textarea { resize: vertical; min-height: 72px; }
+
+.btn {
+  padding: 9px 16px; border-radius: 6px; border: 1px solid var(--accent);
+  background: var(--accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: inherit;
+}
+.btn:hover:not(:disabled) { background: var(--accent2); border-color: var(--accent2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.ghost { background: var(--surface); color: var(--text); border-color: var(--border); }
+.btn.ghost:hover:not(:disabled) { background: var(--card); border-color: var(--muted); }
+.btn.danger { background: transparent; color: #f87171; border-color: rgba(239,68,68,.35); }
+.btn.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.btn.sm { padding: 4px 10px; font-size: 11px; }
+
+.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+.row > * { flex: 1 1 180px; }
+.row.tight { gap: 8px; }
+.spacer { height: 12px; }
+
+.check { display: flex; align-items: center; gap: 7px; font-size: 13px; cursor: pointer; color: var(--text); font-weight: 500; margin-bottom: 0; }
+.check input { width: auto; }
+
+/* --- feedback ------------------------------------------------------------ */
+
+.note { padding: 11px 13px; border-radius: 7px; font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+.note.err { background: rgba(239,68,68,.1); border: 1px solid rgba(239,68,68,.3); color: #fca5a5; }
+.note.ok { background: rgba(52,211,153,.1); border: 1px solid rgba(52,211,153,.3); color: #6ee7b7; }
+.note.warn { background: rgba(251,191,36,.1); border: 1px solid rgba(251,191,36,.3); color: #fcd34d; }
+.note.info { background: rgba(124,106,247,.1); border: 1px solid rgba(124,106,247,.3); color: #c4b5fd; }
+
+.muted { color: var(--muted); font-size: 12px; }
+.empty { color: var(--muted); font-size: 13px; text-align: center; padding: 34px 12px; }
+
+.tag { font-size: 10px; padding: 2px 7px; border-radius: 4px; font-weight: 700; text-transform: uppercase; }
+.tag.ok { background: rgba(52,211,153,.15); color: #6ee7b7; }
+.tag.no { background: rgba(239,68,68,.15); color: #f87171; }
+.tag.neutral { background: rgba(124,106,247,.15); color: #a78bfa; }
+
+.bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
+.bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+
+/* --- grids --------------------------------------------------------------- */
+
+.grid {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+}
+.thumb {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden; display: flex; flex-direction: column;
+}
+.thumb .pic {
+  /* Checkerboard, so a transparent background reads as transparent rather
+     than as "the sprite has a dark backdrop". */
+  background-color: #16162a;
+  background-image:
+    linear-gradient(45deg, #1e1e36 25%, transparent 25%),
+    linear-gradient(-45deg, #1e1e36 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #1e1e36 75%),
+    linear-gradient(-45deg, transparent 75%, #1e1e36 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 132px; padding: 8px;
+}
+.thumb img {
+  max-width: 100%; max-height: 168px; object-fit: contain;
+  /* Never smooth pixel art in the browser. */
+  image-rendering: pixelated;
+}
+.thumb .meta { padding: 8px 10px; border-top: 1px solid var(--border); }
+.thumb .meta .name {
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.thumb .meta .why { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+.thumb .acts { display: flex; gap: 6px; margin-top: 8px; }
+
+.swatches { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+.swatch { width: 15px; height: 15px; border-radius: 3px; border: 1px solid rgba(255,255,255,.12); }
+
+.drop {
+  border: 2px dashed var(--border); border-radius: 10px; padding: 30px;
+  text-align: center; color: var(--muted); font-size: 13px; cursor: pointer;
+  background: var(--surface); transition: border-color .15s, color .15s;
+}
+.drop:hover, .drop.over { border-color: var(--accent); color: var(--text); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-size: 11px; text-transform: uppercase; font-weight: 700; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+  background: var(--surface); padding: 2px 6px; border-radius: 4px;
+  word-break: break-all;
+}

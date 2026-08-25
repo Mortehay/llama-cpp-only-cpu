@@ -166,8 +166,36 @@ def fetch_gallery_rows(limit=None):
 # Routes
 # ---------------------------------------------------------------------------
 
+# The React build, emitted by scripts/build-frontend.sh into static/app. Its
+# assets are served by the /static mount above; only the entry document needs a
+# route, because the SPA owns its own routing from there.
+REACT_INDEX = os.path.join("static", "app", "index.html")
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    """The React UI, falling back to the legacy template if it is not built.
+
+    The fallback is not politeness: `static/app` is a build artifact and is
+    gitignored, so a fresh clone has no UI at all until someone runs the build.
+    Serving a blank page there would look like a broken deployment.
+    """
+    if os.path.isfile(REACT_INDEX):
+        return FileResponse(REACT_INDEX, media_type="text/html",
+                            headers={"cache-control": "no-store"})
+    logger.warning("static/app/index.html missing - serving the legacy UI. "
+                   "Run scripts/build-frontend.sh to build the React app.")
+    return await legacy_index(request)
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+async def legacy_index(request: Request):
+    """The pre-React UI.
+
+    Kept during the migration because it still carries features React has not
+    taken over yet (crop, single-image edit, task retry). Not a permanent
+    fixture - it goes when parity is reached.
+    """
     # The core-model dropdown is rendered from the roster, not hardcoded in the
     # template, so an archived checkpoint is shown as unselectable rather than
     # offered and then failed on by the worker. Both containers mount the same
