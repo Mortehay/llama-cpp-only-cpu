@@ -2139,6 +2139,7 @@ from job_runner import (
     load_style_profile as _load_style_profile,
     run_stage as _run_stage,
     fail_stranded_jobs as _fail_stranded_jobs,
+    fail_stranded_training_runs as _fail_stranded_training_runs,
     CELL_RE as _CELL_RE,
 )
 
@@ -2865,6 +2866,7 @@ def _fail_stranded_tasks(**_):
         conn.close()
 
     _fail_stranded_jobs()
+    _fail_stranded_training_runs()
 
 
 # --- Device snapshot upkeep -----------------------------------------------

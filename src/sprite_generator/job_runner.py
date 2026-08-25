@@ -204,3 +204,42 @@ def fail_stranded_jobs():
         # Never fatal at boot. A worker that refuses to start because a
         # bookkeeping sweep failed is a worse outcome than a stale row.
         logger.error("Stranded-job reaper failed: %s", e)
+
+
+def fail_stranded_training_runs():
+    """Mark training runs as failed when nothing is left to run them.
+
+    The third table that needed this, and the one where the gap bit hardest.
+    `training_runs` had no reaper at all, so a run whose Celery message was
+    lost - a purged queue, a worker killed mid-encode - stayed `queued`
+    forever. That is worse than a stale row: `POST /api/training` refuses with
+    409 while any run is queued or running, so ONE orphan permanently blocks
+    all future training, and the only symptom is a 409 that looks correct.
+
+    Observed exactly that after purging a 168-message backlog: the run row
+    survived its own task.
+
+    Same one-worker/solo-pool reasoning as the other two reapers - when this
+    fires nothing can be running - and the same 30-second floor for the
+    submit-just-before-boot race.
+    """
+    try:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE training_runs
+                   SET status = 'failed',
+                       error = COALESCE(NULLIF(error, ''),
+                                        'worker restarted before this run '
+                                        'finished; resubmit to retry'),
+                       finished_at = now()
+                 WHERE status IN ('queued', 'running')
+                   AND created_at < NOW() - INTERVAL '30 seconds'
+                """
+            )
+            if cur.rowcount:
+                logger.warning(
+                    "Marked %d stranded training run(s) as failed. Each one "
+                    "was blocking every future run with a 409.", cur.rowcount)
+    except Exception as e:
+        logger.error("Stranded training-run reaper failed: %s", e)
