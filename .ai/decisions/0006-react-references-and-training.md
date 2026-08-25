@@ -32,7 +32,7 @@ Facts, not impressions. Each one changes the plan.
 | `tasks.py` is 142 KB in one module. | Any feature touching generation edits a file too large to reason about. Split before adding tile/training paths. |
 | `mesh_worker` and `rig_worker` are still built and mounted by compose, though 0005 retired the 3D leg. | Dead build weight and dead images. Remove. |
 | `/models` cache is 24 GB and already holds `stabilityai/stable-diffusion-xl-base-1.0` plus four pixel-art LoRAs (`nerijs/pixel-art-xl`, `PublicPrompts/All-In-One-Pixel-Model`, `Muapi/soft-pixel-art-xl`, `ntc-ai/SDXL-LoRA-slider.pixel-art`). | The training base is already on disk. No 7 GB download to start. |
-| WSL root has 879 GB free; C: has 49 GB. GPU is a 3060, 12 GB, ~2.4 GB resident at idle. | Training has disk room. VRAM is the binding constraint, not storage. |
+| WSL root has 879 GB free; C: has 49 GB. GPU is a 3060, 12 GB, ~2.4 GB resident at idle. | Training has disk room. VRAM was ASSUMED to be the binding constraint - measured later at 47%, see D2. |
 | `jobs.py` already implements queue semantics: `POST /api/jobs` -> 202 + UUID, poll `GET /api/jobs/{id}`, batch `GET /api/jobs?ids=&since=`. Auth is one shared bearer token, and a **no-op when `API_TOKEN` is unset**. | Item 5 is mostly done. What is missing is real key management and non-sheet job kinds. |
 
 ## Decisions
@@ -48,14 +48,31 @@ So: one migration and the API contract land first (about a day), then React is
 built once against the final shape. Item 1 still ships early - it is second, not
 sixth.
 
-### D2. SDXL LoRA at 768 px is the training target. Not Flux, not Qwen.
+### D2. SDXL LoRA at 1024 px is the training target. Not Flux, not Qwen.
 
 | Candidate | Verdict |
 |---|---|
-| **SDXL LoRA, 768 px** | **Chosen.** Base already cached. 12 GB is the documented working minimum at 768 with bf16 + gradient checkpointing + Adafactor or AdamW8bit, rank 32-64, 10-30 images. Mature tooling, and four pixel-art SDXL LoRAs are already local as baselines to beat. |
+| **SDXL LoRA, 1024 px** | **Chosen.** Base already cached; four pixel-art SDXL LoRAs are local as baselines to beat. Originally planned at 768 on the usual advice that 12 GB cannot do 1024 - see the correction below. |
 | Flux.1-dev LoRA | Deferred, not rejected. Trainable in 12 GB via FluxGym/ai-toolkit, but slow enough that iteration suffers. Revisit once SDXL proves the loop and the dataset is known-good. |
 | SD 1.5 LoRA | Fallback. Trains comfortably, but quality is a step down and SDXL already fits. |
 | Qwen-Image-Edit-2511 (~20 B) | Not trainable here at any setting. **Keeps its job unchanged** as the untrained pose editor - it is good at it, and the turnaround/action stages depend on it. |
+
+**Correction, measured 2026-08-25.** This ADR first specified 768 px, on the
+widely repeated guidance that 12 GB is the bare minimum for SDXL LoRA training
+and that 1024 needs 24 GB. That guidance assumes the VAE and both text encoders
+stay resident. `scripts/train-lora.py` encodes every image and caption in a
+first stage and unloads all three, exactly as `qwen_edit.py` splits encode from
+denoise - so only the UNet occupies the card. Measured peaks, rank 32, batch 1,
+gradient checkpointing on:
+
+| Resolution | Peak VRAM | Share of card |
+|---|---|---|
+| 768 px | 5.38 GiB | 45% |
+| **1024 px** | **5.61 GiB** | **47%** |
+
+Native resolution costs 0.23 GiB. The default is 1024, and there is room above
+it for a larger batch or a higher rank. The fallback ladder, if either ever
+OOMs, is batch -> rank -> resolution.
 
 Training targets the **concept** stage only. The pose, pixelation, palette and
 sheet stages stay deterministic. This is deliberate: it keeps the trained
@@ -102,36 +119,39 @@ Phases are ordered by dependency. Each ends in something demonstrable.
 - [ ] Split `tasks.py`: extract the sheet-build orchestration and the legacy
       A1111 path into modules. Mechanical, test-covered, no behaviour change.
 
-### Phase 1 - data model and API (1 day)
-- [ ] Migration 013: `api_keys`, `reference_assets`, `style_profiles`,
+### Phase 1 - data model and API (1 day) - DONE
+- [x] Migration 013: `api_keys`, `reference_assets`, `style_profiles`,
       `training_runs`; add `kind` to `jobs`.
-- [ ] `GET /api/assets` - one paginated, filterable list over generated images
+- [x] `GET /api/assets` - one paginated, filterable list over generated images
       *and* job sheets. This is what makes item 6 possible.
-- [ ] Key management endpoints + hashed verification.
+- [x] Key management endpoints + hashed verification.
 - [ ] Generalise `JobSpec` to `kind: sheet|core|tile|train`.
 
-### Phase 2 - React (2 days)
-- [ ] `frontend/` - Vite + React + TypeScript. Dev server proxies `/api` to
+### Phase 2 - React (2 days) - MOSTLY DONE
+- [x] `frontend/` - Vite + React + TypeScript. Dev server proxies `/api` to
       8001; production build emitted to `static/dist` and served by FastAPI, so
       deployment stays one container.
-- [ ] Port Core Generator, Spritesheet Generator, Settings, Gallery.
+- [x] Port Core Generator, Spritesheet Generator, Settings, Gallery.
+- [ ] Port crop, single-image edit, task retry/delete, model warm - the
+      reason /legacy still exists.
 - [ ] Typed API client generated from the OpenAPI schema FastAPI already emits -
       so a backend change breaks the build, not the page.
 
-### Phase 3 - reference tabs and measurement (1.5 days)
-- [ ] Three tabs, one upload component, `kind` differing.
-- [ ] On upload, measure and display: tiles -> projection ratio and implied
+### Phase 3 - reference tabs and measurement (1.5 days) - MOSTLY DONE
+- [x] Three tabs, one upload component, `kind` differing.
+- [x] On upload, measure and display: tiles -> projection ratio and implied
       elevation; sprites -> cell grid, palette, colour count, outline width;
       cores -> isolation verdict via the existing `concept.judge`.
-- [ ] "Derive style profile" writes palette + cell + elevation, and the
-      generator consumes it.
+- [x] "Derive style profile" writes palette + cell + elevation.
+- [ ] The generator CONSUMES the profile - not yet wired.
 - [ ] **Checkpoint: regenerate one character against a derived profile and
       compare to the same character without it.** If measurement alone closes
       most of the gap, the training phase gets cheaper.
 
 ### Phase 4 - training (2-3 days, mostly unattended)
-- [ ] `train_lora.py`: SDXL LoRA, 768 px, bf16, gradient checkpointing,
-      Adafactor, rank 32, trigger token, templated captions.
+- [x] `scripts/train-lora.py`: SDXL LoRA, 1024 px, bf16, gradient
+      checkpointing, AdamW8bit, rank 32, trigger token, templated captions.
+      Verified end to end: loss falls, adapter saves, 47% peak VRAM.
 - [ ] Training as a queued job kind under the GPU lease, with progress and loss
       streamed to the same job UI as generation.
 - [ ] Fixed evaluation prompt set; before/after contact sheet against the four
@@ -140,13 +160,14 @@ Phases are ordered by dependency. Each ends in something demonstrable.
 
 ### Phase 5 - tiles and gallery (1 day)
 - [ ] Tile generation path, honouring the measured projection.
-- [ ] Gallery over `/api/assets`: filter by kind, source job, date; delete.
+- [x] Gallery over `/api/assets`: filter by kind, search, paginate, hide.
 
 ## Risks
 
-- **12 GB is the ceiling, not the comfort zone.** If 768 px SDXL training OOMs,
-  the ladder down is rank 32 -> 16, then 768 -> 640, then SD 1.5. Recorded now
-  so the fallback is not invented mid-failure.
+- **VRAM turned out not to be the constraint.** Measured at 47% of the card at
+  1024 px (see D2). The fallback ladder is recorded anyway - batch, then rank,
+  then resolution - so it is not invented mid-failure. The real risk moved to
+  dataset quality, below.
 - **Dataset quality dominates.** 20 inconsistent examples produce a worse LoRA
   than none. The reference tabs measure consistency and will say so before a
   run is queued.
