@@ -2213,6 +2213,33 @@ def build_sheet_job(self, job_id: str):
                     error=f"concept image not found: {concept}")
         return {"error": "concept not found"}
 
+    # Refuse a concept that is not an isolated character, BEFORE spending an
+    # hour on it.
+    #
+    # The conveyor accepts anything. Pointed at a landscape it produced twelve
+    # structurally perfect cells of a tree - right column count, 24 colours, no
+    # partial alpha, baselines aligned, check-sprite PASS - because check-sprite
+    # validates the sheet, not the subject. The only tell was that the cells
+    # were 31% transparent where a character runs 70-84%.
+    #
+    # ADR 0004 recorded the same requirement from the 3D side: the constraint on
+    # a concept is ISOLATION, not style. One character, no frame, no scenery.
+    #
+    # A warning rather than a hard refusal for the borderline cases would be
+    # kinder, but there is no way to ask - so this fails fast and names the
+    # measurement, and `concept_check=false` in the spec overrides it for
+    # anything deliberately unusual (a wide creature, a vehicle).
+    if spec.get("concept_check", True):
+        import concept as concept_check
+        verdict = concept_check.judge(concept)
+        if not verdict["ok"]:
+            msg = ("concept does not look like an isolated character: "
+                   + concept_check.describe(verdict)
+                   + ". Pass concept_check=false to build anyway.")
+            logger.error("job %s refused: %s", job_id, msg)
+            _job_update(job_id, status="failed", finished_at=_now(), error=msg)
+            return {"error": "unsuitable concept"}
+
     base = ["python", "/app/scripts/build-sheet.py"]
     common = ["--work", work]
     per_stage = {
