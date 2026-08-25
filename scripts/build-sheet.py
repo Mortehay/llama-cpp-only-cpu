@@ -209,13 +209,24 @@ def stage_actions_denoise(a):
     # A-B-A-C - and those repeats were being denoised a second time to arrive
     # at pixels already on disk.
     #
-    # Measured 2026-08-25 on the shipped library: walk, idle and sway each
-    # repeat one pose in four, so a quarter of every such row was paid for
-    # twice. On an eight-direction walk that is 8 cells, about 4.4 minutes.
-    # attack, damage, use and cast repeat nothing and are unaffected.
+    # How much this saves depends entirely on the library, so it is counted at
+    # runtime and logged rather than assumed. Against the library as it stands
+    # on 2026-08-25, all seven actions across eight directions:
+    #
+    #     planned 256, rendered 234, copied 22  (~8.6%, about 12 min)
+    #
+    #     idle   1 repeat in 4, every direction   (A-B-A-C breathing cycle)
+    #     sway   1 repeat in 4, every direction   (leans through centre twice)
+    #     walk   1 repeat in 6, front and back only; the profile cycle is clean
+    #     attack, cast, damage, use   no repeats
+    #
+    # Do not read those numbers as fixed. An earlier draft of this comment said
+    # walk repeated a pose in four and was already wrong by the time it was
+    # committed - the walk cycle had been rewritten to six distinct poses in
+    # the JSON, which is the whole point of the table being data.
     #
     # This dedupes the RENDER, not the sheet: every frame still gets its own
-    # file and the grid still has its full width. Frame 3 of a walk is a copy
+    # file and the grid still has its full width. A repeated frame is a copy
     # rather than a recomputation.
     groups = {}
     for act, d, f_i, pose in plan:
