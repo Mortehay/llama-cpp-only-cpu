@@ -58,10 +58,55 @@ def _url(path: str | None) -> str | None:
     return ("/images/" + os.path.basename(path)) if path else None
 
 
+# Thumbnails exist because the reference grid was unusable without them.
+#
+# Uploads are normalised to RGBA PNG for measurement, which inflates a JPEG
+# board badly: 262 stored references came to 276 MB, the largest single file
+# 4.9 MB. The sprite tab renders ~106 of them at once, so opening it pulled
+# roughly 150 MB of PNG into the browser to draw 168px squares.
+THUMB_MAX = 320
+
+
+def _thumb_path(file_path: str) -> str:
+    """`.../ref_sprite_ab12.png` -> `.../thumb_ref_sprite_ab12.png`.
+
+    A PREFIX, not a `_thumb` suffix, and that is load-bearing: the trainer
+    globs `ref_sprite_*.png`, which a suffixed `ref_sprite_ab12_thumb.png`
+    matches. That would have silently doubled every dataset with 320px
+    thumbnails of its own images - a corruption with no error and no symptom
+    except a worse adapter.
+    """
+    d, name = os.path.split(file_path)
+    return os.path.join(d, "thumb_" + name)
+
+
+def make_thumb(file_path: str) -> str | None:
+    """Write a small PNG beside the reference. Returns its path, or None.
+
+    Never raises: a missing thumbnail costs a slow card, and failing an upload
+    because a thumbnail could not be written would be a much worse trade.
+    """
+    try:
+        thumb = _thumb_path(file_path)
+        with Image.open(file_path) as img:
+            img = img.convert("RGBA")
+            img.thumbnail((THUMB_MAX, THUMB_MAX), Image.LANCZOS)
+            img.save(thumb, "PNG", optimize=True)
+        return thumb
+    except Exception as e:
+        logger.warning("thumbnail failed for %s: %s", file_path, e)
+        return None
+
+
 def _row(r: dict) -> dict:
     d = dict(r)
     d["id"] = str(d["id"])
-    d["url"] = _url(d.pop("file_path", None))
+    path = d.pop("file_path", None)
+    d["url"] = _url(path)
+    # Fall back to the full image when no thumbnail exists yet, so a reference
+    # uploaded before this existed still renders rather than showing a hole.
+    thumb = _thumb_path(path) if path else None
+    d["thumb_url"] = _url(thumb) if thumb and os.path.exists(thumb) else d["url"]
     d["created_at"] = d["created_at"].isoformat() if d.get("created_at") else None
     return d
 
@@ -108,6 +153,8 @@ async def upload_reference(kind: str = Form(...),
     except Exception as e:
         raise HTTPException(status_code=400,
                             detail=f"not a readable image: {e}")
+
+    make_thumb(path)
 
     try:
         verdict = measure.measure(kind, path)
@@ -386,6 +433,11 @@ def remeasure_all(kind: str | None = None,
         if not os.path.exists(row["file_path"]):
             missing += 1
             continue
+        # Backfill the thumbnail while we are here: references uploaded
+        # before thumbnails existed would otherwise keep serving 4.9 MB PNGs
+        # into a 168px card forever.
+        if not os.path.exists(_thumb_path(row["file_path"])):
+            make_thumb(row["file_path"])
         try:
             v = measure.measure(row["kind"], row["file_path"])
         except Exception as e:

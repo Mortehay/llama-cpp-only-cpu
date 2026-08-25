@@ -2944,6 +2944,11 @@ def train_lora_job(self, run_id: str, job_id: str | None = None):
     ]
     if cfg.get("trigger"):
         cmd += ["--trigger", cfg["trigger"]]
+    # The manifest the API froze at submit time. Without it the trainer globs
+    # the images directory and picks up files from deleted and rejected
+    # references - a different dataset from the one the user was shown.
+    if cfg.get("files"):
+        cmd += ["--files", cfg["files"]]
 
     logger.info("training run %s: %s", run_id, " ".join(cmd))
     _training_update(run_id, status="running", started_at=_now(),

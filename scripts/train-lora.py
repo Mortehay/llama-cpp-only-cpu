@@ -113,11 +113,19 @@ def log_progress(step: int, total: int, loss: float):
 # ---------------------------------------------------------------------------
 
 def find_images(data_dir: str, patterns: tuple[str, ...]) -> list[str]:
+    """Files matching the globs, excluding UI thumbnails.
+
+    Thumbnails are named `thumb_<original>` precisely so these globs cannot
+    match them, but the filter is here as well: a dataset silently padded with
+    320px copies of its own images produces a worse adapter and no error, and
+    that is exactly the kind of thing worth defending twice.
+    """
     import glob
     out: list[str] = []
     for p in patterns:
         out.extend(sorted(glob.glob(os.path.join(data_dir, p))))
-    return [p for p in out if os.path.isfile(p)]
+    return [p for p in out
+            if os.path.isfile(p) and not os.path.basename(p).startswith("thumb_")]
 
 
 def caption_for(path: str, trigger: str, label: str | None = None) -> str:
@@ -360,6 +368,9 @@ def main():
                    help="directory to read training images from")
     p.add_argument("--pattern", default="ref_sprite_*.png,ref_core_*.png",
                    help="comma-separated globs within --data")
+    p.add_argument("--files", default=None,
+                   help="path to a manifest of image paths, one per line. "
+                        "Takes precedence over --data/--pattern.")
     p.add_argument("--out", default="/models/loras")
     p.add_argument("--trigger", default=None,
                    help="trigger token; defaults to <name-style>")
@@ -379,7 +390,23 @@ def main():
     if not torch.cuda.is_available():
         logger.warning("No CUDA device - this will be unusably slow.")
 
-    paths = find_images(a.data, tuple(s.strip() for s in a.pattern.split(",")))
+    # A manifest wins over globbing, and the queue always sends one.
+    #
+    # Globbing the images directory and counting rows in the database gave
+    # different answers - 231 files against 191 trainable rows - because the
+    # filesystem still holds images belonging to DELETED references and to ones
+    # the judge rejected. So the UI promised one dataset and the trainer used
+    # another, with no error either side. The manifest makes the counted set
+    # and the trained set the same set by construction.
+    if a.files:
+        with open(a.files) as f:
+            paths = [ln.strip() for ln in f if ln.strip()]
+        paths = [p for p in paths if os.path.isfile(p)]
+        logger.info("dataset from manifest %s: %d image(s)", a.files, len(paths))
+    else:
+        paths = find_images(a.data, tuple(s.strip() for s in a.pattern.split(",")))
+        logger.info("dataset from glob %r: %d image(s)", a.pattern, len(paths))
+
     if len(paths) < a.min_images:
         sys.exit(f"only {len(paths)} image(s) matched {a.pattern} in {a.data}; "
                  f"need at least {a.min_images}. Upload more references - "

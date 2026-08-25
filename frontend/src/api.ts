@@ -116,6 +116,8 @@ export interface Reference {
   /** Good enough to train a style on. Far more permissive. Gates training. */
   trainable: boolean | null
   trainable_why: string | null
+  /** Small PNG for the grid. Falls back to `url` when not yet generated. */
+  thumb_url: string | null
   metrics: Record<string, unknown>
   created_at: string | null
 }

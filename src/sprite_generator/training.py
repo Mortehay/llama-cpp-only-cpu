@@ -90,6 +90,27 @@ class TrainRequest(BaseModel):
         return ",".join(f"ref_{k}_*.png" for k in self.kinds)
 
 
+def trainable_files(kinds) -> list[str]:
+    """The exact file paths training should read, straight from the DB.
+
+    The trainer used to glob `/app/images/ref_sprite_*.png` itself, which
+    disagreed with this count: 231 files against 191 trainable rows, because
+    the directory still holds images belonging to DELETED references and to
+    ones the judge rejected. The UI promised one dataset and the trainer used
+    another, silently. Now the queue writes these paths to a manifest and the
+    trainer reads only that.
+    """
+    kinds = list(kinds)
+    if not kinds:
+        return []
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT file_path FROM reference_assets "
+            "WHERE deleted = false AND trainable = true AND kind = ANY(%s) "
+            "ORDER BY created_at", (kinds,))
+        return [r[0] for r in cur.fetchall()]
+
+
 def _trainable_reference_count(kinds) -> int:
     """How many TRAINABLE references these reference kinds hold.
 
@@ -146,10 +167,23 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
             profile_id = row[0]
 
     run_id = uuid.uuid4()
+
+    # Freeze the dataset as a manifest NOW, at submit time, rather than letting
+    # the worker glob later. Two reasons: the glob and this count disagreed
+    # (deleted and rejected references still have files on disk), and a run
+    # should train on what was counted when it was queued, not on whatever the
+    # directory happens to hold when it finally reaches the front of the queue.
+    manifest_dir = "/models/loras"
+    os.makedirs(manifest_dir, exist_ok=True)
+    manifest = os.path.join(manifest_dir, f".{run_id}-files.txt")
+    files = trainable_files(body.kinds)
+    with open(manifest, "w") as f:
+        f.write("\n".join(files))
+
     config = {"name": body.name, "steps": body.steps, "rank": body.rank,
               "lr": body.lr, "resolution": body.resolution,
               "pattern": body.pattern(), "kinds": body.kinds,
-              "trigger": body.trigger,
+              "files": manifest, "trigger": body.trigger,
               "min_images": MIN_IMAGES}
 
     import json

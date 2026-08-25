@@ -214,7 +214,13 @@ function Card({
   const palette = (r.metrics?.palette as string[] | undefined) ?? []
   return (
     <div className="thumb">
-      <div className="pic">{r.url && <img src={r.url} alt={r.label} />}</div>
+      <div className="pic">
+        {(r.thumb_url ?? r.url) && (
+          /* The thumbnail, not the full file: these are JPEG boards normalised
+             to RGBA PNG, up to 4.9 MB each, and the sprite tab renders ~100. */
+          <img src={r.thumb_url ?? r.url ?? undefined} alt={r.label} loading="lazy" />
+        )}
+      </div>
       <div className="meta">
         <div className="name" title={r.label}>
           {r.label}
