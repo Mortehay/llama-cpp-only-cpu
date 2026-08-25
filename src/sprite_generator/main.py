@@ -46,6 +46,16 @@ app.include_router(a1111_router)
 from jobs import router as jobs_router
 app.include_router(jobs_router)
 
+# API keys. Replaces the single shared token that was a no-op when unset, so
+# "is my API open?" has an answer the UI can show.
+from auth import router as auth_router
+app.include_router(auth_router)
+
+# One list over generated images AND finished job sheets. Before this, the
+# gallery read sprite_images only and 13 finished sheets were invisible.
+from assets import router as assets_router
+app.include_router(assets_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)
