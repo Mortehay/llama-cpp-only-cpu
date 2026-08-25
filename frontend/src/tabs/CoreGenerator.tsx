@@ -6,10 +6,16 @@ import EditPanel from '../components/EditPanel'
 import CropModal from '../components/CropModal'
 
 /**
- * Step 1: one character concept.
+ * Step 1: one entity - character, creature, prop or item.
  *
- * Everything downstream inherits from this image, so the concept guard matters:
- * a landscape here produces a structurally perfect spritesheet of scenery.
+ * Called "core" throughout the API and the database (`image_type = core`),
+ * which is left alone: renaming a storage kind to match a UI label would mean
+ * a migration and a break for something2, for no behavioural gain. The tab is
+ * "Entity" because that is what people actually generate here.
+ *
+ * Everything downstream inherits from this image, so the isolation guard
+ * matters: a landscape here produces a structurally perfect spritesheet of
+ * scenery.
  */
 export default function CoreGenerator() {
   const models = useAsync(() => api.coreModels(), [])
@@ -40,7 +46,7 @@ export default function CoreGenerator() {
   useEffect(() => {
     if (busy && (cores.data?.length ?? 0) > initialCount) {
       setBusy(false)
-      setStatus('Concept ready.')
+      setStatus('Entity ready.')
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cores.data])
@@ -62,11 +68,13 @@ export default function CoreGenerator() {
   return (
     <>
       <div className="card">
-        <h2>Core character</h2>
+        <h2>Entity</h2>
         <p className="hint">
-          One isolated character on a transparent background. Everything downstream is
-          an edit of this image, so an unusable concept costs an entire sheet — the
-          spritesheet job checks isolation before spending GPU time on it.
+          One isolated entity - character, creature, prop or item - on a transparent
+          background. Everything downstream is an edit of this image, so an unusable
+          one costs an entire sheet: the spritesheet job checks isolation before
+          spending GPU time on it. Ground tiles are a different shape and live on the
+          Tiles tab.
         </p>
 
         {error && <div className="note err">{error}</div>}
@@ -94,17 +102,20 @@ export default function CoreGenerator() {
 
         <div className="spacer" />
         <button className="btn" disabled={busy || !prompt.trim() || !model} onClick={() => void generate()}>
-          {busy ? 'Generating…' : 'Generate concept'}
+          {busy ? 'Generating…' : 'Generate entity'}
         </button>
       </div>
 
       <EditPanel onDone={() => cores.reload()} />
 
       <div className="card">
-        <h2>Concepts</h2>
-        <p className="hint">The most recent concepts, newest first. Pick one on the Spritesheet tab.</p>
+        <h2>Entities</h2>
+        <p className="hint">
+          The most recent entities, newest first. Pick one on the Spritesheet tab.
+          Tiles are listed separately, on the Tiles tab.
+        </p>
         {cores.error && <div className="note err">{cores.error}</div>}
-        {cores.data?.length === 0 && <div className="empty">No concepts yet.</div>}
+        {cores.data?.length === 0 && <div className="empty">No entities yet.</div>}
         <div className="grid">
           {cores.data?.map((c) => (
             <div className="thumb" key={c.id}>
@@ -138,7 +149,7 @@ export default function CoreGenerator() {
           onClose={() => setCropping(null)}
           onSaved={() => {
             cores.reload()
-            setStatus('Crop saved as a new concept.')
+            setStatus('Crop saved as a new entity.')
           }}
         />
       )}

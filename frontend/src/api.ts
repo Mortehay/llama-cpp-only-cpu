@@ -186,6 +186,8 @@ export interface TrainingReadiness {
   min_images: number
   busy: boolean
   why: string
+  kinds: string[]
+  per_kind: Record<string, number>
 }
 
 export interface ActionCatalog {
@@ -283,9 +285,18 @@ export const api = {
 
   training: () =>
     request<{ items: TrainingRun[]; total: number; min_images: number }>("/api/training"),
-  trainingReadiness: () => request<TrainingReadiness>("/api/training/readiness"),
+  trainingReadiness: (kinds: string[] = ["sprite", "core"]) =>
+    request<TrainingReadiness>(`/api/training/readiness?kinds=${kinds.join(",")}`),
   startTraining: (body: Record<string, unknown>) =>
-    request<{ run_id: string; status: string; dataset_size: number; trigger: string }>(
+    request<{
+      run_id: string
+      status: string
+      dataset_size: number
+      trigger: string
+      kinds: string[]
+      mixed_kinds: boolean
+      note: string | null
+    }>(
       "/api/training",
       { method: "POST", body: JSON.stringify(body) },
     ),

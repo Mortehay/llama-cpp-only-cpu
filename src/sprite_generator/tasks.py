@@ -49,6 +49,14 @@ from core_models import (unavailable_reason, local_weight_name,
 # Module-scope local imports have always resolved here, so the geometry is
 # imported the same way core_models is.
 import tile_geometry
+# Module scope, NOT lazy inside a task. `celery` lives at /usr/local/bin/celery,
+# so sys.path[0] is /usr/local/bin - never /app. Celery puts the working
+# directory on sys.path only WHILE it imports the app (import_from_cwd), then
+# removes it again. So a module-level import here resolves and the identical
+# import inside a running task raises ModuleNotFoundError. That silently broke
+# the concept guard and the sheet pixelation pass.
+import concept as concept_lib
+import pixelate
 
 # --- Compute device ------------------------------------------------------
 # Set by compose: docker-compose.cuda.yml forces cuda on the worker and cpu on
@@ -2081,7 +2089,7 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
         raw_path = os.path.join(IMAGES_DIR, filename.replace(".png", "_raw.png"))
         master.save(raw_path, format="PNG")
         try:
-            import pixelate as _px
+            _px = pixelate
             cell_w, cell_h = PIXEL_CELL
             master = _px.pixelate_sheet(
                 master, motion_steps, len(action_strips), cell_w, cell_h,
@@ -2118,107 +2126,22 @@ JOB_STAGES = [
 ]
 
 
-import re as _re
+# Job bookkeeping lives in job_runner: DB patches, stage subprocesses and the
+# stranded-row sweep. It imports no torch and no Celery, which is what made it
+# the safe piece of this 3,200-line module to lift out first.
+#
+# Aliased to the old private names so every call site below is untouched - a
+# smaller diff is a safer diff against a conveyor that works.
+from job_runner import (
+    now as _now,
+    job_update as _job_update,
+    training_update as _training_update,
+    load_style_profile as _load_style_profile,
+    run_stage as _run_stage,
+    fail_stranded_jobs as _fail_stranded_jobs,
+    CELL_RE as _CELL_RE,
+)
 
-# `  denoised 7/96  walk|s|2` - what denoise_cells logs per cell.
-_CELL_RE = _re.compile(r"denoised\s+(\d+)/(\d+)")
-
-
-def _load_style_profile(name):
-    """The named style profile as a dict, or None.
-
-    Returns None for a missing name rather than raising: a profile is an
-    optional refinement, and failing an hour-long sheet build because a
-    profile was renamed would be a poor trade. The absence is logged instead,
-    so a job that silently used defaults can still be explained afterwards.
-    """
-    if not name:
-        return None
-    try:
-        with psycopg2.connect(DB_URL) as conn, conn.cursor(
-                cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT name, palette, cell_w, cell_h, colors, outline, "
-                "       projection_ratio, elevation, lora_path, trigger_token "
-                "FROM style_profiles WHERE name = %s", (name,))
-            row = cur.fetchone()
-    except Exception as e:
-        logger.warning("could not read style profile %r: %s", name, e)
-        return None
-    if not row:
-        logger.warning("style profile %r does not exist - using job defaults",
-                       name)
-        return None
-    return dict(row)
-
-
-def _run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
-    """Run one build stage, streaming its output to update job progress.
-
-    Returns (returncode, tail_of_output).
-
-    Streaming rather than `subprocess.run(capture_output=True)`, which was the
-    first version: the denoise stage runs for the better part of an hour and the
-    job sat at a single percentage the whole time, with nothing to distinguish
-    "working" from "hung". The stage already logs `denoised N/M` per cell, so
-    the information existed - it was just being swallowed until the process
-    exited.
-
-    Progress is interpolated between the stage's start and end percentages so
-    the number stays monotonic across stages.
-
-    `env` defaults to None, which makes Popen inherit this process's
-    environment - the previous behaviour. It is passed explicitly when a style
-    profile has a camera to impose.
-    """
-    import subprocess
-
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            env=env)
-    recent = []
-    last_written = -1
-    for line in proc.stdout:
-        line = line.rstrip()
-        if not line:
-            continue
-        # Keep only a short tail: a denoise stage emits hundreds of progress
-        # bar lines and none of them identify a failure.
-        recent.append(line)
-        if len(recent) > tail_lines:
-            recent.pop(0)
-
-        m = _CELL_RE.search(line)
-        if not m:
-            continue
-        done, total = int(m.group(1)), int(m.group(2))
-        if total <= 0:
-            continue
-        pct = pct_from + int((pct_to - pct_from) * done / total)
-        # Only write when the number actually moves - one UPDATE per cell is
-        # fine, one per output line is not.
-        if pct != last_written:
-            _job_update(job_id, progress_pct=pct,
-                        progress_msg=f"cell {done}/{total}")
-            last_written = pct
-
-    proc.wait()
-    return proc.returncode, "\n".join(recent)
-
-
-def _job_update(job_id: str, **fields):
-    """Patch a jobs row. Silently no-ops if the table is absent."""
-    if not fields:
-        return
-    sets = ", ".join(f"{k} = %s" for k in fields)
-    try:
-        conn = get_db()
-        with conn, conn.cursor() as cur:
-            cur.execute(f"UPDATE jobs SET {sets} WHERE id = %s",
-                        (*fields.values(), job_id))
-        conn.close()
-    except Exception as e:
-        logger.warning("could not update job %s: %s", job_id, e)
 
 
 @celery_app.task(name="tasks.build_sheet_job", bind=True)
@@ -2287,7 +2210,7 @@ def build_sheet_job(self, job_id: str):
     # measurement, and `concept_check=false` in the spec overrides it for
     # anything deliberately unusual (a wide creature, a vehicle).
     if spec.get("concept_check", True):
-        import concept as concept_check
+        concept_check = concept_lib
         verdict = concept_check.judge(concept)
         if not verdict["ok"]:
             msg = ("concept does not look like an isolated character: "
@@ -2364,11 +2287,6 @@ def build_sheet_job(self, job_id: str):
                 atlas_path=atlas_path, finished_at=_now())
     logger.info("job %s done -> %s", job_id, sheet_path)
     return {"status": "done", "sheet": sheet_path}
-
-
-def _now():
-    from datetime import datetime, timezone
-    return datetime.now(timezone.utc)
 
 
 @celery_app.task(name="tasks.generate_raw_task", bind=True)
@@ -2949,55 +2867,6 @@ def _fail_stranded_tasks(**_):
     _fail_stranded_jobs()
 
 
-def _fail_stranded_jobs():
-    """Same sweep, for the `jobs` table, which had none.
-
-    `_fail_stranded_tasks` covers sprite_images. Jobs were left out, and they
-    strand for longer and more visibly: a sheet job runs for an hour across five
-    subprocesses, so a worker that dies mid-run leaves a row claiming `running`
-    with a stage and a percentage that will never move again. Observed directly
-    - a report showed "running: 2" while exactly one job was alive.
-
-    That is worse than a stale sprite_images row, because something2 polls jobs
-    and its whole model is "ask about this id later". A job frozen at
-    `actions-denoise 44%` tells a caller to keep waiting forever.
-
-    Same one-worker/solo-pool reasoning as above: when this signal fires nothing
-    can be running, so anything still marked queued or running is dead. The
-    30-second floor covers the same submit-just-before-boot race.
-    """
-    conn = get_db()
-    if not conn:
-        logger.warning("Stranded-job reaper skipped: no database connection.")
-        return
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE jobs
-                       SET status = 'failed',
-                           error = COALESCE(NULLIF(error, ''),
-                                            'worker died before this job '
-                                            'finished; resubmit to retry'),
-                           progress_msg = 'stranded',
-                           finished_at = now()
-                     WHERE status IN ('queued', 'running')
-                       AND created_at < NOW() - INTERVAL '30 seconds'
-                    """
-                )
-                if cur.rowcount:
-                    logger.warning(
-                        "Marked %d stranded job(s) as failed: their worker "
-                        "died before they finished.", cur.rowcount)
-    except Exception as e:
-        # Never fatal at boot. A worker that refuses to start because a
-        # bookkeeping sweep failed is a worse outcome than a stale row.
-        logger.error(f"Stranded-job reaper failed: {e}")
-    finally:
-        conn.close()
-
-
 # --- Device snapshot upkeep -----------------------------------------------
 #
 # Refreshed around every task, not only when describe_device runs, because
@@ -3038,19 +2907,6 @@ TRAIN_SCRIPT = "/app/scripts/train-lora.py"
 # `trained N/M loss X` - the line train-lora.py prints, matching the shape
 # build-sheet.py already uses for cells.
 _TRAIN_PROGRESS = re.compile(r"trained (\d+)/(\d+) loss ([0-9.]+)")
-
-
-def _training_update(run_id: str, **fields):
-    """Patch one training_runs row. Same shape as _job_update."""
-    if not fields:
-        return
-    cols = ", ".join(f"{k} = %s" for k in fields)
-    try:
-        with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
-            cur.execute(f"UPDATE training_runs SET {cols} WHERE id = %s::uuid",
-                        list(fields.values()) + [run_id])
-    except Exception as e:
-        logger.warning("training_runs update failed for %s: %s", run_id, e)
 
 
 @celery_app.task(bind=True, name="tasks.train_lora_job")
@@ -3205,7 +3061,6 @@ def build_tile_job(self, job_id: str):
         # geometry untouched. The mask is re-applied afterwards because
         # quantising in Lab can nudge edge pixels either side of the threshold.
         import numpy as np
-        import pixelate
         arr = np.asarray(tile.convert("RGBA")).copy()
         opaque = arr[..., 3] >= 128
         if opaque.any():

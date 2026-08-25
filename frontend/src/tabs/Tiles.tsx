@@ -11,12 +11,18 @@ import { useAsync, usePoll } from '../hooks'
  */
 export default function Tiles() {
   const profiles = useAsync(() => api.profiles(), [])
+  const models = useAsync(() => api.coreModels(), [])
+  // Tiles keep their own list rather than sharing the entity list: they are a
+  // different shape with a different job kind, and mixing them made it hard to
+  // find either.
+  const made = useAsync(() => api.assets({ kind: 'tile', limit: 48 }), [])
 
   const [prompt, setPrompt] = useState('lush green grass')
   const [profile, setProfile] = useState('')
   const [tileW, setTileW] = useState(64)
   const [colors, setColors] = useState(16)
   const [seed, setSeed] = useState(0)
+  const [model, setModel] = useState('')
 
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<Job | null>(null)
@@ -35,7 +41,10 @@ export default function Tiles() {
     try {
       const j = await api.job(jobId)
       setJob(j)
-      if (['done', 'failed', 'cancelled'].includes(j.status)) setBusy(false)
+      if (['done', 'failed', 'cancelled'].includes(j.status)) {
+        setBusy(false)
+        made.reload()
+      }
     } catch (e) {
       setJobId(null)
       setBusy(false)
@@ -59,6 +68,7 @@ export default function Tiles() {
         tile_w: tileW,
         colors,
         seed,
+        llm_name: model || null,
       })
       setJobId(res.job_id)
       setInfo(`${res.tile.w}×${res.tile.h} at ${res.tile.ratio}:1 — ${res.projection}`)
@@ -143,6 +153,23 @@ export default function Tiles() {
           </div>
         </div>
 
+        <div className="spacer" />
+        <label htmlFor="tile-model">Model</label>
+        <select id="tile-model" value={model} onChange={(e) => setModel(e.target.value)}>
+          <option value="">Default (SDXL + pixel-art LoRA)</option>
+          {models.data?.models
+            .filter((m) => m.available)
+            .map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+        </select>
+        <div className="muted" style={{ marginTop: 6 }}>
+          If you have trained an adapter on <strong>Reference · Tile</strong>, pick it
+          here — and put its trigger word in the material box above.
+        </div>
+
         <div className="note info" style={{ marginTop: 14 }}>
           Will produce <strong>{tileW}×{previewH}</strong> at {ratio}:1
           {chosen ? ' (measured from your references)' : ' (assumed)'}.
@@ -190,6 +217,53 @@ export default function Tiles() {
           )}
         </div>
       )}
+
+      <div className="card">
+        <h2>Tiles</h2>
+        <p className="hint">
+          Every tile generated so far, kept separate from entities: a tile is a
+          different shape with a different job kind, and one mixed list made both
+          harder to find.
+        </p>
+        {made.error && <div className="note err">{made.error}</div>}
+        {made.data?.items.length === 0 && <div className="empty">No tiles yet.</div>}
+        <div className="grid">
+          {made.data?.items.map((t) => (
+            <div className="thumb" key={`${t.source}-${t.id}`}>
+              <div className="pic">
+                {t.url && (
+                  <img
+                    src={t.url}
+                    alt={t.title}
+                    loading="lazy"
+                    style={{ width: '80%', imageRendering: 'pixelated' }}
+                  />
+                )}
+              </div>
+              <div className="meta">
+                <div className="name" title={t.title}>
+                  {t.title}
+                </div>
+                <div className="acts">
+                  {t.url && (
+                    <a className="btn ghost sm" href={t.url} target="_blank" rel="noreferrer">
+                      Open
+                    </a>
+                  )}
+                  <button
+                    className="btn danger sm"
+                    onClick={() =>
+                      void api.deleteAsset(t.source, t.id).then(() => made.reload())
+                    }
+                  >
+                    Hide
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
     </>
   )
 }

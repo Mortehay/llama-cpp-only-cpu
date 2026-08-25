@@ -119,8 +119,13 @@ Phases are ordered by dependency. Each ends in something demonstrable.
       profile-gated, never start, and have no images built. The premise was
       wrong. Docker does hold 9.6 GB reclaimable images and 22 GB of build
       cache, which is the real disk finding, on the WSL VHD (879 GB free).
-- [ ] Split `tasks.py`: extract the sheet-build orchestration and the legacy
-      A1111 path into modules. Mechanical, test-covered, no behaviour change.
+- [x] Split `tasks.py` PARTIALLY: job bookkeeping (DB patches, stage
+      subprocesses, stranded-row sweep) extracted to `job_runner.py`, aliased
+      to the old names so no call site changed. 3,227 -> 3,075 lines.
+- [ ] The pipeline builders (`get_sd_pipeline`, `get_flux_pipeline`) stay put.
+      They share module-level mutable state with a dozen call sites and have
+      no tests. Extracting them safely needs tests FIRST - doing it on
+      confidence is how working software gets broken for tidiness.
 
 ### Phase 1 - data model and API (1 day) - DONE
 - [x] Migration 013: `api_keys`, `reference_assets`, `style_profiles`,
@@ -165,6 +170,42 @@ Phases are ordered by dependency. Each ends in something demonstrable.
 - [x] Tile generation path, honouring the measured projection. POST /api/tiles,
       polled through the same GET /api/jobs/{id} something2 already uses.
 - [x] Gallery over `/api/assets`: filter by kind, search, paginate, hide.
+
+
+## The Celery sys.path trap, found 2026-08-25
+
+Worth its own section because it is invisible, general, and had already broken
+a feature nobody noticed.
+
+`celery -A tasks worker` runs `/usr/local/bin/celery`, so Python sets
+`sys.path[0]` to `/usr/local/bin` - **not** the working directory. Celery finds
+the app via `import_from_cwd`, which puts the working directory on `sys.path`
+only *while* it imports `tasks`, then removes it again.
+
+The consequence:
+
+    import concept            # at module scope in tasks.py  -> RESOLVES
+    def some_task():
+        import concept        # inside a running task        -> ModuleNotFoundError
+
+So every **lazy** import of a local module inside a Celery task fails, while the
+identical import at module scope works, and the identical import from
+`docker exec ... python` in the same container with the same working directory
+also works. Three such imports existed - `concept` in the sheet job's isolation
+guard, and `pixelate` in two places - and the guard failure took the whole job
+down with `ModuleNotFoundError`, not a warning.
+
+Fixed twice over, deliberately:
+
+  * `PYTHONPATH=/app` on both services in compose - the root cause, and it makes
+    `docker exec` and the worker behave identically.
+  * The three imports hoisted to module scope, which fixes it without needing
+    the containers recreated.
+
+One trap inside the trap: `build_sheet_job` already binds a local name
+`concept` to the concept image PATH, so hoisting the module as `concept`
+shadowed it and produced `'str' object has no attribute 'judge'`. Imported as
+`concept_lib` instead.
 
 ## Risks
 

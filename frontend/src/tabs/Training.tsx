@@ -8,8 +8,15 @@ import { useAsync, usePoll } from '../hooks'
  * The button is disabled with a *reason* rather than offering an action that
  * will 400: not enough usable references, or the single GPU already busy.
  */
+const KINDS = [
+  { id: 'core', label: 'Reference · Core' },
+  { id: 'sprite', label: 'Reference · Sprite' },
+  { id: 'tile', label: 'Reference · Tile' },
+] as const
+
 export default function Training() {
-  const ready = useAsync(() => api.trainingReadiness(), [])
+  const [kinds, setKinds] = useState<string[]>(['sprite', 'core'])
+  const ready = useAsync(() => api.trainingReadiness(kinds), [kinds.join(',')])
   const runs = useAsync(() => api.training(), [])
   const profiles = useAsync(() => api.profiles(), [])
 
@@ -38,9 +45,12 @@ export default function Training() {
         steps,
         rank,
         resolution,
+        kinds,
       })
       setStarted(
-        `Queued on ${res.dataset_size} references. Prompt with ${res.trigger} once it finishes.`,
+        `Queued on ${res.dataset_size} references (${res.kinds.join(', ')}). ` +
+          `Prompt with ${res.trigger} once it finishes.` +
+          (res.note ? ` ${res.note}` : ''),
       )
       runs.reload()
       ready.reload()
@@ -72,6 +82,35 @@ export default function Training() {
               : `Not ready: ${ready.data.why}.`}
           </div>
         )}
+
+        <label>Train on which reference tabs</label>
+        <div className="row tight" style={{ marginBottom: 6 }}>
+          {KINDS.map((k) => (
+            <label className="check" key={k.id} style={{ flex: '0 0 auto' }}>
+              <input
+                type="checkbox"
+                checked={kinds.includes(k.id)}
+                onChange={(e) =>
+                  setKinds((cur) =>
+                    e.target.checked ? [...cur, k.id] : cur.filter((x) => x !== k.id),
+                  )
+                }
+              />
+              {k.label}{' '}
+              <span className="muted">({ready.data?.per_kind?.[k.id] ?? 0} usable)</span>
+            </label>
+          ))}
+        </div>
+        {kinds.includes('tile') && kinds.length > 1 && (
+          <div className="note warn">
+            Tiles and characters in one adapter bind a single trigger to both, and the
+            model cannot tell which you meant — usually characters with terrain texture
+            in them. Two adapters (one <code>core+sprite</code>, one <code>tile</code>)
+            give sharper results. This will still run if you want it.
+          </div>
+        )}
+
+        <div className="spacer" />
 
         <div className="row">
           <div>

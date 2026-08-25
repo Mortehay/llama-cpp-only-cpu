@@ -180,6 +180,13 @@ services:
       # Unbuffered stdout: without this, startup/migration errors sit in the
       # buffer and only surface in `docker logs` minutes after the fact.
       - PYTHONUNBUFFERED=1
+      # /app is the code mount. `celery` is at /usr/local/bin/celery, so
+      # sys.path[0] is /usr/local/bin, and Celery only puts the working
+      # directory on sys.path WHILE it imports the app - then removes it. The
+      # result is that a module-level `import concept` resolves at boot and the
+      # identical import inside a running task raises ModuleNotFoundError.
+      # Setting PYTHONPATH makes /app importable for the whole process life.
+      - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
       # Every weight is already cached, so stop huggingface_hub revalidating
@@ -242,6 +249,13 @@ services:
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
+      # /app is the code mount. `celery` is at /usr/local/bin/celery, so
+      # sys.path[0] is /usr/local/bin, never /app. Celery puts the working
+      # directory on sys.path only WHILE it imports the app (import_from_cwd)
+      # and removes it again - so a module-level `import concept` resolves at
+      # boot while the identical import inside a running task raises
+      # ModuleNotFoundError. This makes /app importable for the process life.
+      - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
       # Every weight is already cached, so stop huggingface_hub revalidating

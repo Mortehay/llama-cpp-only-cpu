@@ -10,7 +10,7 @@ import Training from './tabs/Training'
 import Tiles from './tabs/Tiles'
 
 const TABS = [
-  { id: 'core', label: 'Core Generator' },
+  { id: 'core', label: 'Entity Generation' },
   { id: 'sheet', label: 'Spritesheet' },
   { id: 'ref-core', label: 'Reference · Core' },
   { id: 'ref-sprite', label: 'Reference · Sprite' },
@@ -44,7 +44,7 @@ export default function App() {
       <div className="wrap">
         <h1>Pixel Art Generator</h1>
         <p className="sub">
-          Generate a core character, build spritesheets from it, and teach the
+          Generate entities and tiles, build spritesheets from them, and teach the
           pipeline your game's palette, grid and camera from reference art.
         </p>
 
