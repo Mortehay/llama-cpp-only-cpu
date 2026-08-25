@@ -66,6 +66,11 @@ app.include_router(references_router)
 from training import router as training_router
 app.include_router(training_router)
 
+# Isometric ground tiles. A separate spec from sheets - no actions, no frames -
+# but the same queue and the same GET /api/jobs/{id} polling contract.
+from tiles import router as tiles_router
+app.include_router(tiles_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)

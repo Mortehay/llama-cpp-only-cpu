@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { api, imageUrl } from '../api'
 import { useAsync, usePoll } from '../hooks'
+import TaskQueue from '../components/TaskQueue'
+import EditPanel from '../components/EditPanel'
 
 /**
  * Step 1: one character concept.
@@ -94,6 +96,8 @@ export default function CoreGenerator() {
         </button>
       </div>
 
+      <EditPanel onDone={() => cores.reload()} />
+
       <div className="card">
         <h2>Concepts</h2>
         <p className="hint">The most recent concepts, newest first. Pick one on the Spritesheet tab.</p>
@@ -114,6 +118,8 @@ export default function CoreGenerator() {
           ))}
         </div>
       </div>
+
+      <TaskQueue />
     </>
   )
 }

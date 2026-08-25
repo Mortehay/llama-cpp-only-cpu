@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field, field_validator
 # The pose library. stdlib-only, so the API process can consult it without
 # pulling in the Celery/torch import chain that tasks.py brings.
 import actions as action_lib
+import auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -59,11 +60,18 @@ def _db():
     return psycopg2.connect(DB_URL)
 
 
-def _require_auth(authorization: str | None):
-    if not API_TOKEN:
-        return
-    if authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+def _require_auth(authorization: str | None, scope: str = "read"):
+    """Delegates to the shared key system.
+
+    This used to be a local check against one env var that began
+    `if not API_TOKEN: return`. Leaving it in place after migration 013 would
+    have been worse than never adding keys at all: creating a key would secure
+    /api/assets and /api/references while /api/jobs - the endpoint that spends
+    GPU hours - stayed open, and the UI would have said "API secured".
+
+    The legacy token still works; `auth` honours it. See auth.py.
+    """
+    return auth.require(authorization, scope)
 
 
 class JobSpec(BaseModel):
@@ -139,7 +147,7 @@ def create_job(spec: JobSpec, authorization: str | None = Header(None)):
     status code should say so rather than relying on the caller reading the
     body carefully.
     """
-    _require_auth(authorization)
+    _require_auth(authorization, "generate")
 
     # Validate the spec against the pose library before spending any GPU time.
     #
@@ -309,7 +317,7 @@ def cancel_job(job_id: str, authorization: str | None = Header(None)):
     reported as an error - cancelling something that already finished is a
     race, not a mistake.
     """
-    _require_auth(authorization)
+    _require_auth(authorization, "generate")
     with _db() as conn, conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("SELECT status, celery_task_id FROM jobs WHERE id = %s",

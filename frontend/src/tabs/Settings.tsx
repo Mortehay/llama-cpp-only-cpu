@@ -66,6 +66,8 @@ export default function Settings({ onModeChange }: { onModeChange?: () => void }
         {saved && <div className="note ok" style={{ marginTop: 10 }}>Token saved.</div>}
       </div>
 
+      <WarmPanel />
+
       <div className="card">
         <h2>Compute</h2>
         {compute.error && <div className="note err">{compute.error}</div>}
@@ -228,6 +230,65 @@ function ApiKeys({ onChange }: { onChange: () => void }) {
           </tbody>
         </table>
       )}
+    </div>
+  )
+}
+
+/**
+ * Pre-load a checkpoint so the first generation is not also a model load.
+ *
+ * Non-blocking on the server: warming an uncached checkpoint can take far
+ * longer than an HTTP request should, so this queues and returns.
+ */
+function WarmPanel() {
+  const models = useAsync(() => api.coreModels(), [])
+  const [model, setModel] = useState('')
+  const [status, setStatus] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const available = models.data?.models.filter((m) => m.available) ?? []
+  const chosen = model || available[0]?.value || ''
+
+  return (
+    <div className="card">
+      <h2>Warm a model</h2>
+      <p className="hint">
+        Loads a checkpoint into VRAM ahead of time. The first generation after a
+        restart otherwise pays for the load as well, which reads as a hang.
+      </p>
+      {error && <div className="note err">{error}</div>}
+      {status && <div className="note ok">{status}</div>}
+      <div className="row tight">
+        <div style={{ flex: '3 1 280px' }}>
+          <label htmlFor="warm-model">Model</label>
+          <select id="warm-model" value={chosen} onChange={(e) => setModel(e.target.value)}>
+            {available.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ flex: '0 0 auto' }}>
+          <button
+            className="btn ghost"
+            disabled={busy || !chosen}
+            onClick={() => {
+              setBusy(true)
+              setError(null)
+              setStatus(null)
+              api
+                .warm(chosen)
+                .then(() => setStatus('Queued — the worker loads it in the background.'))
+                .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setBusy(false))
+            }}
+          >
+            {busy ? 'Queuing…' : 'Warm'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

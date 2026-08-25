@@ -42,7 +42,13 @@ logger = logging.getLogger(__name__)
 # Shared with the API process: the step-1 roster and the cache probes behind it.
 # stdlib-only by design, so importing it here adds nothing to worker start.
 from core_models import (unavailable_reason, local_weight_name,
-                          local_lora_file)
+                          local_lora_file, default_model)
+# Module scope, not a lazy import inside the task: a lazy `import tiles` raised
+# ModuleNotFoundError inside the Celery worker while the identical import
+# succeeded from a shell in the same container with the same working directory.
+# Module-scope local imports have always resolved here, so the geometry is
+# imported the same way core_models is.
+import tile_geometry
 
 # --- Compute device ------------------------------------------------------
 # Set by compose: docker-compose.cuda.yml forces cuda on the worker and cpu on
@@ -3140,3 +3146,82 @@ def train_lora_job(self, run_id: str, job_id: str | None = None):
                     progress_pct=100, progress_msg="trained")
     logger.info("training run %s finished -> %s", run_id, out_path)
     return {"output_path": out_path}
+
+
+@celery_app.task(bind=True, name="tasks.build_tile_job")
+def build_tile_job(self, job_id: str):
+    """Render one isometric ground tile.
+
+    Three steps, and only the first involves a model:
+
+      1. Generate a square texture from the prompt.
+      2. Cut it to the rhombus the world's projection requires. The model never
+         decides the outline - a tile that does not tessellate exactly shows
+         seams across the whole ground plane.
+      3. Palette-lock and hard-alpha it, the same pixelation the sheets get.
+
+    Runs on the same worker as everything else, so it queues behind a sheet
+    build rather than fighting it for the card.
+    """
+    tile_lib = tile_geometry
+
+    with psycopg2.connect(DB_URL) as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT spec FROM jobs WHERE id = %s::uuid", (job_id,))
+        row = cur.fetchone()
+    if not row:
+        logger.error("tile job %s vanished before it started", job_id)
+        return {"error": "no such job"}
+
+    spec = dict(row["spec"] or {})
+    w = int(spec.get("tile_w", tile_lib.DEFAULT_TILE_W))
+    h = int(spec.get("tile_h", w // 2))
+    prompt = spec.get("prompt", "grass")
+    llm_name = spec.get("llm_name") or default_model()
+
+    _job_update(job_id, status="running", started_at=_now(), progress_pct=5,
+                progress_msg=f"generating {w}x{h} tile")
+
+    try:
+        # "seamless" and "top-down" steer the texture; the rhombus itself is
+        # applied afterwards, so the prompt only has to get the MATERIAL right.
+        full = (f"{prompt}, seamless tiling ground texture, top-down view, "
+                f"pixel art, flat lighting, no shadows, no objects")
+        p = get_sd_pipeline(llm_name)
+        gen = torch.Generator(device=p.device).manual_seed(int(spec.get("seed", 0)))
+        image = p(prompt=full, num_inference_steps=25, guidance_scale=7.5,
+                  generator=gen).images[0]
+
+        _job_update(job_id, progress_pct=60, progress_msg="cutting the rhombus")
+        tile = tile_lib.cut_tile(image, w, h)
+
+        _job_update(job_id, progress_pct=80, progress_msg="palette-locking")
+        # NOT pixelate(): that fits a SUBJECT into a cell, with a margin and an
+        # alpha-bbox rescale. Correct for a sprite, wrong for a tile - it
+        # trimmed the rhombus to 60x30 inside a 64x32 canvas, and a tile whose
+        # points stop short of its own edges leaves gaps when tessellated.
+        #
+        # A tile needs only the palette bound and the alpha hardened, with the
+        # geometry untouched. The mask is re-applied afterwards because
+        # quantising in Lab can nudge edge pixels either side of the threshold.
+        import numpy as np
+        import pixelate
+        arr = np.asarray(tile.convert("RGBA")).copy()
+        opaque = arr[..., 3] >= 128
+        if opaque.any():
+            palette = pixelate.extract_palette(tile, int(spec.get("colors", 16)))
+            arr[..., :3] = pixelate.snap_to_palette(arr[..., :3], palette)
+        tile = Image.fromarray(arr, "RGBA")
+        tile.putalpha(tile_lib.diamond_mask(w, h))
+
+        out_path = os.path.join("/app/images", f"tile_{job_id[:12]}.png")
+        tile.save(out_path)
+    except Exception as e:
+        logger.exception("tile job %s failed", job_id)
+        _job_update(job_id, status="failed", finished_at=_now(), error=str(e))
+        return {"error": str(e)}
+
+    _job_update(job_id, status="done", finished_at=_now(), progress_pct=100,
+                progress_msg="done", sheet_path=out_path)
+    logger.info("tile job %s -> %s", job_id, out_path)
+    return {"path": out_path}

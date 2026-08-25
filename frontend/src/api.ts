@@ -193,6 +193,27 @@ export interface ActionCatalog {
   directions: { id: string; family: string }[]
 }
 
+export interface RecentTask {
+  id: number
+  timestamp: string
+  prompt: string
+  file_path: string | null
+  duration_ms: number | null
+  error: string
+  task_id: string | null
+  progress_pct: number
+  progress_msg: string | null
+  image_type: string | null
+  llm_name?: string
+}
+
+export interface EditCapabilities {
+  model: string
+  note: string
+  enabled?: boolean
+  reason?: string | null
+}
+
 export interface Core {
   id: number
   file_path: string
@@ -270,6 +291,39 @@ export const api = {
     ),
   deleteRun: (id: string) =>
     request<unknown>(`/api/training/${id}`, { method: "DELETE" }),
+
+  recentTasks: () => request<RecentTask[]>("/api/tasks/recent"),
+  retryTask: (id: number) =>
+    request<unknown>(`/api/task/${id}/retry`, { method: "POST" }),
+  deleteTask: (id: number) =>
+    request<unknown>(`/api/task/${id}`, { method: "DELETE" }),
+  warm: (model: string) => {
+    const fd = new FormData()
+    fd.set("model", model)
+    return request<unknown>("/api/warm", { method: "POST", body: fd })
+  },
+  editCapabilities: () => request<EditCapabilities>("/api/edit-capabilities"),
+  edit: (source: string, instruction: string) => {
+    const fd = new FormData()
+    fd.set("source", source)
+    fd.set("instruction", instruction)
+    return request<{ task_id?: string; status?: string }>("/api/edit", {
+      method: "POST",
+      body: fd,
+    })
+  },
+  crop: (source_id: number, x: number, y: number, w: number, h: number) =>
+    request<{ status?: string; url?: string }>("/api/crop", {
+      method: "POST",
+      body: JSON.stringify({ source_id, x, y, w, h }),
+    }),
+
+  createTile: (body: Record<string, unknown>) =>
+    request<{
+      job_id: string
+      tile: { w: number; h: number; ratio: number }
+      projection: string
+    }>("/api/tiles", { method: "POST", body: JSON.stringify(body) }),
   cores: () => request<Core[]>('/api/cores'),
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),

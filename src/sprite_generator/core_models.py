@@ -283,3 +283,16 @@ def local_roster() -> list[dict]:
             "trigger": lora["trigger"],
         })
     return out
+
+
+def default_model() -> str:
+    """The roster entry marked default, for callers that need *a* model.
+
+    Reads CORE_MODELS rather than roster(): a locally trained adapter sorts
+    first in the UI but must not silently become the default for, say, a tile
+    job that never asked for a character style.
+    """
+    for entry in CORE_MODELS:
+        if entry.get("default"):
+            return entry["value"]
+    return CORE_MODELS[0]["value"]

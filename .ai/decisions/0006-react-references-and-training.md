@@ -162,7 +162,8 @@ Phases are ordered by dependency. Each ends in something demonstrable.
 - [ ] Trained LoRA becomes a selectable option in core generation.
 
 ### Phase 5 - tiles and gallery (1 day)
-- [ ] Tile generation path, honouring the measured projection.
+- [x] Tile generation path, honouring the measured projection. POST /api/tiles,
+      polled through the same GET /api/jobs/{id} something2 already uses.
 - [x] Gallery over `/api/assets`: filter by kind, search, paginate, hide.
 
 ## Risks

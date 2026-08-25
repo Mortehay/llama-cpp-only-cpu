@@ -7,6 +7,7 @@ import ReferenceTab from './tabs/ReferenceTab'
 import Gallery from './tabs/Gallery'
 import Settings from './tabs/Settings'
 import Training from './tabs/Training'
+import Tiles from './tabs/Tiles'
 
 const TABS = [
   { id: 'core', label: 'Core Generator' },
@@ -14,6 +15,7 @@ const TABS = [
   { id: 'ref-core', label: 'Reference · Core' },
   { id: 'ref-sprite', label: 'Reference · Sprite' },
   { id: 'ref-tile', label: 'Reference · Tile' },
+  { id: 'tiles', label: 'Tiles' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
   { id: 'settings', label: 'Settings & API' },
@@ -69,6 +71,7 @@ export default function App() {
         {tab === 'ref-core' && <ReferenceTab kind="core" />}
         {tab === 'ref-sprite' && <ReferenceTab kind="sprite" />}
         {tab === 'ref-tile' && <ReferenceTab kind="tile" />}
+        {tab === 'tiles' && <Tiles />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
