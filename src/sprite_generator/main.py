@@ -56,6 +56,11 @@ app.include_router(auth_router)
 from assets import router as assets_router
 app.include_router(assets_router)
 
+# Reference examples and the style profiles measured from them. A tile upload
+# is how the camera angle stops being a guess.
+from references import router as references_router
+app.include_router(references_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)
