@@ -43,6 +43,16 @@ MIN_IMAGES = 8
 # so the API process does not need that module loaded to validate a request.
 REFERENCE_KINDS = ("core", "sprite", "tile")
 
+# Where scripts/train-lora.py writes adapters. Kept beside the HF cache rather
+# than inside it so archive-models.sh cannot sweep the most expensive artefact
+# on the machine into cold storage.
+LORA_DIR = "/models/loras"
+
+# A resumed run refines an adapter that has already seen the full set, so it
+# does not need a from-scratch dataset. It does need more than one or two, or
+# it just drags the adapter toward whatever arrived most recently.
+MIN_NEW_IMAGES = 4
+
 
 def _db():
     return psycopg2.connect(DB_URL)
@@ -74,6 +84,17 @@ class TrainRequest(BaseModel):
     # rather than silently letting it happen.
     kinds: list[str] = Field(default_factory=lambda: ["sprite", "core"])
 
+    # Retrain from scratch on EVERY trainable reference, rather than continuing
+    # the existing adapter on the ones it has not seen.
+    #
+    # Default false, so adding twelve references costs twelve images of
+    # training instead of two hundred. But note what incremental means here: it
+    # RESUMES from the existing adapter. Training a fresh LoRA on only the new
+    # images would produce one that has seen only those twelve - strictly worse
+    # than what you already had, and with no error to say so. Incremental
+    # without resume is not a cheaper version of training, it is a broken one.
+    full_retrain: bool = False
+
     @field_validator("kinds")
     @classmethod
     def _known_kinds(cls, v):
@@ -88,6 +109,50 @@ class TrainRequest(BaseModel):
     def pattern(self) -> str:
         """The glob the trainer reads, derived from the chosen tabs."""
         return ",".join(f"ref_{k}_*.png" for k in self.kinds)
+
+
+def untrained_refs(kinds) -> list[tuple[str, str]]:
+    """(id, file_path) for trainable references no SUCCESSFUL run has consumed.
+
+    The join back to `training_runs` and the `status = 'done'` test are not
+    incidental. Rows land in training_run_refs at SUBMIT time, before the run
+    has proven anything, so a run that failed - or whose queue was purged -
+    would otherwise remove its images from every future dataset permanently,
+    having taught the adapter nothing.
+    """
+    kinds = list(kinds)
+    if not kinds:
+        return []
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT ra.id, ra.file_path FROM reference_assets ra "
+            "WHERE ra.deleted = false AND ra.trainable = true "
+            "  AND ra.kind = ANY(%s) "
+            "  AND NOT EXISTS ("
+            "     SELECT 1 FROM training_run_refs trr "
+            "     JOIN training_runs tr ON tr.id = trr.run_id "
+            "     WHERE trr.reference_id = ra.id AND tr.status = 'done') "
+            "ORDER BY ra.created_at", (kinds,))
+        return [(str(r[0]), r[1]) for r in cur.fetchall()]
+
+
+def all_trainable_refs(kinds) -> list[tuple[str, str]]:
+    """(id, file_path) for every trainable reference of these kinds."""
+    kinds = list(kinds)
+    if not kinds:
+        return []
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, file_path FROM reference_assets "
+            "WHERE deleted = false AND trainable = true AND kind = ANY(%s) "
+            "ORDER BY created_at", (kinds,))
+        return [(str(r[0]), r[1]) for r in cur.fetchall()]
+
+
+def existing_adapter(name: str) -> str | None:
+    """Path of an already-trained adapter with this name, or None."""
+    path = os.path.join(LORA_DIR, f"{name}.safetensors")
+    return path if os.path.isfile(path) else None
 
 
 def trainable_files(kinds) -> list[str]:
@@ -145,8 +210,28 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
                 detail="a training run is already queued or running - there is "
                        "one GPU, so they cannot overlap")
 
-    usable = _trainable_reference_count(body.kinds)
-    if usable < MIN_IMAGES:
+    # Incremental means: continue THIS adapter on the references it has not
+    # seen. Only possible when the adapter already exists.
+    resume_from = None if body.full_retrain else existing_adapter(body.name)
+
+    if resume_from:
+        refs = untrained_refs(body.kinds)
+        floor, mode = MIN_NEW_IMAGES, "incremental"
+    else:
+        refs = all_trainable_refs(body.kinds)
+        floor, mode = MIN_IMAGES, "full"
+
+    usable = len(refs)
+    if usable < floor:
+        if mode == "incremental":
+            total = _trainable_reference_count(body.kinds)
+            raise HTTPException(
+                status_code=400,
+                detail=f"only {usable} reference(s) in "
+                       f"{', '.join(body.kinds)} that '{body.name}' has not "
+                       f"already trained on (need {floor}). Upload more, or "
+                       f"tick 'retrain on all images' to rebuild the adapter "
+                       f"from all {total}.")
         raise HTTPException(
             status_code=400,
             detail=f"only {usable} trainable reference(s) in "
@@ -176,15 +261,15 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
     manifest_dir = "/models/loras"
     os.makedirs(manifest_dir, exist_ok=True)
     manifest = os.path.join(manifest_dir, f".{run_id}-files.txt")
-    files = trainable_files(body.kinds)
     with open(manifest, "w") as f:
-        f.write("\n".join(files))
+        f.write("\n".join(p for _, p in refs))
 
     config = {"name": body.name, "steps": body.steps, "rank": body.rank,
               "lr": body.lr, "resolution": body.resolution,
               "pattern": body.pattern(), "kinds": body.kinds,
               "files": manifest, "trigger": body.trigger,
-              "min_images": MIN_IMAGES}
+              "mode": mode, "resume_from": resume_from,
+              "min_images": floor}
 
     import json
     with _db() as conn, conn.cursor() as cur:
@@ -194,6 +279,16 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
             "VALUES (%s, %s, %s, %s, %s, %s)",
             (str(run_id), profile_id, BASE_MODEL, json.dumps(config),
              usable, body.steps))
+
+    # Record which references this run consumed, so the NEXT run can tell what
+    # is new. Written now, at submit; `untrained_refs` requires status='done'
+    # before treating them as taught, so a failed run does not consume them.
+    with _db() as conn, conn.cursor() as cur:
+        psycopg2.extras.execute_values(
+            cur,
+            "INSERT INTO training_run_refs (run_id, reference_id) VALUES %s "
+            "ON CONFLICT DO NOTHING",
+            [(str(run_id), rid) for rid, _ in refs])
 
     # Imported here, not at module scope: tasks.py pulls in torch, and the web
     # process must never do that.
@@ -213,7 +308,8 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
 
     return {"run_id": str(run_id), "status": "queued",
             "dataset_size": usable, "steps": body.steps,
-            "kinds": body.kinds,
+            "kinds": body.kinds, "mode": mode,
+            "resuming": bool(resume_from),
             "trigger": body.trigger or f"<{body.name}-style>",
             "mixed_kinds": mixed,
             "note": ("Training tiles together with characters - one trigger "
@@ -256,6 +352,10 @@ def readiness(kinds: str = "sprite,core",
               if k.strip() in REFERENCE_KINDS] or ["sprite", "core"]
     usable = _trainable_reference_count(chosen)
     per_kind = {k: _trainable_reference_count([k]) for k in REFERENCE_KINDS}
+    # How many of those no successful run has consumed - what an incremental
+    # run would actually train on.
+    new_per_kind = {k: len(untrained_refs([k])) for k in REFERENCE_KINDS}
+    new_count = len(untrained_refs(chosen))
     with _db() as conn, conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM training_runs "
                     "WHERE status IN ('queued', 'running')")
@@ -268,6 +368,12 @@ def readiness(kinds: str = "sprite,core",
     return {"ready": not reasons, "usable_references": usable,
             "min_images": MIN_IMAGES, "busy": busy,
             "kinds": chosen, "per_kind": per_kind,
+            # What an INCREMENTAL run would use: references no successful run
+            # has consumed yet. Lets each tab show "12 new" beside its Train
+            # button instead of the full total, which would be a lie about
+            # what pressing it does.
+            "new_references": new_count, "new_per_kind": new_per_kind,
+            "min_new_images": MIN_NEW_IMAGES,
             "why": "; ".join(reasons) or "ready to train"}
 
 

@@ -241,7 +241,8 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
 # Stage 2: train
 # ---------------------------------------------------------------------------
 
-def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed):
+def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
+          resume_from=None):
     import torch
     import torch.nn.functional as F
     from diffusers import DDPMScheduler, UNet2DConditionModel
@@ -268,6 +269,37 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed):
     unet.add_adapter(LoraConfig(
         r=rank, lora_alpha=rank, init_lora_weights="gaussian",
         target_modules=["to_k", "to_q", "to_v", "to_out.0"]))
+
+    # RESUME: continue an existing adapter rather than starting from noise.
+    #
+    # This is what makes "train on the new images only" a real feature instead
+    # of a trap. Without it, a run over twelve new references produces an
+    # adapter that has seen twelve images - strictly worse than the one it
+    # replaces, with nothing to say so. With it, the adapter keeps everything
+    # it learned and refines on what is new.
+    #
+    # Rank must match what was saved; a mismatch raises here rather than
+    # loading a subset of the tensors and training a half-initialised adapter.
+    if resume_from:
+        from diffusers import StableDiffusionXLPipeline as _SDXL
+        from diffusers.utils import convert_unet_state_dict_to_peft
+        from peft import set_peft_model_state_dict
+
+        logger.info("Resuming from %s", resume_from)
+        state = _SDXL.lora_state_dict(resume_from)
+        if isinstance(state, tuple):
+            state = state[0]
+        unet_sd = {k.removeprefix("unet."): v for k, v in state.items()
+                   if k.startswith("unet.")} or state
+        peft_sd = convert_unet_state_dict_to_peft(unet_sd)
+        missing, unexpected = set_peft_model_state_dict(
+            unet, peft_sd, adapter_name="default")
+        if unexpected:
+            raise RuntimeError(
+                f"{resume_from} does not fit a rank-{rank} adapter "
+                f"({len(unexpected)} unexpected tensors). Train with the same "
+                f"rank it was created with, or tick a full retrain.")
+        logger.info("  resumed %d tensors", len(peft_sd))
 
     # Checkpointing trades ~30% speed for a large activation saving. On 12 GB
     # that is not a tuning knob, it is the difference between running and not.
@@ -380,6 +412,11 @@ def main():
     p.add_argument("--batch-size", type=int, default=1)
     p.add_argument("--resolution", type=int, default=DEFAULT_RESOLUTION)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--resume", default=None,
+                   help="continue this existing adapter instead of starting "
+                        "from scratch. Required for incremental training - "
+                        "without it a run on only the new images produces an "
+                        "adapter that has seen only those.")
     p.add_argument("--min-images", type=int, default=8,
                    help="refuse to start below this; a LoRA trained on three "
                         "images memorises them")
@@ -424,7 +461,7 @@ def main():
     try:
         cache_inputs(paths, captions, a.resolution, cache_path, dtype)
         out = train(cache_path, a.out, a.name, a.steps, a.rank, a.lr,
-                    a.batch_size, dtype, a.seed)
+                    a.batch_size, dtype, a.seed, resume_from=a.resume)
     finally:
         # The cache is tens of MB per image and worthless once training ends.
         if os.path.exists(cache_path):

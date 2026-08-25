@@ -243,6 +243,10 @@ export interface TrainingReadiness {
   why: string
   kinds: string[]
   per_kind: Record<string, number>
+  /** References no successful run has consumed - what incremental would use. */
+  new_references: number
+  new_per_kind: Record<string, number>
+  min_new_images: number
 }
 
 export interface ActionCatalog {
@@ -356,6 +360,8 @@ export const api = {
       kinds: string[]
       mixed_kinds: boolean
       note: string | null
+      mode: "incremental" | "full"
+      resuming: boolean
     }>(
       "/api/training",
       { method: "POST", body: JSON.stringify(body) },

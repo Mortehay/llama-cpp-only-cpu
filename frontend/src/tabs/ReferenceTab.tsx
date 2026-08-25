@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { api, type Reference, type ReferenceKind } from '../api'
 import { useAsync } from '../hooks'
 import StyleProfilePanel from '../components/StyleProfilePanel'
+import TrainPanel from '../components/TrainPanel'
 
 /**
  * One tab per reference kind. The copy differs because the three kinds answer
@@ -192,6 +193,8 @@ export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
           ))}
         </div>
       </div>
+
+      <TrainPanel kind={kind} />
 
       <StyleProfilePanel onChange={list.reload} />
     </>

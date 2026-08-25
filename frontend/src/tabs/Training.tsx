@@ -28,6 +28,7 @@ export default function Training() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [started, setStarted] = useState<string | null>(null)
+  const [fullRetrain, setFullRetrain] = useState(false)
 
   const active = runs.data?.items.some((r) => r.status === 'running' || r.status === 'queued')
   usePoll(() => {
@@ -46,6 +47,7 @@ export default function Training() {
         rank,
         resolution,
         kinds,
+        full_retrain: fullRetrain,
       })
       setStarted(
         `Queued on ${res.dataset_size} references (${res.kinds.join(', ')}). ` +
@@ -102,7 +104,17 @@ export default function Training() {
             </label>
           ))}
         </div>
-        {kinds.includes('tile') && kinds.length > 1 && (
+        <label className="check" style={{ marginBottom: 10 }}>
+          <input
+            type="checkbox"
+            checked={fullRetrain}
+            onChange={(e) => setFullRetrain(e.target.checked)}
+          />
+          Force retrain on ALL images (otherwise it continues the existing
+          adapter on the {ready.data?.new_references ?? 0} it has not seen)
+        </label>
+
+        {kinds.includes("tile") && kinds.length > 1 && (
           <div className="note warn">
             Tiles and characters in one adapter bind a single trigger to both, and the
             model cannot tell which you meant — usually characters with terrain texture

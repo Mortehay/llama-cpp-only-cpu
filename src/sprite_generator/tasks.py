@@ -2951,6 +2951,11 @@ def train_lora_job(self, run_id: str, job_id: str | None = None):
     # references - a different dataset from the one the user was shown.
     if cfg.get("files"):
         cmd += ["--files", cfg["files"]]
+    # Incremental runs continue an existing adapter. Without this the run would
+    # train a FRESH adapter on only the new images, which is worse than the one
+    # it overwrites and says nothing about it.
+    if cfg.get("resume_from"):
+        cmd += ["--resume", cfg["resume_from"]]
 
     logger.info("training run %s: %s", run_id, " ".join(cmd))
     _training_update(run_id, status="running", started_at=_now(),
