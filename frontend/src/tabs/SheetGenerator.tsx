@@ -22,6 +22,7 @@ const JOB_KEY = 'sheetJobId'
 export default function SheetGenerator() {
   const cores = useAsync(() => api.cores(), [])
   const catalog = useAsync(() => api.actionCatalog(), [])
+  const profiles = useAsync(() => api.profiles(), [])
 
   const [coreId, setCoreId] = useState<number | null>(null)
   const [actions, setActions] = useState<string[]>(['walk'])
@@ -29,6 +30,7 @@ export default function SheetGenerator() {
   const [frames, setFrames] = useState(4)
   const [cell, setCell] = useState('48x64')
   const [colors, setColors] = useState(24)
+  const [styleProfile, setStyleProfile] = useState('')
 
   const [jobId, setJobId] = useState<string | null>(() => {
     try {
@@ -106,6 +108,7 @@ export default function SheetGenerator() {
         frames,
         cell,
         colors,
+        style_profile: styleProfile || null,
       })
       setJobId(res.job_id)
       try {
@@ -217,6 +220,31 @@ export default function SheetGenerator() {
             />
           </div>
         </div>
+
+        <div className="spacer" />
+        <label htmlFor="style-profile">Style profile</label>
+        <select
+          id="style-profile"
+          value={styleProfile}
+          onChange={(e) => setStyleProfile(e.target.value)}
+        >
+          <option value="">None — use the settings above</option>
+          {profiles.data?.items.map((p) => (
+            <option key={p.id} value={p.name}>
+              {p.name}
+              {p.elevation ? ` — camera ${p.elevation}` : ''}
+              {p.cell_w && p.cell_h ? `, ${p.cell_w}×${p.cell_h}` : ''}
+            </option>
+          ))}
+        </select>
+        {styleProfile && (
+          <div className="note info" style={{ marginTop: 10 }}>
+            The profile's measured camera, cell size and colour count override the
+            fields above. The camera is the important one: without a profile the
+            build uses <code>eye</code> (0°), which was never measured against your
+            game's projection.
+          </div>
+        )}
 
         <div className="note info" style={{ marginTop: 14 }}>
           {cells === 0 ? (

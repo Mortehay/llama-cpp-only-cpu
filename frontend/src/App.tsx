@@ -6,6 +6,7 @@ import SheetGenerator from './tabs/SheetGenerator'
 import ReferenceTab from './tabs/ReferenceTab'
 import Gallery from './tabs/Gallery'
 import Settings from './tabs/Settings'
+import Training from './tabs/Training'
 
 const TABS = [
   { id: 'core', label: 'Core Generator' },
@@ -13,6 +14,7 @@ const TABS = [
   { id: 'ref-core', label: 'Reference · Core' },
   { id: 'ref-sprite', label: 'Reference · Sprite' },
   { id: 'ref-tile', label: 'Reference · Tile' },
+  { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
   { id: 'settings', label: 'Settings & API' },
 ] as const
@@ -67,6 +69,7 @@ export default function App() {
         {tab === 'ref-core' && <ReferenceTab kind="core" />}
         {tab === 'ref-sprite' && <ReferenceTab kind="sprite" />}
         {tab === 'ref-tile' && <ReferenceTab kind="tile" />}
+        {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
       </div>

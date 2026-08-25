@@ -69,8 +69,14 @@ CORE_MODELS = [
 
 
 def repos_for(value: str) -> list[str]:
-    """The HF repo ids a roster entry needs. "<base>+<lora>" needs both."""
-    return [part.strip() for part in (value or "").split("+") if part.strip()]
+    """The HF repo ids a roster entry needs. "<base>+<lora>" needs both.
+
+    `local:<name>` parts are excluded: they are files this machine trained, not
+    Hub repos, and treating one as a repo id would report a perfectly good
+    adapter as "not in the local cache".
+    """
+    return [part.strip() for part in (value or "").split("+")
+            if part.strip() and not part.strip().startswith("local:")]
 
 
 def _cache_name(repo_id: str) -> str:
@@ -150,6 +156,15 @@ def unavailable_reason(value: str) -> str | None:
     Worded for whoever has to fix it: it names the restore command when the
     weights were archived, and the fetch route when they were never here.
     """
+    # A trained adapter is a file, not a repo: check it exists before the Hub
+    # cache questions below, which know nothing about it.
+    for part in (value or "").split("+"):
+        path = local_lora_file(part.strip())
+        if path and not os.path.isfile(path):
+            return (f"Trained adapter {os.path.basename(path)} is missing from "
+                    f"{LORA_DIR}. Train it again, or restore it - adapters are "
+                    f"not re-downloadable.")
+
     missing = missing_repos(value)
     if not missing:
         return None
@@ -165,9 +180,14 @@ def unavailable_reason(value: str) -> str | None:
 
 
 def roster() -> list[dict]:
-    """The roster with availability resolved. Shape the UI and API both use."""
+    """The roster with availability resolved. Shape the UI and API both use.
+
+    Trained adapters come FIRST: if someone has spent hours training their own
+    style, it is the thing they mean to use, and burying it under five stock
+    options is the wrong default.
+    """
     out = []
-    for entry in CORE_MODELS:
+    for entry in local_roster() + CORE_MODELS:
         reason = unavailable_reason(entry["value"])
         out.append({
             "value": entry["value"],
@@ -176,5 +196,90 @@ def roster() -> list[dict]:
             "available": reason is None,
             "reason": reason,
             "missing": missing_repos(entry["value"]),
+            "trained": bool(entry.get("trained")),
+            "trigger": entry.get("trigger"),
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Locally trained LoRAs
+# ---------------------------------------------------------------------------
+#
+# scripts/train-lora.py writes adapters here, beside the HF cache rather than
+# inside it: they are not Hub repos and must survive archive-models.sh, which
+# moves `models--*` directories to cold storage on D:. A trained LoRA is the
+# most expensive artefact on this machine to reproduce - hours of GPU time - so
+# it does not live somewhere a cleanup script sweeps.
+LORA_DIR = os.path.join(HF_CACHE, "loras")
+
+# Marks a roster value as pointing at LORA_DIR instead of the Hub.
+LOCAL_PREFIX = "local:"
+
+# Locally trained adapters are SDXL, so they attach to the SDXL base.
+LOCAL_BASE = "stabilityai/stable-diffusion-xl-base-1.0"
+
+
+def local_lora_file(spec: str) -> str | None:
+    """Absolute path for a `local:<name>` spec, or None if it is not one."""
+    if not spec.startswith(LOCAL_PREFIX):
+        return None
+    return os.path.join(LORA_DIR, spec[len(LOCAL_PREFIX):] + ".safetensors")
+
+
+def trained_loras() -> list[dict]:
+    """Every adapter in LORA_DIR, newest first, with its training metadata.
+
+    The sidecar .json is written by train-lora.py and carries the trigger
+    token, which is useless information to lose: a style LoRA whose trigger
+    nobody remembers is an inert 186 MB file.
+    """
+    if not os.path.isdir(LORA_DIR):
+        return []
+    out = []
+    try:
+        entries = [e for e in os.scandir(LORA_DIR)
+                   if e.is_file() and e.name.endswith(".safetensors")]
+    except OSError:
+        return []
+    for e in sorted(entries, key=lambda x: x.stat().st_mtime, reverse=True):
+        name = e.name[: -len(".safetensors")]
+        meta = {}
+        meta_path = os.path.join(LORA_DIR, name + ".json")
+        if os.path.isfile(meta_path):
+            try:
+                import json
+                with open(meta_path) as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+        out.append({
+            "name": name,
+            "path": e.path,
+            "size_mb": round(e.stat().st_size / 1e6, 1),
+            "trigger": meta.get("trigger", f"<{name}-style>"),
+            "images": meta.get("images"),
+            "steps": meta.get("steps"),
+        })
+    return out
+
+
+def local_roster() -> list[dict]:
+    """Trained adapters as roster entries, in the same shape as CORE_MODELS."""
+    out = []
+    for lora in trained_loras():
+        detail = []
+        if lora["images"]:
+            detail.append(f"{lora['images']} images")
+        if lora["steps"]:
+            detail.append(f"{lora['steps']} steps")
+        suffix = f" - {', '.join(detail)}" if detail else ""
+        out.append({
+            "value": f"{LOCAL_BASE}+{LOCAL_PREFIX}{lora['name']}",
+            "label": (f"Trained: {lora['name']} - prompt with "
+                      f"{lora['trigger']}{suffix}"),
+            "default": False,
+            "trained": True,
+            "trigger": lora["trigger"],
         })
     return out

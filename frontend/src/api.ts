@@ -159,6 +159,33 @@ export interface CoreModel {
   available: boolean
   reason: string | null
   missing: string[]
+  /** True for adapters trained on this machine, which sort to the top. */
+  trained?: boolean
+  trigger?: string | null
+}
+
+export interface TrainingRun {
+  id: string
+  base_model: string
+  config: Record<string, unknown>
+  dataset_size: number | null
+  status: 'queued' | 'running' | 'done' | 'failed'
+  steps_done: number
+  steps_total: number | null
+  loss: number | null
+  output_path: string | null
+  error: string | null
+  created_at: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface TrainingReadiness {
+  ready: boolean
+  usable_references: number
+  min_images: number
+  busy: boolean
+  why: string
 }
 
 export interface ActionCatalog {
@@ -231,7 +258,18 @@ export const api = {
     }),
   cancelJob: (id: string) => request<unknown>(`/api/jobs/${id}`, { method: 'DELETE' }),
 
-  coreModels: () => request<{ models: CoreModel[] }>('/api/core-models'),
+  coreModels: () => request<{ models: CoreModel[] }>("/api/core-models"),
+
+  training: () =>
+    request<{ items: TrainingRun[]; total: number; min_images: number }>("/api/training"),
+  trainingReadiness: () => request<TrainingReadiness>("/api/training/readiness"),
+  startTraining: (body: Record<string, unknown>) =>
+    request<{ run_id: string; status: string; dataset_size: number; trigger: string }>(
+      "/api/training",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteRun: (id: string) =>
+    request<unknown>(`/api/training/${id}`, { method: "DELETE" }),
   cores: () => request<Core[]>('/api/cores'),
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),

@@ -94,6 +94,14 @@ class JobSpec(BaseModel):
     colors: int = 24
     seed: int = 0
 
+    # Name of a style profile derived from reference art. When set, its
+    # MEASURED constraints win over the defaults above - most importantly the
+    # camera elevation, which is otherwise an unverified guess.
+    #
+    # Opt-in by name rather than "use the newest profile": a job whose output
+    # depends on which profile happened to be derived last is not reproducible.
+    style_profile: str | None = None
+
     def cells(self) -> int:
         """Cell count, which is what actually predicts runtime."""
         return len(self.actions) * len(self.directions) * self.frames

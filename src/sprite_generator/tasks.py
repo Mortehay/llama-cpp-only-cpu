@@ -1,4 +1,5 @@
 import os
+import re
 import io
 import json
 import time
@@ -22,6 +23,7 @@ from diffusers import (
     DPMSolverMultistepScheduler
 )
 import psycopg2
+import psycopg2.extras
 import random
 import logging
 import requests
@@ -39,7 +41,8 @@ logger = logging.getLogger(__name__)
 
 # Shared with the API process: the step-1 roster and the cache probes behind it.
 # stdlib-only by design, so importing it here adds nothing to worker start.
-from core_models import unavailable_reason, local_weight_name
+from core_models import (unavailable_reason, local_weight_name,
+                          local_lora_file)
 
 # --- Compute device ------------------------------------------------------
 # Set by compose: docker-compose.cuda.yml forces cuda on the worker and cpu on
@@ -877,17 +880,32 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
                 # the LoRA silently did not apply and the pixel-art option
                 # produced plain SDXL. Resolved from the cache rather than
                 # hardcoded, so a new LoRA in the roster needs no code change.
-                lora_kwargs = {}
-                weight_name = local_weight_name(lora)
-                if weight_name:
-                    lora_kwargs["weight_name"] = weight_name
-                _wn = " (weights: %s)" % weight_name if weight_name else ""
-                logger.info(f"Loading LoRA '{lora}' onto '{llm_name}'{_wn}...")
-                pipe.load_lora_weights(
-                    lora, cache_dir="/models",
-                    token=os.environ.get("HF_TOKEN") or None,
-                    **lora_kwargs,
-                )
+                # A `local:<name>` LoRA is one this machine trained, living in
+                # /models/loras as a bare .safetensors rather than a Hub
+                # snapshot. diffusers loads it by directory + filename; passing
+                # the spec through as a repo id would send it to the Hub, which
+                # under HF_HUB_OFFLINE=1 fails and silently degrades to the
+                # plain base - the trained style just not applying.
+                local_file = local_lora_file(lora)
+                if local_file:
+                    logger.info(f"Loading trained LoRA '{lora}' from "
+                                f"{local_file} onto '{llm_name}'...")
+                    pipe.load_lora_weights(
+                        os.path.dirname(local_file),
+                        weight_name=os.path.basename(local_file),
+                    )
+                else:
+                    lora_kwargs = {}
+                    weight_name = local_weight_name(lora)
+                    if weight_name:
+                        lora_kwargs["weight_name"] = weight_name
+                    _wn = " (weights: %s)" % weight_name if weight_name else ""
+                    logger.info(f"Loading LoRA '{lora}' onto '{llm_name}'{_wn}...")
+                    pipe.load_lora_weights(
+                        lora, cache_dir="/models",
+                        token=os.environ.get("HF_TOKEN") or None,
+                        **lora_kwargs,
+                    )
                 pipe.fuse_lora()
                 logger.info(f"LoRA '{lora}' fused.")
             except Exception as lora_err:
@@ -2100,7 +2118,35 @@ import re as _re
 _CELL_RE = _re.compile(r"denoised\s+(\d+)/(\d+)")
 
 
-def _run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6):
+def _load_style_profile(name):
+    """The named style profile as a dict, or None.
+
+    Returns None for a missing name rather than raising: a profile is an
+    optional refinement, and failing an hour-long sheet build because a
+    profile was renamed would be a poor trade. The absence is logged instead,
+    so a job that silently used defaults can still be explained afterwards.
+    """
+    if not name:
+        return None
+    try:
+        with psycopg2.connect(DB_URL) as conn, conn.cursor(
+                cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT name, palette, cell_w, cell_h, colors, outline, "
+                "       projection_ratio, elevation, lora_path, trigger_token "
+                "FROM style_profiles WHERE name = %s", (name,))
+            row = cur.fetchone()
+    except Exception as e:
+        logger.warning("could not read style profile %r: %s", name, e)
+        return None
+    if not row:
+        logger.warning("style profile %r does not exist - using job defaults",
+                       name)
+        return None
+    return dict(row)
+
+
+def _run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
     """Run one build stage, streaming its output to update job progress.
 
     Returns (returncode, tail_of_output).
@@ -2114,11 +2160,16 @@ def _run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6):
 
     Progress is interpolated between the stage's start and end percentages so
     the number stays monotonic across stages.
+
+    `env` defaults to None, which makes Popen inherit this process's
+    environment - the previous behaviour. It is passed explicitly when a style
+    profile has a camera to impose.
     """
     import subprocess
 
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            env=env)
     recent = []
     last_written = -1
     for line in proc.stdout:
@@ -2240,6 +2291,32 @@ def build_sheet_job(self, job_id: str):
             _job_update(job_id, status="failed", finished_at=_now(), error=msg)
             return {"error": "unsuitable concept"}
 
+    # A style profile, when the caller names one, supplies the constraints
+    # MEASURED from their reference art. Only applied when asked for by name:
+    # silently repointing the camera because a profile happens to exist would
+    # make two identical-looking jobs render differently.
+    #
+    # The camera is the reason this exists. QWEN_ISO_ELEVATION defaults to
+    # "eye" - a flat, side-on 0 degrees - chosen in ADR 0005 because
+    # "elevated" cropped legs, which treated a framing symptom with a camera
+    # change and never consulted the target projection. A measured tile gives
+    # the real answer: a 2:1 diamond is a 26.6 degree camera, whose nearest
+    # supported term is "elevated".
+    stage_env = None
+    profile = _load_style_profile(spec.get("style_profile"))
+    cell = spec.get("cell", "48x64")
+    colors = spec.get("colors", 24)
+    if profile:
+        if profile.get("elevation"):
+            stage_env = dict(os.environ)
+            stage_env["QWEN_ISO_ELEVATION"] = profile["elevation"]
+            logger.info("job %s: style profile %r sets camera elevation %r",
+                        job_id, profile["name"], profile["elevation"])
+        if profile.get("cell_w") and profile.get("cell_h"):
+            cell = f"{profile['cell_w']}x{profile['cell_h']}"
+        if profile.get("colors"):
+            colors = int(profile["colors"])
+
     base = ["python", "/app/scripts/build-sheet.py"]
     common = ["--work", work]
     per_stage = {
@@ -2248,8 +2325,7 @@ def build_sheet_job(self, job_id: str):
                               "--seed", str(spec.get("seed", 0))],
         "actions-encode": ["--actions", ",".join(spec.get("actions", ["walk"])),
                            "--frames", str(spec.get("frames", 4))],
-        "compose": [sheet_path, "--cell", spec.get("cell", "48x64"),
-                    "--colors", str(spec.get("colors", 24))],
+        "compose": [sheet_path, "--cell", cell, "--colors", str(colors)],
     }
 
     _job_update(job_id, status="running", started_at=_now(), progress_pct=0,
@@ -2267,7 +2343,7 @@ def build_sheet_job(self, job_id: str):
         logger.info("job %s: %s", job_id, " ".join(cmd))
 
         # Interpolate this stage between the previous mark and its own.
-        rc, tail = _run_stage(cmd, job_id, pct_done, pct)
+        rc, tail = _run_stage(cmd, job_id, pct_done, pct, env=stage_env)
         if rc != 0:
             logger.error("job %s failed in %s:\n%s", job_id, stage, tail)
             _job_update(job_id, status="failed", stage=stage,
@@ -2936,3 +3012,131 @@ def _snapshot_before_task(**_):
 @task_postrun.connect
 def _snapshot_after_task(**_):
     _cache_device_snapshot(_read_device_info())
+
+
+# ---------------------------------------------------------------------------
+# LoRA training as a queued job
+# ---------------------------------------------------------------------------
+#
+# Training runs through the SAME queue as generation, and that is the point
+# rather than a convenience. There is one GPU and 12 GB on it. A training run
+# started while a sheet build is denoising would not politely share - it would
+# OOM one of them, most likely the one that had already spent forty minutes.
+#
+# Celery's default concurrency for this worker is one task at a time, so
+# enqueuing is the lease: a training job simply waits its turn behind whatever
+# is on the card, and vice versa.
+
+TRAIN_SCRIPT = "/app/scripts/train-lora.py"
+
+# `trained N/M loss X` - the line train-lora.py prints, matching the shape
+# build-sheet.py already uses for cells.
+_TRAIN_PROGRESS = re.compile(r"trained (\d+)/(\d+) loss ([0-9.]+)")
+
+
+def _training_update(run_id: str, **fields):
+    """Patch one training_runs row. Same shape as _job_update."""
+    if not fields:
+        return
+    cols = ", ".join(f"{k} = %s" for k in fields)
+    try:
+        with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
+            cur.execute(f"UPDATE training_runs SET {cols} WHERE id = %s::uuid",
+                        list(fields.values()) + [run_id])
+    except Exception as e:
+        logger.warning("training_runs update failed for %s: %s", run_id, e)
+
+
+@celery_app.task(bind=True, name="tasks.train_lora_job")
+def train_lora_job(self, run_id: str, job_id: str | None = None):
+    """Run scripts/train-lora.py, streaming progress into training_runs.
+
+    A subprocess rather than an import, for the reason ADR 0005 records for the
+    sheet stages: torch does not reliably give VRAM back inside a long-lived
+    worker process, and the allocator fragments. A process that exits gives
+    everything back, every time.
+    """
+    import subprocess
+
+    with psycopg2.connect(DB_URL) as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT * FROM training_runs WHERE id = %s::uuid", (run_id,))
+        run = cur.fetchone()
+    if not run:
+        logger.error("training run %s vanished before it started", run_id)
+        return {"error": "no such run"}
+
+    cfg = dict(run["config"] or {})
+    name = cfg.get("name") or f"lora-{run_id[:8]}"
+    cmd = [
+        "python", TRAIN_SCRIPT,
+        "--name", name,
+        "--data", cfg.get("data", "/app/images"),
+        "--pattern", cfg.get("pattern", "ref_sprite_*.png,ref_core_*.png"),
+        "--out", cfg.get("out", "/models/loras"),
+        "--steps", str(cfg.get("steps", 1000)),
+        "--rank", str(cfg.get("rank", 32)),
+        "--lr", str(cfg.get("lr", 1e-4)),
+        "--resolution", str(cfg.get("resolution", 1024)),
+        "--min-images", str(cfg.get("min_images", 8)),
+    ]
+    if cfg.get("trigger"):
+        cmd += ["--trigger", cfg["trigger"]]
+
+    logger.info("training run %s: %s", run_id, " ".join(cmd))
+    _training_update(run_id, status="running", started_at=_now(),
+                     steps_total=int(cfg.get("steps", 1000)))
+    if job_id:
+        _job_update(job_id, status="running", started_at=_now(),
+                    stage="train", progress_msg="training")
+
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    tail: list[str] = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        tail.append(line)
+        del tail[:-12]
+        m = _TRAIN_PROGRESS.search(line)
+        if m:
+            done, total, loss = int(m.group(1)), int(m.group(2)), float(m.group(3))
+            _training_update(run_id, steps_done=done, loss=loss)
+            if job_id:
+                _job_update(job_id, progress_pct=int(100 * done / max(total, 1)),
+                            progress_msg=f"step {done}/{total}, loss {loss:.4f}")
+        else:
+            logger.info("run %s: %s", run_id, line)
+    rc = proc.wait()
+
+    if rc != 0:
+        err = "\n".join(tail) or f"exit code {rc}"
+        _training_update(run_id, status="failed", finished_at=_now(), error=err)
+        if job_id:
+            _job_update(job_id, status="failed", finished_at=_now(), error=err)
+        logger.error("training run %s failed: %s", run_id, err)
+        return {"error": err}
+
+    out_path = os.path.join(cfg.get("out", "/models/loras"),
+                            f"{name}.safetensors")
+    _training_update(run_id, status="done", finished_at=_now(),
+                     output_path=out_path)
+
+    # Bind the adapter to the profile that requested it, so "which LoRA belongs
+    # to this style?" has an answer that is not a filename convention.
+    if run.get("profile_id"):
+        try:
+            trigger = cfg.get("trigger") or f"<{name}-style>"
+            with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
+                cur.execute("UPDATE style_profiles SET lora_path = %s, "
+                            "trigger_token = %s WHERE id = %s",
+                            (out_path, trigger, run["profile_id"]))
+        except Exception as e:
+            logger.warning("could not attach LoRA to profile: %s", e)
+
+    if job_id:
+        _job_update(job_id, status="done", finished_at=_now(),
+                    progress_pct=100, progress_msg="trained")
+    logger.info("training run %s finished -> %s", run_id, out_path)
+    return {"output_path": out_path}

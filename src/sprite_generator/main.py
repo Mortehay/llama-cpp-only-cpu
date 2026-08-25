@@ -61,6 +61,11 @@ app.include_router(assets_router)
 from references import router as references_router
 app.include_router(references_router)
 
+# LoRA training, queued through the same worker as generation - one GPU means
+# a training run and a sheet build cannot overlap.
+from training import router as training_router
+app.include_router(training_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)

@@ -30,7 +30,7 @@ Facts, not impressions. Each one changes the plan.
 | `#tab-settings` carried an inline `style="display:none;"` while `switchTab` only toggles a class. Inline style beats a class selector, so Settings could never open. | Fixed in this session. It is also the argument for item 1: this bug is unrepresentable in React. |
 | `sprite_images` holds **2** undeleted rows. `jobs` holds **20** rows, **13** with a finished `sheet_path`. The gallery reads only `sprite_images`. | 13 finished sheets have never been visible in the UI. Item 6 is a missing join, not a styling task. |
 | `tasks.py` is 142 KB in one module. | Any feature touching generation edits a file too large to reason about. Split before adding tile/training paths. |
-| `mesh_worker` and `rig_worker` are still built and mounted by compose, though 0005 retired the 3D leg. | Dead build weight and dead images. Remove. |
+| `mesh_worker` and `rig_worker` are still DEFINED in compose, though 0005 retired the 3D leg - but both sit behind `profiles: [mesh]` / `[rig]`, neither runs, and neither image exists on disk. | CORRECTED: this was first written as "dead build weight". It is not - profile-gated services cost nothing until requested. Left in place as a record of the 3D investigation; remove only on request. |
 | `/models` cache is 24 GB and already holds `stabilityai/stable-diffusion-xl-base-1.0` plus four pixel-art LoRAs (`nerijs/pixel-art-xl`, `PublicPrompts/All-In-One-Pixel-Model`, `Muapi/soft-pixel-art-xl`, `ntc-ai/SDXL-LoRA-slider.pixel-art`). | The training base is already on disk. No 7 GB download to start. |
 | WSL root has 879 GB free; C: has 49 GB. GPU is a 3060, 12 GB, ~2.4 GB resident at idle. | Training has disk room. VRAM was ASSUMED to be the binding constraint - measured later at 47%, see D2. |
 | `jobs.py` already implements queue semantics: `POST /api/jobs` -> 202 + UUID, poll `GET /api/jobs/{id}`, batch `GET /api/jobs?ids=&since=`. Auth is one shared bearer token, and a **no-op when `API_TOKEN` is unset**. | Item 5 is mostly done. What is missing is real key management and non-sheet job kinds. |
@@ -115,7 +115,10 @@ Phases are ordered by dependency. Each ends in something demonstrable.
 
 ### Phase 0 - unblock (half a day)
 - [x] Settings tab renders.
-- [ ] Drop `mesh_worker` / `rig_worker` from compose; delete their images.
+- [~] Drop `mesh_worker` / `rig_worker` - NOT DONE, and should not be: they are
+      profile-gated, never start, and have no images built. The premise was
+      wrong. Docker does hold 9.6 GB reclaimable images and 22 GB of build
+      cache, which is the real disk finding, on the WSL VHD (879 GB free).
 - [ ] Split `tasks.py`: extract the sheet-build orchestration and the legacy
       A1111 path into modules. Mechanical, test-covered, no behaviour change.
 
