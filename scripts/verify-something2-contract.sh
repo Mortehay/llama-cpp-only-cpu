@@ -12,6 +12,9 @@
 # half of what this verifies.
 set -uo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 HOST="${1:-localhost}"
 COLS="${2:-4}"
 ROWS="${3:-1}"
@@ -23,7 +26,7 @@ fail() { echo "  FAIL  $*"; FAILED=1; }
 step() { echo; echo "=== $* ==="; }
 
 step "1. Models discovery  (models_path=/sdapi/v1/sd-models, pointer=\$[*].model_name)"
-models_json=$(curl -s --max-time 20 "$BASE/sdapi/v1/sd-models")
+models_json=$(sprite_curl -s --max-time 20 "$BASE/sdapi/v1/sd-models")
 if [ -z "$models_json" ]; then
     fail "no response — is the stack up and reachable at $HOST?"
     echo "  (if HOST is a LAN IP, check scripts/lan-expose.ps1 has been run elevated)"
@@ -57,7 +60,7 @@ req=$(cat <<JSON
 JSON
 )
 t0=$(date +%s)
-resp=$(curl -s --max-time 600 -X POST "$BASE/sdapi/v1/txt2img" \
+resp=$(sprite_curl -s --max-time 600 -X POST "$BASE/sdapi/v1/txt2img" \
         -H 'Content-Type: application/json' -d "$req")
 elapsed=$(( $(date +%s) - t0 ))
 

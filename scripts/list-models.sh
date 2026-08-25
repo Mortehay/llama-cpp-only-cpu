@@ -19,6 +19,9 @@
 # Read-only: nothing here downloads, deletes or loads anything.
 set -uo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 HOST="${1:-localhost}"
 COLLECTOR="http://${HOST}:8002"   # llm-server publishes no host port; the
                                   # collector proxies GET /v1/models to it.
@@ -60,7 +63,7 @@ else
 fi
 
 step "SERVED — llama.cpp, via the collector at ${COLLECTOR}/v1/models"
-served=$(curl -s --max-time 10 "$COLLECTOR/v1/models" || true)
+served=$(sprite_curl -s --max-time 10 "$COLLECTOR/v1/models" || true)
 if echo "$served" | grep -q '"id"'; then
   echo "$served" | grep -oE '"id":[[:space:]]*"[^"]*"' | cut -d'"' -f4 | sed 's/^/  /'
   echo "  (--models-max 1: only one is resident; --sleep-idle-seconds 120"
@@ -73,7 +76,7 @@ step "IMAGE CHECKPOINTS — sprite-generator at ${SPRITE}/sdapi/v1/sd-models"
 # Not chat models and not in models.txt: diffusers pulls these itself on first
 # use. Listed here because "what models does this thing have" otherwise gets a
 # misleading answer.
-sd=$(curl -s --max-time 10 "$SPRITE/sdapi/v1/sd-models" || true)
+sd=$(sprite_curl -s --max-time 10 "$SPRITE/sdapi/v1/sd-models" || true)
 if echo "$sd" | grep -q '"model_name"'; then
   echo "$sd" | grep -oE '"model_name":[[:space:]]*"[^"]*"' | cut -d'"' -f4 | sed 's/^/  /'
 else

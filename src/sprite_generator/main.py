@@ -9,7 +9,7 @@ import random
 from urllib.parse import urlparse
 from PIL import Image
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi import FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -48,6 +48,12 @@ app.include_router(jobs_router)
 
 # API keys. Replaces the single shared token that was a no-op when unset, so
 # "is my API open?" has an answer the UI can show.
+#
+# The module itself is imported too, not just its router: the routes defined in
+# THIS file were the last unauthenticated surface in the app - 18 of them,
+# including every endpoint that spends GPU time. `auth.require` is inert while
+# no key exists, so adding it changes nothing until the first key is minted.
+import auth
 from auth import router as auth_router
 app.include_router(auth_router)
 
@@ -222,29 +228,38 @@ async def legacy_index(request: Request):
         context={"active_page": "gen", "core_models": core_model_roster()}
     )
 
-@app.get("/gallery", response_class=HTMLResponse)
-async def gallery(request: Request):
-    rows = fetch_gallery_rows()
-    return templates.TemplateResponse(
-        request=request, 
-        name="gallery.html", 
-        context={"rows": rows, "active_page": "gallery"}
-    )
+# GET /gallery was HERE, and was DELETED rather than authenticated.
+#
+# It rendered `fetch_gallery_rows()` - image paths and prompts - into HTML for
+# anyone who could reach the port. That was the one hole that defeated the
+# reasoning for leaving the /images mount open: image names are unguessable
+# (uuid4().hex[:12]) and StaticFiles does not list directories, so an
+# unauthenticated client cannot find a name to ask for - unless a page hands it
+# the whole list, which this one did.
+#
+# Gating it was not an option: a browser sends no Authorization header when it
+# NAVIGATES to a page, so bearer auth on an HTML route just makes the page
+# unreachable. Deleted instead, which is safe because React reached gallery
+# parity on 2026-08-25 (commit 3ce440f) and serves the same data through
+# /api/assets, which IS authenticated.
+
 
 @app.post("/api/warm")
-def warm_model(model: str = Form("stabilityai/sdxl-turbo")):
+def warm_model(model: str = Form("stabilityai/sdxl-turbo"),
+               authorization: str | None = Header(None)):
     """Queue a model download+load. Returns immediately with a task id.
 
     Non-blocking on purpose: warming an uncached checkpoint can take far longer
     than any sane HTTP timeout, which is the whole reason this endpoint exists.
     Poll /api/task-status/{task_id} for completion.
     """
+    auth.require(authorization, "generate")
     task = warm_model_task.delay(model)
     return JSONResponse({"status": "queued", "task_id": task.id, "model": model})
 
 
 @app.get("/api/compute-info")
-def compute_info():
+def compute_info(authorization: str | None = Header(None)):
     """Report the worker's real compute device, for the diagnostics panel.
 
     Deliberately round-trips through Celery rather than reading DEVICE here:
@@ -259,6 +274,7 @@ def compute_info():
     every sprite. Fall back to the snapshot the worker leaves in Redis and say
     "busy"; only a missing snapshot means genuinely unreachable.
     """
+    auth.require(authorization, "read")
     try:
         # expires: a poll that has already timed out client-side is of no use
         # when it finally reaches the front of the queue. Without this, a long
@@ -287,7 +303,8 @@ def compute_info():
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(authorization: str | None = Header(None)):
+    auth.require(authorization, "read")
     conn = get_db()
     if not conn: return {"compute_mode": "cpu"}
     try:
@@ -301,7 +318,12 @@ def get_settings():
     finally: conn.close()
 
 @app.post("/api/settings")
-async def save_settings(request: Request):
+async def save_settings(request: Request,
+                        authorization: str | None = Header(None)):
+    # `admin`, not `generate`: this writes app_settings, which steers what every
+    # other caller gets. A key handed to something2 so it can render sprites has
+    # no business changing this machine's configuration.
+    auth.require(authorization, "admin")
     data = await request.json()
     conn = get_db()
     if not conn: return JSONResponse({"status": "error"}, status_code=500)
@@ -321,17 +343,21 @@ async def save_settings(request: Request):
 
 
 @app.get("/api/core-models")
-def core_models():
+def core_models(authorization: str | None = Header(None)):
     """The step-1 model roster with live availability.
 
     Lets the page re-check after a restore without a container restart, and
     gives any other client the same answer the dropdown was rendered from.
     """
+    auth.require(authorization, "read")
     return JSONResponse({"models": core_model_roster()})
 
 
 @app.post("/api/generate_core")
-def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdxl-turbo")):
+def generate_core(prompt: str = Form(...),
+                  llm_name: str = Form("stabilityai/sdxl-turbo"),
+                  authorization: str | None = Header(None)):
+    auth.require(authorization, "generate")
     # Refuse a model that is not on disk instead of queueing work that cannot
     # succeed. Offline, a missing checkpoint is not a transient failure: the
     # worker would log a load error, write "Model failed to load on worker" to
@@ -357,13 +383,14 @@ def generate_core(prompt: str = Form(...), llm_name: str = Form("stabilityai/sdx
     return JSONResponse({"status": "queued", "task_id": task.id})
 
 @app.get("/api/edit-capabilities")
-def edit_capabilities():
+def edit_capabilities(authorization: str | None = Header(None)):
     """What the editing model can be asked to do.
 
     Each capability is a LoRA on one shared NF4 base, so adding another costs
     ~0.5GB rather than another multi-GB model. `null` means the base model with
     no adapter, which still follows general instructions.
     """
+    auth.require(authorization, "read")
     return JSONResponse({
         "model": "FLUX.1-Kontext-dev (NF4)",
         "capabilities": [None] + sorted(EDIT_LORAS.keys()),
@@ -381,12 +408,14 @@ def edit_capabilities():
 @app.post("/api/edit")
 def edit_image(source: str = Form(...), instruction: str = Form(...),
                capability: str = Form(None), steps: int = Form(20),
-               cfg_scale: float = Form(4.0), seed: int = Form(-1)):
+               cfg_scale: float = Form(4.0), seed: int = Form(-1),
+               authorization: str | None = Header(None)):
     """Apply a natural-language edit to an image already in IMAGES_DIR.
 
     `source` is a filename, not a path: joining a caller-supplied path would let
     any file on the worker be opened. Only the images directory is reachable.
     """
+    auth.require(authorization, "generate")
     if not EDIT_ENABLED:
         # 503, not 500: the service is fine, this capability is not
         # available on this hardware. Refuse before queueing, because
@@ -425,10 +454,12 @@ def edit_image(source: str = Form(...), instruction: str = Form(...),
 
 
 @app.post("/api/generate_sheet")
-def generate_sheet(parent_id: int = Form(...), actions: str = Form(...), 
+def generate_sheet(parent_id: int = Form(...), actions: str = Form(...),
                    llm_name: str = Form("stabilityai/sdxl-turbo"),
                    width: int = Form(128), height: int = Form(128),
-                   motion_steps: int = Form(4)):
+                   motion_steps: int = Form(4),
+                   authorization: str | None = Header(None)):
+    auth.require(authorization, "generate")
     actions_list = json.loads(actions)
     task = generate_spritesheet_task.delay(parent_id, actions_list, llm_name, width, height, motion_steps)
     conn = get_db()
@@ -445,7 +476,9 @@ def generate_sheet(parent_id: int = Form(...), actions: str = Form(...),
     return JSONResponse({"status": "queued", "task_id": task.id})
     
 @app.post("/api/crop")
-async def crop_sprite(request: Request):
+async def crop_sprite(request: Request,
+                      authorization: str | None = Header(None)):
+    auth.require(authorization, "generate")
     try:
         data = await request.json()
         source_id = data.get('source_id')
@@ -493,7 +526,12 @@ async def crop_sprite(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/cores")
-def get_cores():
+def get_cores(authorization: str | None = Header(None)):
+    # One of the endpoints that ENUMERATES image filenames. That matters more
+    # than it looks: the /images mount is deliberately left unauthenticated, and
+    # the argument for that is only sound while no unauthenticated caller can
+    # discover a name to ask for. Keep this authenticated.
+    auth.require(authorization, "read")
     conn = get_db()
     if not conn: return []
     try:
@@ -512,7 +550,8 @@ def get_cores():
     finally: conn.close()
 
 @app.delete("/api/task/{id}")
-def delete_task(id: int):
+def delete_task(id: int, authorization: str | None = Header(None)):
+    auth.require(authorization, "generate")
     conn = get_db()
     if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
     try:
@@ -571,7 +610,8 @@ def delete_task(id: int):
     finally: conn.close()
 
 @app.post("/api/task/{id}/retry")
-def retry_task(id: int):
+def retry_task(id: int, authorization: str | None = Header(None)):
+    auth.require(authorization, "generate")
     conn = get_db()
     if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
     try:
@@ -619,11 +659,14 @@ def retry_task(id: int):
     finally: conn.close()
 
 @app.get("/api/task-status/{task_id}")
-def get_task_status(task_id: str):
+def get_task_status(task_id: str, authorization: str | None = Header(None)):
+    auth.require(authorization, "read")
     res = AsyncResult(task_id, app=celery_app)
     result_data = res.result if res.ready() else None
     return {"task_id": task_id, "status": res.status, "result": result_data}
 
 @app.get("/api/tasks/recent")
-def recent_tasks():
+def recent_tasks(authorization: str | None = Header(None)):
+    # Enumerates image filenames, like /api/cores. See the note there.
+    auth.require(authorization, "read")
     return fetch_gallery_rows(limit=12)

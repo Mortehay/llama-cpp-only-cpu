@@ -85,14 +85,48 @@ Consequences worth remembering:
 - The repo path contains Cyrillic characters and a space
   (`.../Нова папка/...`). Quote paths in any script that touches it.
 
-### Home-network exposure (unsolved)
+### Home-network exposure (DONE, and it exposed an open API)
 
 **WSL2 is NAT'd, so a port bound inside WSL is not reachable from other LAN
 machines.** WSL's `networkingMode=mirrored` would fix this but requires
 Windows 11 22H2+; this host is Windows 10. The remaining option is
 `netsh interface portproxy` on the Windows side plus a firewall rule, which
-needs admin and must be redone when the WSL IP changes. This directly gates
-deliverable #1 and is not yet done.
+needs admin and must be redone when the WSL IP changes.
+
+**That has been done.** Measured 2026-08-25:
+
+- `netsh interface portproxy show v4tov4` forwards `0.0.0.0:8001` (and 7860,
+  8002, 3000, 3001) to the WSL guest.
+- This host is **192.168.0.217** on Wi-Fi. That is the address something2 uses,
+  not the `172.22.x` WSL address and not the `vEthernet (WSL)` host address.
+- Two other machines on the LAN fetched `http://192.168.0.217:8001/api/auth/mode`
+  unauthenticated and got `200`.
+
+**The exposure arrived before the authentication did.** That same probe returned
+`{"enforced": false, "active_keys": 0, "legacy_token": false}` - i.e. anyone on
+the Wi-Fi could queue GPU work. `auth.py` is written and good, but coverage is
+partial: `main.py` has 18 routes with no auth at all (including
+`/api/generate_core`, `/api/edit`, `/api/generate_sheet`, `/api/crop`,
+`POST /api/settings`), and `a1111.py` still uses the legacy `SPRITE_API_TOKEN`
+with the `if not API_TOKEN: return` silent-open bug that `auth.py` exists to
+replace.
+
+**Bearer tokens cannot cover browser-loaded resources.** Worth knowing before
+minting the first key, because minting flips `is_enforced()` globally and
+instantly:
+
+- `/`, `/legacy`, `/gallery`, `/static` must stay open - a browser sends no
+  `Authorization` header on a navigation, and locking them means you cannot
+  reach Settings to paste the token.
+- `SheetGenerator.tsx` and `Tiles.tsx` render `<img src="/api/jobs/{id}/sheet">`
+  as plain tags against a route that already calls `auth.require`. **These 401
+  the moment the first key exists.** Fix the front end to fetch-with-bearer into
+  a blob URL *before* minting.
+- 12 helper scripts call the API; only 3 (`await-job.py`, `submit-job.py`,
+  `verify-jobs-api.py`) send a bearer. The other 9 break on enforcement.
+
+The portproxy target is a WSL guest IP and **goes stale on WSL restart** without
+any error - re-run `scripts/lan-expose.ps1` elevated after every restart.
 
 ### WSL2 distro lifetime (bites constantly)
 
@@ -167,7 +201,10 @@ Do not design a new protocol — impersonate one it already speaks.
   PNG** that divides evenly into the declared grid; ≤32 MB.
 
 Caveat: this was read from their published `docs/ai-providers.md` on `main`.
-Their actual calling code has not been read.
+Their actual calling code HAS now been read (2026-08-25) - see the "Verified
+against their code" section of `specs/something2-provider/contract.md`, which
+corrects several assumptions above (5 min timeout not 240 s, no retries, tokens
+live in their DB not their .env, tiles have a route but no async path).
 
 ## Known-broken areas
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError } from './api'
+import { ApiError, fetchObjectUrl } from './api'
 
 export interface AsyncState<T> {
   data: T | null
@@ -51,6 +51,62 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
 
   const reload = useCallback(() => setTick((t) => t + 1), [])
   return { data, error, loading, reload }
+}
+
+/**
+ * An object URL for a protected binary route, fetched with the bearer token.
+ *
+ * Use this anywhere an `<img src>` or an `<a href>` would otherwise point at an
+ * authenticated endpoint: the browser sends no Authorization header on either,
+ * so those 401 as soon as a key exists. See `fetchObjectUrl` in api.ts.
+ *
+ * Pass `null` to skip fetching (e.g. while a job is still running).
+ *
+ * The URL is revoked when it changes or the component unmounts. Without that,
+ * every poll of a finished job would leak a blob for the lifetime of the tab.
+ */
+export function useAuthedObjectUrl(path: string | null): {
+  url: string | null
+  error: string | null
+} {
+  const [url, setUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!path) {
+      setUrl(null)
+      setError(null)
+      return
+    }
+    let revoked = false
+    let created: string | null = null
+
+    fetchObjectUrl(path)
+      .then((u) => {
+        // Unmounted (or `path` changed) while the fetch was in flight: revoke
+        // immediately rather than setting state on a dead component and leaking
+        // the blob.
+        if (revoked) {
+          URL.revokeObjectURL(u)
+          return
+        }
+        created = u
+        setUrl(u)
+        setError(null)
+      })
+      .catch((e: unknown) => {
+        if (revoked) return
+        setError(e instanceof ApiError || e instanceof Error ? e.message : String(e))
+        setUrl(null)
+      })
+
+    return () => {
+      revoked = true
+      if (created) URL.revokeObjectURL(created)
+    }
+  }, [path])
+
+  return { url, error }
 }
 
 /** Re-run `fn` on an interval, but only while `active`. */

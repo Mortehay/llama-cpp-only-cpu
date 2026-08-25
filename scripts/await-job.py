@@ -11,6 +11,7 @@ Usage:
     python await-job.py --latest
 """
 
+import os
 import argparse
 import json
 import sys
@@ -38,7 +39,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("job_id", nargs="?")
     p.add_argument("--host", default="http://127.0.0.1:8001")
-    p.add_argument("--token", default=None)
+    p.add_argument("--token",
+                   default=os.environ.get("SPRITE_API_KEY")
+                   or os.environ.get("SPRITE_API_TOKEN"),
+                   help="bearer token; defaults to $SPRITE_API_KEY")
     p.add_argument("--timeout", type=int, default=7200)
     p.add_argument("--interval", type=int, default=20)
     p.add_argument("--latest", action="store_true",

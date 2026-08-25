@@ -14,6 +14,7 @@ Usage:
     python check-ui.py [--host http://127.0.0.1:8001]
 """
 
+import os
 import argparse
 import re
 import sys
@@ -78,21 +79,30 @@ CHECKS = {
 }
 
 
-def fetch(url):
-    with urllib.request.urlopen(url, timeout=15) as r:
+def fetch(url, token=None):
+    req = urllib.request.Request(url)
+    # Several of the paths checked here are authenticated now. Unset is fine
+    # while the API has no keys - it is in open mode and answers anyway.
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    with urllib.request.urlopen(req, timeout=15) as r:
         return r.read().decode("utf-8", "replace")
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="http://127.0.0.1:8001")
+    p.add_argument("--token",
+                   default=os.environ.get("SPRITE_API_KEY")
+                   or os.environ.get("SPRITE_API_TOKEN"),
+                   help="bearer token; defaults to $SPRITE_API_KEY")
     a = p.parse_args()
 
     ok = True
     for path, checks in CHECKS.items():
         print(f"== {path} ==")
         try:
-            body = fetch(a.host + path)
+            body = fetch(a.host + path, a.token)
         except Exception as e:
             print(f"  FAIL  could not fetch: {e}")
             ok = False

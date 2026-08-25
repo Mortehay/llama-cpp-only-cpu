@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, imageUrl, type Job } from '../api'
-import { useAsync, usePoll } from '../hooks'
+import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /** Measured on this card in ADR 0005: ~33 s per cell, plus model load. */
 const SECONDS_PER_CELL = 33
@@ -42,6 +42,13 @@ export default function SheetGenerator() {
   const [job, setJob] = useState<Job | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // The sheet and atlas routes require a key, and a browser sends no auth
+  // header for `<img src>` or `<a href>`. Fetch them with the token instead and
+  // point at blobs. Null until the job is done, so nothing is requested early.
+  const done = job?.status === 'done'
+  const sheet = useAuthedObjectUrl(done ? `/api/jobs/${job.id}/sheet` : null)
+  const atlas = useAuthedObjectUrl(done ? `/api/jobs/${job.id}/atlas` : null)
 
   // The frame ceiling is a MINIMUM across the selected actions - one 4-pose
   // action caps the whole sheet, because a sheet cannot have ragged rows.
@@ -280,16 +287,33 @@ export default function SheetGenerator() {
             <div style={{ marginTop: 14 }}>
               <div className="thumb" style={{ maxWidth: 520 }}>
                 <div className="pic">
-                  <img src={`/api/jobs/${job.id}/sheet`} alt="spritesheet" />
+                  {sheet.url && <img src={sheet.url} alt="spritesheet" />}
+                  {sheet.error && <div className="note err">{sheet.error}</div>}
                 </div>
               </div>
               <div className="acts" style={{ marginTop: 10 }}>
-                <a className="btn ghost sm" href={`/api/jobs/${job.id}/sheet`} target="_blank" rel="noreferrer">
-                  Sheet PNG
-                </a>
-                <a className="btn ghost sm" href={`/api/jobs/${job.id}/atlas`} target="_blank" rel="noreferrer">
-                  Atlas JSON
-                </a>
+                {sheet.url && (
+                  <a
+                    className="btn ghost sm"
+                    href={sheet.url}
+                    download={`sheet-${job.id}.png`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Sheet PNG
+                  </a>
+                )}
+                {atlas.url && (
+                  <a
+                    className="btn ghost sm"
+                    href={atlas.url}
+                    download={`atlas-${job.id}.json`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Atlas JSON
+                  </a>
+                )}
               </div>
             </div>
           )}

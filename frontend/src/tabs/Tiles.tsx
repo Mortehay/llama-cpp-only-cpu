@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type Job } from '../api'
-import { useAsync, usePoll } from '../hooks'
+import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /**
  * Ground tiles.
@@ -26,6 +26,12 @@ export default function Tiles() {
 
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<Job | null>(null)
+
+  // `/api/jobs/{id}/sheet` requires a key, and neither `<img src>` nor
+  // `<a href>` carries one. Fetch with the token and point at a blob instead.
+  const tile = useAuthedObjectUrl(
+    job?.status === 'done' ? `/api/jobs/${job.id}/sheet` : null,
+  )
   const [info, setInfo] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -196,22 +202,28 @@ export default function Tiles() {
                 <div className="pic">
                   {/* Scaled up so a 64x32 tile is actually visible; the CSS
                       keeps it pixelated rather than smoothing it. */}
-                  <img
-                    src={`/api/jobs/${job.id}/sheet`}
-                    alt="tile"
-                    style={{ width: tileW * 4, imageRendering: 'pixelated' }}
-                  />
+                  {tile.url && (
+                    <img
+                      src={tile.url}
+                      alt="tile"
+                      style={{ width: tileW * 4, imageRendering: 'pixelated' }}
+                    />
+                  )}
+                  {tile.error && <div className="note err">{tile.error}</div>}
                 </div>
               </div>
               <div className="acts" style={{ marginTop: 10 }}>
-                <a
-                  className="btn ghost sm"
-                  href={`/api/jobs/${job.id}/sheet`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Download PNG
-                </a>
+                {tile.url && (
+                  <a
+                    className="btn ghost sm"
+                    href={tile.url}
+                    download={`tile-${job.id}.png`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Download PNG
+                  </a>
+                )}
               </div>
             </div>
           )}

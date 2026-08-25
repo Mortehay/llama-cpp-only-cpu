@@ -16,6 +16,9 @@
 
 set -euo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
@@ -46,7 +49,7 @@ docker compose "${COMPOSE[@]}" up -d --no-deps "${SERVICES[@]}"
 
 echo "==> waiting for the API"
 for _ in $(seq 1 60); do
-    code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/api/auth/mode || true)
+    code=$(sprite_curl -s -o /dev/null -w "%{http_code}" http://localhost:8001/api/auth/mode || true)
     if [ "$code" = "200" ]; then
         echo "    API is up"
         break

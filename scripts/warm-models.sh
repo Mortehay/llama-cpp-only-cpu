@@ -22,6 +22,9 @@
 #   ./scripts/warm-models.sh [model ...]
 set -uo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 # Overall per-model deadline, and how long a task may sit unclaimed before we
 # call it lost. Both in seconds; override from the environment.
 WARM_TIMEOUT="${WARM_TIMEOUT:-3600}"
@@ -32,7 +35,7 @@ BASE="http://${HOST}:8001"
 MODELS=("$@")
 if [ ${#MODELS[@]} -eq 0 ]; then
   # Default to whatever the service advertises.
-  mapfile -t MODELS < <(curl -s --max-time 15 "$BASE/sdapi/v1/sd-models" \
+  mapfile -t MODELS < <(sprite_curl -s --max-time 15 "$BASE/sdapi/v1/sd-models" \
     | grep -oE '"model_name":[[:space:]]*"[^"]*"' | cut -d'"' -f4)
 fi
 
@@ -43,7 +46,7 @@ fi
 FAILED=0
 for model in "${MODELS[@]}"; do
   echo "=== Warming ${model} ==="
-  task=$(curl -s --max-time 30 -X POST "$BASE/api/warm" \
+  task=$(sprite_curl -s --max-time 30 -X POST "$BASE/api/warm" \
            --data-urlencode "model=${model}" \
          | grep -oE '"task_id":[[:space:]]*"[^"]*"' | cut -d'"' -f4)
   if [ -z "$task" ]; then echo "  could not queue"; FAILED=1; continue; fi
@@ -67,7 +70,7 @@ for model in "${MODELS[@]}"; do
     # reporting a timeout for warms that had actually succeeded in ~70s.
     # Celery's status comes first because the endpoint builds the dict in that
     # order.
-    status=$(curl -s --max-time 20 "$BASE/api/task-status/${task}" \
+    status=$(sprite_curl -s --max-time 20 "$BASE/api/task-status/${task}" \
              | grep -oE '"status":[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
     case "$status" in
       SUCCESS) echo "  done (${waited}s)"; break ;;

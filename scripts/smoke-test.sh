@@ -6,6 +6,9 @@
 # Exits non-zero on the first hard failure so it is usable in CI or a Makefile.
 set -uo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 HOST="${1:-localhost}"
 BASE="http://${HOST}:8001"
 OUT_DIR="${TMPDIR:-/tmp}/sprite-smoke"
@@ -17,14 +20,14 @@ step() { echo; echo "=== $* ==="; }
 FAILED=0
 
 step "1. API reachable at ${BASE}"
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE/" || echo 000)
+code=$(sprite_curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$BASE/" || echo 000)
 if [ "$code" = "200" ]; then pass "GET / -> 200"; else
   fail "GET / -> $code (is the stack up? \`make up\`)"
   echo "Cannot continue without the API."; exit 1
 fi
 
 step "2. Worker compute device"
-info=$(curl -s --max-time 20 "$BASE/api/compute-info")
+info=$(sprite_curl -s --max-time 20 "$BASE/api/compute-info")
 device=$(echo "$info" | grep -oE '"device"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
 case "$device" in
   cuda)
@@ -42,7 +45,7 @@ case "$device" in
 esac
 
 step "3. A1111 model discovery"
-models=$(curl -s --max-time 15 "$BASE/sdapi/v1/sd-models")
+models=$(sprite_curl -s --max-time 15 "$BASE/sdapi/v1/sd-models")
 if echo "$models" | grep -q '"model_name"'; then
   pass "sd-models returns model_name entries"
   echo "$models" | grep -oE '"model_name":[[:space:]]*"[^"]*"' | cut -d'"' -f4 | sed 's/^/        /'
@@ -52,7 +55,7 @@ fi
 
 step "4. txt2img round-trip (blocking; first run also downloads the model)"
 started=$(date +%s)
-resp=$(curl -s --max-time 900 -X POST "$BASE/sdapi/v1/txt2img" \
+resp=$(sprite_curl -s --max-time 900 -X POST "$BASE/sdapi/v1/txt2img" \
   -H 'Content-Type: application/json' \
   -d '{"prompt":"green zombie, pixel art sprite","width":"512","height":"512","seed":"12345",
        "override_settings":{"sd_model_checkpoint":"stabilityai/sdxl-turbo"}}')

@@ -10,6 +10,7 @@ Usage:
         --actions walk,attack,idle --directions s,se,e,ne,n,nw,w,sw --frames 4
 """
 
+import os
 import argparse
 import json
 import sys
@@ -23,7 +24,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("concept", help="filename under images/")
     p.add_argument("--host", default="http://127.0.0.1:8001")
-    p.add_argument("--token", default=None)
+    p.add_argument("--token",
+                   default=os.environ.get("SPRITE_API_KEY")
+                   or os.environ.get("SPRITE_API_TOKEN"),
+                   help="bearer token; defaults to $SPRITE_API_KEY")
     p.add_argument("--actions", default="walk")
     p.add_argument("--directions", default=ALL_DIRECTIONS)
     p.add_argument("--frames", type=int, default=4)

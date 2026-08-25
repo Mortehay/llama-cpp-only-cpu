@@ -14,6 +14,7 @@ Usage:
 Without --submit it only reads, so it is safe to run against a busy stack.
 """
 
+import os
 import argparse
 import json
 import sys
@@ -37,7 +38,10 @@ def call(method, url, body=None, token=None):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="http://127.0.0.1:8001")
-    p.add_argument("--token", default=None)
+    p.add_argument("--token",
+                   default=os.environ.get("SPRITE_API_KEY")
+                   or os.environ.get("SPRITE_API_TOKEN"),
+                   help="bearer token; defaults to $SPRITE_API_KEY")
     p.add_argument("--submit", action="store_true",
                    help="actually enqueue a job (costs GPU time)")
     p.add_argument("--concept", default="meshtest_core.png")

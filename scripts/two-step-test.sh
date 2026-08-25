@@ -6,6 +6,9 @@
 # and vertical stitching.
 set -uo pipefail
 
+# Bearer auth from $SPRITE_API_KEY. Unset is fine while the API has no keys.
+source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
+
 B="http://${1:-localhost}:8001"
 CORE_MODEL="stabilityai/sdxl-turbo"
 SHEET_MODEL="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
@@ -36,7 +39,7 @@ wait_task() {
         # head -1: the response carries two "status" keys — Celery's, and the
         # one inside the task's own result dict. Matching both yields
         # "SUCCESS\nok", which matches no case branch and polls until timeout.
-        status=$(curl -s --max-time 20 "$B/api/task-status/$tid" \
+        status=$(sprite_curl -s --max-time 20 "$B/api/task-status/$tid" \
                  | grep -oE '"status"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | cut -d'"' -f4)
         case "$status" in
             SUCCESS|FAILURE|REVOKED) echo "$status"; return 0 ;;
@@ -47,7 +50,7 @@ wait_task() {
 }
 
 step "1. Generate core sprite (step 1)"
-resp=$(curl -s --max-time 60 -X POST "$B/api/generate_core" \
+resp=$(sprite_curl -s --max-time 60 -X POST "$B/api/generate_core" \
         -F "prompt=green zombie, tattered clothes" -F "llm_name=$CORE_MODEL")
 core_task=$(echo "$resp" | grep -oE '"task_id"[[:space:]]*:[[:space:]]*"[^"]*"' | cut -d'"' -f4)
 if [ -z "$core_task" ]; then
@@ -58,12 +61,12 @@ st=$(wait_task "$core_task" 1200)
 [ "$st" = "SUCCESS" ] && pass "core generated" || fail "core task ended $st"
 
 step "2. Locate the generated core"
-cores=$(curl -s --max-time 20 "$B/api/cores")
+cores=$(sprite_curl -s --max-time 20 "$B/api/cores")
 core_id=$(echo "$cores" | grep -oE '"id"[[:space:]]*:[[:space:]]*[0-9]+' | head -1 | grep -oE '[0-9]+')
 if [ -n "$core_id" ]; then pass "core id=$core_id"; else fail "no cores returned: ${cores:0:200}"; exit 1; fi
 
 step "3. Generate spritesheet (step 2) - the rewired img2img path"
-resp=$(curl -s --max-time 60 -X POST "$B/api/generate_sheet" \
+resp=$(sprite_curl -s --max-time 60 -X POST "$B/api/generate_sheet" \
         -F "parent_id=$core_id" \
         -F 'actions=["move right","idle"]' \
         -F "llm_name=$SHEET_MODEL" \

@@ -21,7 +21,11 @@
   <nav>
     <span class="brand">🎮 Sprite Generator</span>
     <a href="/" class="{{ 'active' if active_page == 'gen' else '' }}">Generate</a>
-    <a href="/gallery" class="{{ 'active' if active_page == 'gallery' else '' }}">Gallery</a>
+    {# The Gallery link pointed at /gallery, which was deleted: it rendered every
+       image path and prompt into HTML with no authentication, which is exactly
+       the enumeration the /images mount is left open on the assumption nobody
+       can perform. The React UI's Gallery tab replaces it and reads the
+       authenticated /api/assets instead. #}
   </nav>
 
 

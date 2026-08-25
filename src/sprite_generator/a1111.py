@@ -37,6 +37,7 @@ import logging
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
+import auth
 from tasks import celery_app, generate_raw_task
 
 logger = logging.getLogger(__name__)
@@ -46,9 +47,11 @@ router = APIRouter()
 # the failure surfaces as our error message, not their opaque timeout.
 GENERATE_TIMEOUT_S = int(os.environ.get("A1111_GENERATE_TIMEOUT_S", "240"))
 
-# Optional shared secret. something2 sends it as a configurable auth header.
-# Unset means no auth, which is only acceptable on a trusted LAN.
-API_TOKEN = os.environ.get("SPRITE_API_TOKEN", "").strip()
+# The legacy shared secret is no longer read here. `auth.py` owns it - it still
+# honours SPRITE_API_TOKEN as a valid credential, but an UNSET one no longer
+# means "no auth". Deleting the module-level constant is the point: while it
+# existed, the check above could be re-broken by anyone who reinstated the
+# `if not API_TOKEN: return` shortcut without realising what it disabled.
 
 # text2img models this service will serve. `model_name` is the value clients
 # send back in override_settings.sd_model_checkpoint.
@@ -93,15 +96,30 @@ KNOWN_MODELS = [
 ]
 
 
-def _require_auth(authorization: str | None):
-    if not API_TOKEN:
-        return
-    expected = f"Bearer {API_TOKEN}"
-    # Their docs note the token is stored in plaintext and that any admin who can
-    # register a provider can point the backend at arbitrary hosts. A shared
-    # secret here at least stops unauthenticated LAN clients driving the GPU.
-    if authorization != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+def _require_auth(authorization: str | None, scope: str = "generate"):
+    """Authorise a facade call through the shared key system.
+
+    THIS USED TO BE ITS OWN TOKEN CHECK, AND IT BEGAN `if not API_TOKEN: return`.
+
+    That is the exact silent-open bug `auth.py` was written to replace, and it
+    survived here longer than anywhere else - which was the worst possible place
+    for it. This facade is the surface something2 calls, so it is the one most
+    likely to be reachable from another machine, and `SPRITE_API_TOKEN` is empty
+    in `.env.example`. A fresh install therefore published unauthenticated
+    txt2img to the LAN while the settings UI could truthfully report that keys
+    existed and the API was secured.
+
+    `auth.require` honours the legacy `SPRITE_API_TOKEN` too, so an admin who
+    already configured one keeps working. The difference is that an UNSET token
+    no longer means "let everyone in" - it means "fall back to whether any key
+    exists".
+
+    Scope defaults to `generate` because the endpoint that matters here queues
+    GPU work. Discovery passes `read`, so a read-only key can answer "what
+    models do you have?" without being able to spend the card - which is what
+    something2's reachability check needs and nothing more.
+    """
+    auth.require(authorization, scope)
 
 
 # Per-field fallbacks for when a {{placeholder}} arrives unsubstituted as "" or
@@ -157,7 +175,7 @@ def sd_models(authorization: str | None = Header(default=None)):
     something2's models pointer for A1111 is `$[*].model_name`, so the response
     must be a bare array of objects each carrying `model_name`.
     """
-    _require_auth(authorization)
+    _require_auth(authorization, "read")
     return [
         {
             "title": name,

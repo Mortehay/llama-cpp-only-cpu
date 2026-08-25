@@ -62,6 +62,28 @@ substring; moving to structured `{motion, direction}` per `decisions/0003`.
 Note the collision that motivated the change: `"move up right"` **contains**
 `"move up"`, so diagonals were silently swallowed by cardinals.
 
+## "Task" is overloaded - four meanings
+
+Second only to "core", and newer, so it is not yet wrong everywhere - keep it
+that way. Four different objects in this system answer to "task":
+
+| Term | Means | Where |
+|---|---|---|
+| **Task** | a Celery task | `tasks.py`, `@celery.task` |
+| **Job** | a row in `jobs` plus its `202`/poll contract | `jobs.py`, `tiles.py`, `GET /api/jobs/{id}` |
+| **Ticket** | a Plane work item (`SOMET-*`) | plane.so, workspace `something2` |
+| **Action** | one sheet row: motion + direction | see "Action" above |
+
+**Rule:** never say "task" for a Plane item or a `jobs` row. "Add a task to
+render tiles" is ambiguous across three of these at once - it has already
+caused one planning session to address the wrong machine.
+
+Note that something2 uses "job" for its own in-memory registry too
+(`rmt_`-prefixed, `services/remoteImageProvider.js`). Their job is not our job:
+theirs is one blocking HTTP call awaiting a response, ours is a queued row a
+worker picks up. When both are in scope, say **our job row** and **their remote
+job**.
+
 ## Strength
 
 `strength` is the img2img parameter, 0..1: how much of the init image the model

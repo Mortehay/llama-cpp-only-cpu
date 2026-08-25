@@ -67,6 +67,54 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T
 }
 
+/**
+ * Fetch a PROTECTED binary resource and hand back an object URL.
+ *
+ * WHY THIS EXISTS - THE ONE THING BEARER AUTH CANNOT DO
+ *
+ * A browser sends no `Authorization` header when it loads `<img src>`, follows
+ * `<a href>`, or navigates to a page. So the moment the API starts enforcing
+ * keys, every plain `<img src="/api/jobs/{id}/sheet">` 401s - and it looks like
+ * a broken image, not an auth failure, which is a miserable thing to debug.
+ *
+ * This was latent in the repo for a while: `/api/jobs/{id}/sheet` has always
+ * called `auth.require`, and it only worked because no key existed yet, so the
+ * API was in open mode and authorised everyone. Minting the first key would
+ * have broken the sheet and tile previews with no warning.
+ *
+ * Fetching here instead puts the request back on the XHR path, where the token
+ * IS sent. The caller owns the returned URL and must `URL.revokeObjectURL` it -
+ * see `useAuthedObjectUrl` in hooks.ts, which does that on unmount.
+ *
+ * Note this is NOT needed for `/images/*`: that is a StaticFiles mount and is
+ * deliberately left unauthenticated. See `.ai/specs/api-auth-lockdown/plan.md`
+ * for why that is safe (unguessable names, no directory listing, and every
+ * endpoint that enumerates names requires a key).
+ */
+export async function fetchObjectUrl(path: string): Promise<string> {
+  const headers = new Headers()
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+
+  const res = await fetch(path, { headers })
+  if (!res.ok) {
+    // A binary route's error body is JSON from FastAPI, but do not assume it:
+    // a proxy or a crash can put HTML here, and `.json()` would then throw and
+    // mask the real status.
+    let detail = `${res.status} ${res.statusText}`
+    try {
+      const body = await res.json()
+      if (body && typeof body === 'object' && 'detail' in body) {
+        detail = String((body as { detail: unknown }).detail)
+      }
+    } catch {
+      /* keep the status line */
+    }
+    throw new ApiError(res.status, detail)
+  }
+  return URL.createObjectURL(await res.blob())
+}
+
 // --- types ----------------------------------------------------------------
 
 export interface AuthMode {
