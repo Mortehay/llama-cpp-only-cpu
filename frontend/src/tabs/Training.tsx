@@ -66,9 +66,10 @@ export default function Training() {
       <div className="card">
         <h2>Train a style LoRA</h2>
         <p className="hint">
-          Measurement fixes palette, grid and camera from three examples. Training is
-          what learns the things a number cannot describe — line quality, shading,
-          how a face reads at 48px — and it needs roughly twenty consistent examples.
+          Counts below are TRAINABLE references, not measurable ones. A JPEG
+          reference board cannot yield an exact palette but trains a style perfectly
+          well - gating training on the measurement rules rejected 100 of 106 real
+          sprites here before that was split apart.
           Trains SDXL at native 1024, measured at 47% of this card.
         </p>
 
@@ -78,7 +79,7 @@ export default function Training() {
         {ready.data && (
           <div className={`note ${ready.data.ready ? 'ok' : 'warn'}`}>
             {ready.data.ready
-              ? `Ready — ${ready.data.usable_references} usable references.`
+              ? `Ready —  trainable references.`
               : `Not ready: ${ready.data.why}.`}
           </div>
         )}
@@ -97,7 +98,7 @@ export default function Training() {
                 }
               />
               {k.label}{' '}
-              <span className="muted">({ready.data?.per_kind?.[k.id] ?? 0} usable)</span>
+              <span className="muted">({ready.data?.per_kind?.[k.id] ?? 0} trainable)</span>
             </label>
           ))}
         </div>

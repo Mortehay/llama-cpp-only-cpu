@@ -165,6 +165,18 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
         # artefact this pipeline spends a whole stage removing.
         bg = Image.new("RGBA", img.size, (128, 128, 128, 255))
         img = Image.alpha_composite(bg, img).convert("RGB")
+
+        # CENTRE-CROP to square, then scale. A bare
+        # `resize((resolution, resolution))` squashes: a 1024x2048 reference
+        # board arrives at the model with every figure at half width, and the
+        # LoRA faithfully learns to draw squashed figures. Real references are
+        # rarely square - of 106 uploaded here, 97 were between 0.5:1 and 2:1
+        # and none were exactly 1:1.
+        w, h = img.size
+        if w != h:
+            side = min(w, h)
+            left, top = (w - side) // 2, (h - side) // 2
+            img = img.crop((left, top, left + side, top + side))
         img = img.resize((resolution, resolution), Image.LANCZOS)
 
         import numpy as np

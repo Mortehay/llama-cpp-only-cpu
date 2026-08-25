@@ -147,15 +147,31 @@ export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
         <h2>
           Uploaded {kind} references{' '}
           {list.data ? (
-            <span className="tag neutral">
-              {list.data.usable}/{list.data.total} usable
-            </span>
+            <>
+              <span className="tag ok">{list.data.trainable} trainable</span>{' '}
+              <span className="tag neutral">{list.data.usable} measurable</span>
+            </>
           ) : null}
         </h2>
         <p className="hint">
-          Nothing is rejected — an unusable example is kept and told why, because
-          that is more useful than a silent failure. Only usable ones feed a style profile.
+          Every reference carries <strong>two</strong> verdicts, because they answer
+          different questions. <strong>Trainable</strong> — can a style LoRA learn
+          from this? Nearly everything qualifies; a JPEG reference board is fine.
+          <strong> Measurable</strong> — can an exact palette, pixel grid or camera
+          angle be read off it? That needs palette-locked art with hard edges, and
+          only measurable references feed a style profile.
         </p>
+        <div className="row tight" style={{ marginBottom: 12 }}>
+          <div style={{ flex: '0 0 auto' }}>
+            <button className="btn ghost sm" disabled={busy} onClick={() => void act(() => api.remeasureAll(kind))}>
+              Re-measure all {kind} references
+            </button>
+          </div>
+          <div className="muted" style={{ flex: '1 1 auto' }}>
+            Run this after the measurement rules change — it re-judges what is
+            already uploaded instead of making you upload it again.
+          </div>
+        </div>
 
         {list.error && <div className="note err">{list.error}</div>}
         {list.loading && !list.data && <div className="empty">Loading…</div>}
@@ -203,12 +219,20 @@ function Card({
         <div className="name" title={r.label}>
           {r.label}
         </div>
-        <div style={{ marginTop: 5 }}>
-          <span className={`tag ${r.usable ? 'ok' : 'no'}`}>
-            {r.usable ? 'usable' : 'not usable'}
+        {/* TWO verdicts, because they answer different questions. An image can
+            be perfect training material and still useless for measuring a
+            palette - most reference boards are exactly that. */}
+        <div style={{ marginTop: 5, display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+          <span className={`tag ${r.trainable ? 'ok' : 'no'}`}>
+            {r.trainable ? 'trainable' : 'not trainable'}
+          </span>
+          <span className={`tag ${r.usable ? 'ok' : 'neutral'}`}>
+            {r.usable ? 'measurable' : 'not measurable'}
           </span>
         </div>
-        <div className="why">{r.why}</div>
+        <div className="why">
+          {r.trainable === false ? r.trainable_why : r.why}
+        </div>
 
         <div className="why" style={{ marginTop: 5 }}>
           {fields

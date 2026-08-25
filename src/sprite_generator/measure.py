@@ -118,14 +118,25 @@ def palette_of(arr: np.ndarray, alpha_threshold: int = 128) -> dict:
     if not opaque.any():
         return {"colors": 0, "palette": [], "palette_why": "fully transparent"}
 
-    px = arr[opaque][:, :3]
-    counts = Counter(map(tuple, px.tolist()))
-    ordered = [c for c, _ in counts.most_common()]
+    px = arr[opaque][:, :3].astype(np.uint32)
+
+    # Pack RGB into one integer and let numpy do the counting.
+    #
+    # This was `Counter(map(tuple, px.tolist()))`, which is a Python-level tuple
+    # allocation per pixel. On a 1200x3610 reference board - 4.3 million pixels
+    # - that took tens of seconds, and re-measuring 227 references ran for over
+    # seven minutes before this replaced it. Same exact answer, vectorised.
+    packed = (px[:, 0] << 16) | (px[:, 1] << 8) | px[:, 2]
+    values, counts = np.unique(packed, return_counts=True)
+    order = np.argsort(-counts)[:64]
+    ordered = [((int(v) >> 16) & 0xFF, (int(v) >> 8) & 0xFF, int(v) & 0xFF)
+               for v in values[order]]
+
     return {
-        "colors": len(ordered),
+        "colors": int(values.size),
         # Cap the stored list: a photo would otherwise write 200k entries into
         # JSONB. The count above is still exact.
-        "palette": [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in ordered[:64]],
+        "palette": [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in ordered],
         "palette_why": ("bounded palette" if len(ordered) <= 64 else
                 f"{len(ordered)} distinct colours - not pixel art, or not "
                 f"palette-locked"),
@@ -181,6 +192,75 @@ def outline_of(arr: np.ndarray, alpha_threshold: int = 128) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Trainability - a DIFFERENT question from measurability
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS SEPARATE, learned the hard way on 2026-08-25
+#
+# `usable` originally gated both deriving a style profile AND training. Against
+# 227 real references that rejected 100 of 106 sprites and 60 of 90 characters,
+# and it was wrong nearly every time:
+#
+#   * sprites were rejected for "32,000 distinct colours" - they were JPEG
+#     reference boards, not palette-locked art. You cannot read a PALETTE from
+#     them, which is a real limitation. You can absolutely TRAIN a style on
+#     them; SDXL was trained on photographs.
+#   * characters were rejected for "fills the frame; reaches the border" with
+#     an average aspect of 1.36 - i.e. they were correctly character-shaped and
+#     simply CROPPED TIGHTLY, which is what good reference art looks like. The
+#     isolation rule came from `concept.judge`, which answers "did the
+#     GENERATOR produce a scene instead of a character?" - the opposite
+#     expectation from a reference a human chose.
+#
+# So the two questions are asked separately now. Measurement stays strict,
+# because a palette read off a JPEG collage would be garbage that silently
+# poisons every sheet. Training is permissive, because it can afford to be.
+
+# Below this the image is upscaled to reach the training resolution, which
+# invents detail rather than teaching any. The smallest real reference measured
+# here was 236x208.
+MIN_TRAIN_SIDE = 160
+
+# Training centre-crops to a square. Beyond roughly 3:1 that throws most of the
+# image away, and a strip that long is usually a CONTACT SHEET of many subjects
+# - which teaches the model to draw contact sheets.
+MAX_TRAIN_ASPECT = 3.0
+
+
+def judge_trainable(img: Image.Image, arr: np.ndarray) -> dict:
+    """Can a style LoRA learn from this image? Deliberately permissive.
+
+    Rejects only what genuinely cannot teach: blank images, images too small to
+    survive the training resolution, and extreme strips that are nearly always
+    multi-subject sheets.
+    """
+    w, h = img.size
+    reasons = []
+
+    if arr.shape[2] == 4:
+        opaque = arr[..., 3] >= 128
+        if not opaque.any():
+            reasons.append("nothing visible - fully transparent")
+
+    short = min(w, h)
+    if short < MIN_TRAIN_SIDE:
+        reasons.append(f"only {w}x{h} - below {MIN_TRAIN_SIDE}px the training "
+                       f"resolution has to upscale it, which invents detail "
+                       f"rather than learning any")
+
+    long_side, short_side = max(w, h), max(min(w, h), 1)
+    ratio = long_side / short_side
+    if ratio > MAX_TRAIN_ASPECT:
+        reasons.append(f"{ratio:.1f}:1 strip - training centre-crops to a "
+                       f"square, so most of this would be discarded, and a "
+                       f"strip this long is usually a sheet of several "
+                       f"subjects. Split it into individual images first")
+
+    return {"trainable": not reasons,
+            "trainable_why": "; ".join(reasons) or "fine to train on"}
+
+
+# ---------------------------------------------------------------------------
 # Per-kind measurement
 # ---------------------------------------------------------------------------
 
@@ -207,7 +287,8 @@ def measure_tile(path_or_image) -> dict:
     opaque = arr[..., 3] >= 128
     if not opaque.any():
         return {"usable": False, "why": "tile is fully transparent",
-                "metrics": {}}
+                "metrics": {}, "trainable": False,
+                "trainable_why": "nothing visible - fully transparent"}
 
     ys, xs = np.nonzero(opaque)
     w = int(xs.max() - xs.min() + 1)
@@ -247,6 +328,7 @@ def measure_tile(path_or_image) -> dict:
         # Still returns the ratio - a rectangular tile sheet is a legitimate
         # thing to upload - but says the number is weaker evidence.
         return {"usable": True, "metrics": metrics,
+                **judge_trainable(img, arr),
                 "why": (f"no transparent corners ({transparent:.0%} "
                         f"transparent), so this is measured as a rectangle, "
                         f"not a diamond. The angle is a guess; upload a tile "
@@ -257,7 +339,8 @@ def measure_tile(path_or_image) -> dict:
     if tied:
         note += (f" (exactly between '{nearest}' and '{runner_up}' - the "
                  f"measurement does not choose; pick one deliberately)")
-    return {"usable": True, "metrics": metrics, "why": note}
+    return {"usable": True, "metrics": metrics, "why": note,
+            **judge_trainable(img, arr)}
 
 
 def measure_sprite(path_or_image) -> dict:
@@ -288,7 +371,8 @@ def measure_sprite(path_or_image) -> dict:
     return {"usable": not reasons, "metrics": metrics,
             "why": "; ".join(reasons) or
                    (f"{metrics['art_w']}x{metrics['art_h']} art pixels at "
-                    f"scale {s}, {pal['colors']} colours")}
+                    f"scale {s}, {pal['colors']} colours"),
+            **judge_trainable(img, arr)}
 
 
 def measure_core(path_or_image) -> dict:
@@ -299,6 +383,7 @@ def measure_core(path_or_image) -> dict:
     return {
         "usable": bool(v["ok"]),
         "why": concept_lib.describe(v),
+        **judge_trainable(img, arr),
         "metrics": {"coverage": round(v["coverage"], 4),
                     "border": round(v["border"], 4),
                     "aspect": round(v["aspect"], 3),

@@ -90,12 +90,14 @@ class TrainRequest(BaseModel):
         return ",".join(f"ref_{k}_*.png" for k in self.kinds)
 
 
-def _usable_reference_count(kinds) -> int:
-    """How many usable references these reference kinds hold.
+def _trainable_reference_count(kinds) -> int:
+    """How many TRAINABLE references these reference kinds hold.
 
-    Counted from the DB rather than the filesystem so that an example marked
-    unusable - a 200-colour render, an anti-aliased sprite - is not silently
-    trained on.
+    Counts `trainable`, not `usable`. Those answer different questions and
+    conflating them was a real bug: `usable` is measurement-grade - palette
+    locked, hard alpha, isolated subject - and gating training on it rejected
+    100 of 106 real sprites for having too many colours, when a style LoRA is
+    perfectly happy learning from a JPEG reference board. See migration 014.
     """
     kinds = list(kinds)
     if not kinds:
@@ -103,7 +105,7 @@ def _usable_reference_count(kinds) -> int:
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM reference_assets "
-            "WHERE deleted = false AND usable = true AND kind = ANY(%s)",
+            "WHERE deleted = false AND trainable = true AND kind = ANY(%s)",
             (kinds,))
         return int(cur.fetchone()[0])
 
@@ -122,11 +124,11 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
                 detail="a training run is already queued or running - there is "
                        "one GPU, so they cannot overlap")
 
-    usable = _usable_reference_count(body.kinds)
+    usable = _trainable_reference_count(body.kinds)
     if usable < MIN_IMAGES:
         raise HTTPException(
             status_code=400,
-            detail=f"only {usable} usable reference(s) in "
+            detail=f"only {usable} trainable reference(s) in "
                    f"{', '.join(body.kinds)}; "
                    f"need at least {MIN_IMAGES}. Measurement works from three "
                    f"examples, training does not - a LoRA trained on a handful "
@@ -218,8 +220,8 @@ def readiness(kinds: str = "sprite,core",
     auth.require(authorization, "read")
     chosen = [k.strip() for k in kinds.split(",")
               if k.strip() in REFERENCE_KINDS] or ["sprite", "core"]
-    usable = _usable_reference_count(chosen)
-    per_kind = {k: _usable_reference_count([k]) for k in REFERENCE_KINDS}
+    usable = _trainable_reference_count(chosen)
+    per_kind = {k: _trainable_reference_count([k]) for k in REFERENCE_KINDS}
     with _db() as conn, conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM training_runs "
                     "WHERE status IN ('queued', 'running')")

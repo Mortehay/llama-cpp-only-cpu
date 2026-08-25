@@ -119,10 +119,12 @@ async def upload_reference(kind: str = Form(...),
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
             "INSERT INTO reference_assets "
-            "  (id, kind, file_path, label, metrics, usable, why) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            "  (id, kind, file_path, label, metrics, usable, why, "
+            "   trainable, trainable_why) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (str(ref_id), kind, path, label or file.filename,
-             json.dumps(verdict["metrics"]), verdict["usable"], verdict["why"]))
+             json.dumps(verdict["metrics"]), verdict["usable"], verdict["why"],
+             verdict.get("trainable"), verdict.get("trainable_why")))
 
     return {"id": str(ref_id), "kind": kind, "url": _url(path),
             "label": label or file.filename, **verdict}
@@ -143,15 +145,19 @@ def list_references(kind: str | None = None,
             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"SELECT id, kind, file_path, label, metrics, usable, why, "
-            f"       created_at FROM reference_assets "
+            f"       trainable, trainable_why, created_at FROM reference_assets "
             f"WHERE deleted = false {clause} ORDER BY created_at DESC", params)
         items = [_row(dict(r)) for r in cur.fetchall()]
 
     usable = sum(1 for i in items if i["usable"])
-    return {"items": items, "total": len(items), "usable": usable,
-            # The honest headline for the training phase: measurement works
-            # from three examples, a style LoRA needs roughly twenty.
-            "enough_to_train": usable >= 20,
+    trainable = sum(1 for i in items if i["trainable"])
+    return {"items": items, "total": len(items),
+            # TWO different counts, because they answer two different
+            # questions. `usable` is measurement-grade - palette-locked, hard
+            # alpha, isolated subject - and is what a style profile needs.
+            # `trainable` is nearly everything, and is what training needs.
+            "usable": usable, "trainable": trainable,
+            "enough_to_train": trainable >= 20,
             "enough_to_measure": usable >= 1}
 
 
@@ -188,8 +194,10 @@ def remeasure(ref_id: str, authorization: str | None = Header(None)):
 
         v = measure.measure(row["kind"], row["file_path"])
         cur.execute("UPDATE reference_assets SET metrics = %s, usable = %s, "
-                    "why = %s WHERE id = %s::uuid",
-                    (json.dumps(v["metrics"]), v["usable"], v["why"], ref_id))
+                    "why = %s, trainable = %s, trainable_why = %s "
+                    "WHERE id = %s::uuid",
+                    (json.dumps(v["metrics"]), v["usable"], v["why"],
+                     v.get("trainable"), v.get("trainable_why"), ref_id))
     return {"id": ref_id, **v}
 
 
@@ -344,3 +352,64 @@ def delete_profile(profile_id: str, authorization: str | None = Header(None)):
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="no such profile")
     return {"deleted": profile_id}
+
+
+@router.post("/api/references/remeasure-all")
+def remeasure_all(kind: str | None = None,
+                  authorization: str | None = Header(None)):
+    """Re-run measurement over every stored reference.
+
+    Exists because the rules themselves change. When `trainable` was split out
+    of `usable`, 227 already-uploaded references carried verdicts from the old
+    rule - and asking someone to re-upload 227 files because the judge improved
+    is not a reasonable thing to ask.
+
+    Synchronous: measurement is numpy over an already-decoded image, not GPU
+    work. 227 references take a few seconds.
+    """
+    auth.require(authorization, "generate")
+    if kind and kind not in KINDS:
+        raise HTTPException(status_code=400, detail=f"unknown kind {kind!r}")
+
+    clause, params = "", []
+    if kind:
+        clause, params = "AND kind = %s", [kind]
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(f"SELECT id, kind, file_path FROM reference_assets "
+                    f"WHERE deleted = false {clause}", params)
+        rows = cur.fetchall()
+
+    changed = missing = failed = 0
+    for row in rows:
+        if not os.path.exists(row["file_path"]):
+            missing += 1
+            continue
+        try:
+            v = measure.measure(row["kind"], row["file_path"])
+        except Exception as e:
+            logger.warning("remeasure failed for %s: %s", row["id"], e)
+            failed += 1
+            continue
+        with _db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE reference_assets SET metrics = %s, usable = %s, "
+                "why = %s, trainable = %s, trainable_why = %s "
+                "WHERE id = %s::uuid",
+                (json.dumps(v["metrics"]), v["usable"], v["why"],
+                 v.get("trainable"), v.get("trainable_why"), str(row["id"])))
+        changed += 1
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT kind, count(*) AS total, "
+            "       count(*) FILTER (WHERE usable) AS usable, "
+            "       count(*) FILTER (WHERE trainable) AS trainable "
+            "FROM reference_assets WHERE deleted = false GROUP BY kind "
+            "ORDER BY kind")
+        summary = [dict(r) for r in cur.fetchall()]
+
+    return {"remeasured": changed, "file_missing": missing,
+            "failed": failed, "by_kind": summary}

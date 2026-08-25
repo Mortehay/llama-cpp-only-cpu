@@ -110,8 +110,12 @@ export interface Reference {
   kind: ReferenceKind
   label: string
   url: string | null
+  /** Measurement-grade: palette-locked, hard alpha, isolated. Gates profiles. */
   usable: boolean | null
   why: string
+  /** Good enough to train a style on. Far more permissive. Gates training. */
+  trainable: boolean | null
+  trainable_why: string | null
   metrics: Record<string, unknown>
   created_at: string | null
 }
@@ -120,6 +124,7 @@ export interface ReferenceList {
   items: Reference[]
   total: number
   usable: number
+  trainable: number
   enough_to_train: boolean
   enough_to_measure: boolean
 }
@@ -261,7 +266,12 @@ export const api = {
   deleteReference: (id: string) =>
     request<unknown>(`/api/references/${id}`, { method: 'DELETE' }),
   remeasure: (id: string) =>
-    request<Reference>(`/api/references/${id}/remeasure`, { method: 'POST' }),
+    request<Reference>(`/api/references/${id}/remeasure`, { method: "POST" }),
+  remeasureAll: (kind?: ReferenceKind) =>
+    request<{
+      remeasured: number
+      by_kind: { kind: string; total: number; usable: number; trainable: number }[]
+    }>(`/api/references/remeasure-all${kind ? `?kind=${kind}` : ""}`, { method: "POST" }),
 
   profiles: () => request<{ items: StyleProfile[]; total: number }>('/api/style-profiles'),
   deriveProfile: (name: string, reference_ids: string[] = []) =>
