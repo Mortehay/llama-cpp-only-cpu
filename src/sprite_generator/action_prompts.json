@@ -50,7 +50,8 @@
       "families": "Keys are view families, not directions: front | back | side. `view_families` below maps the eight compass directions onto them. `side` is REQUIRED and is the fallback for any family an action does not list - correct for genuinely view-independent actions (idle, sway) and a visible but harmless approximation otherwise.",
       "frame_count": "The length of the list IS the maximum frame count for that action. /api/jobs refuses a request for more, and the UI caps its input from /api/action-catalog. Lists of different lengths across families are safe - each renders its own length.",
       "rule": "A frame pose must change the SILHOUETTE as seen from THAT camera. Motion along the view axis does not exist in the output. Profile cameras get sagittal motion (strides, thrusts, lunges); front and back get vertical and lateral motion (knee lifts, overhead swings, arms going wide). Ask a front camera for a forward punch and the model draws the nearest thing it can see - measured, a literal T-pose in six of eight directions.",
-      "write_poses_not_verbs": "'walking' is a process and the model picks the same instant of it every time, so four frames of a walk come back as four frames of standing. Name limb positions instead, so each frame is a different, checkable target."
+      "write_poses_not_verbs": "'walking' is a process and the model picks the same instant of it every time, so four frames of a walk come back as four frames of standing. Name limb positions instead, so each frame is a different, checkable target.",
+      "effects_stay_on_the_body": "An effect must stay ATTACHED to the character. A pose that asks for one to fill the frame - 'energy discharged outward', 'explosion', 'shockwave' - gets one, and it takes the background with it: the model paints a dark full-frame ground behind the light, pixelate.key_background finds no background colour in the corners, and the cell composes as an OPAQUE TILE with the character buried inside it. Measured 2026-08-25 on cast frame 2: 64.1% opaque against ~20% for every other cell in the same sheet, a solid black square in the middle of the row. Name where the effect IS - at the hands, between the palms, at the fingertips - not how far it travels."
     },
     "view_families": "Which prompt set each compass direction uses. Left and right profiles share one: they are the same view family, mirrored (see domain.md)."
   },
@@ -135,21 +136,27 @@
       "sheet_label": "Walk",
       "frames": {
         "side": [
-          "left leg forward, right arm forward, mid stride",
-          "legs together, passing pose, arms at sides",
-          "right leg forward, left arm forward, mid stride",
-          "legs together, passing pose, arms at sides"
+          "left leg forward heel down, right arm forward, contact",
+          "weight settling onto the left leg, body at its lowest",
+          "legs together, right leg passing, body at its highest",
+          "right leg forward heel down, left arm forward, contact",
+          "weight settling onto the right leg, body at its lowest",
+          "legs together, left leg passing, body at its highest"
         ],
         "front": [
-          "left knee raised, left foot off the ground, right foot planted",
+          "left knee raised high, left foot well off the ground",
+          "left foot lowering toward the ground, knee half bent",
           "both feet flat on the ground, standing upright",
-          "right knee raised, right foot off the ground, left foot planted",
+          "right knee raised high, right foot well off the ground",
+          "right foot lowering toward the ground, knee half bent",
           "both feet flat on the ground, standing upright"
         ],
         "back": [
-          "left knee raised, left foot off the ground, right foot planted",
+          "left knee raised high, left foot well off the ground",
+          "left foot lowering toward the ground, knee half bent",
           "both feet flat on the ground, standing upright",
-          "right knee raised, right foot off the ground, left foot planted",
+          "right knee raised high, right foot well off the ground",
+          "right foot lowering toward the ground, knee half bent",
           "both feet flat on the ground, standing upright"
         ]
       }
@@ -222,22 +229,22 @@
       "sheet_label": "Cast Spell",
       "frames": {
         "side": [
-          "one arm drawn back low, gathering glowing energy in the hand",
-          "arm sweeping forward, bright magical light building at the hand",
-          "arm fully extended forward, a blast of arcane energy released",
-          "arm lowering, faint sparks fading"
+          "one arm drawn back low, a small glowing ember gathering in the hand",
+          "arm sweeping forward, bright light growing around the hand",
+          "arm fully extended forward, a glowing orb held at the fingertips",
+          "arm lowering, faint sparks at the fingertips"
         ],
         "front": [
-          "both arms raised overhead, glowing energy gathering above the head",
-          "arms held high and wide, bright arcane light between the hands",
-          "arms swept down and out to the sides, energy discharged outward",
-          "arms returning to the sides, faint sparks fading"
+          "both arms raised overhead, a bright orb of energy held between the hands",
+          "arms held high and wide, glowing sparks around both hands",
+          "arms swept down in front, a glowing orb pushed forward at chest height",
+          "arms returning to the sides, faint sparks at the fingertips"
         ],
         "back": [
-          "both arms raised overhead, glowing energy gathering above the head",
-          "arms held high and wide, bright arcane light between the hands",
-          "arms swept down and out to the sides, energy discharged outward",
-          "arms returning to the sides, faint sparks fading"
+          "both arms raised overhead, a bright orb of energy held between the hands",
+          "arms held high and wide, glowing sparks around both hands",
+          "arms swept down in front, a glowing orb pushed forward at chest height",
+          "arms returning to the sides, faint sparks at the fingertips"
         ]
       }
     },
@@ -259,22 +266,28 @@
       "sheet_label": "Attack",
       "frames": {
         "side": [
-          "arms drawn back, winding up to strike",
-          "arms swinging forward, mid strike",
+          "arms drawn back behind the body, weight on the back foot",
+          "arms coiled, shoulders turned, about to release",
+          "arms swinging forward, weight shifting to the front foot",
           "arms fully extended forward, strike landed",
-          "arms lowering, recovering from the strike"
+          "arms past full extension, body carried forward",
+          "arms lowering back to the sides, weight settling"
         ],
         "front": [
           "both arms raised high overhead, leaning back",
+          "arms at their highest, body coiled and still",
           "arms coming down, elbows bent, weight shifting forward",
           "arms swung down low in front, body hunched forward",
-          "arms returning to the sides"
+          "arms low and loose, body still bent forward",
+          "arms returning to the sides, standing upright"
         ],
         "back": [
           "both arms raised high overhead, leaning back",
+          "arms at their highest, body coiled and still",
           "arms coming down, elbows bent, weight shifting forward",
           "arms swung down low in front, body hunched forward",
-          "arms returning to the sides"
+          "arms low and loose, body still bent forward",
+          "arms returning to the sides, standing upright"
         ]
       }
     },

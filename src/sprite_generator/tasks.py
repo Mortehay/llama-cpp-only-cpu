@@ -2837,6 +2837,57 @@ def _fail_stranded_tasks(**_):
     finally:
         conn.close()
 
+    _fail_stranded_jobs()
+
+
+def _fail_stranded_jobs():
+    """Same sweep, for the `jobs` table, which had none.
+
+    `_fail_stranded_tasks` covers sprite_images. Jobs were left out, and they
+    strand for longer and more visibly: a sheet job runs for an hour across five
+    subprocesses, so a worker that dies mid-run leaves a row claiming `running`
+    with a stage and a percentage that will never move again. Observed directly
+    - a report showed "running: 2" while exactly one job was alive.
+
+    That is worse than a stale sprite_images row, because something2 polls jobs
+    and its whole model is "ask about this id later". A job frozen at
+    `actions-denoise 44%` tells a caller to keep waiting forever.
+
+    Same one-worker/solo-pool reasoning as above: when this signal fires nothing
+    can be running, so anything still marked queued or running is dead. The
+    30-second floor covers the same submit-just-before-boot race.
+    """
+    conn = get_db()
+    if not conn:
+        logger.warning("Stranded-job reaper skipped: no database connection.")
+        return
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE jobs
+                       SET status = 'failed',
+                           error = COALESCE(NULLIF(error, ''),
+                                            'worker died before this job '
+                                            'finished; resubmit to retry'),
+                           progress_msg = 'stranded',
+                           finished_at = now()
+                     WHERE status IN ('queued', 'running')
+                       AND created_at < NOW() - INTERVAL '30 seconds'
+                    """
+                )
+                if cur.rowcount:
+                    logger.warning(
+                        "Marked %d stranded job(s) as failed: their worker "
+                        "died before they finished.", cur.rowcount)
+    except Exception as e:
+        # Never fatal at boot. A worker that refuses to start because a
+        # bookkeeping sweep failed is a worse outcome than a stale row.
+        logger.error(f"Stranded-job reaper failed: {e}")
+    finally:
+        conn.close()
+
 
 # --- Device snapshot upkeep -----------------------------------------------
 #

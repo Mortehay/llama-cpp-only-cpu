@@ -197,18 +197,55 @@ def stage_actions_denoise(a):
 
     views = {d: Image.open(os.path.join(a.work, f"dir_{d}.png"))
              for d in cfg["directions"]}
-    cells = [{"key": f"{act}|{d}|{f_i}", "image": views[d],
-              "prompt": "", "action": act, "direction": d, "frame": f_i}
-             for act, d, f_i, _ in _action_plan(cfg)]
+    plan = _action_plan(cfg)
+
+    # Render each DISTINCT (direction, pose) once and copy the result.
+    #
+    # A cell is a pure function of (input view, prompt, seed): denoise_cells
+    # builds a fresh generator from the same cfg["seed"] for every cell, and
+    # the view is per-direction, so two cells whose pose text matches produce
+    # byte-identical output. Several actions repeat a pose deliberately - a
+    # walk passes through the same contact pose twice, an idle breathes
+    # A-B-A-C - and those repeats were being denoised a second time to arrive
+    # at pixels already on disk.
+    #
+    # Measured 2026-08-25 on the shipped library: walk, idle and sway each
+    # repeat one pose in four, so a quarter of every such row was paid for
+    # twice. On an eight-direction walk that is 8 cells, about 4.4 minutes.
+    # attack, damage, use and cast repeat nothing and are unaffected.
+    #
+    # This dedupes the RENDER, not the sheet: every frame still gets its own
+    # file and the grid still has its full width. Frame 3 of a walk is a copy
+    # rather than a recomputation.
+    groups = {}
+    for act, d, f_i, pose in plan:
+        groups.setdefault((d, pose), []).append((act, d, f_i))
+
+    # (cell, members) side by side, so the copy step needs no second lookup.
+    work = []
+    for (d, _pose), members in groups.items():
+        act, _, f_i = members[0]
+        work.append(({"key": f"{act}|{d}|{f_i}", "image": views[d],
+                      "prompt": "", "action": act, "direction": d,
+                      "frame": f_i}, members))
+
+    cells = [c for c, _ in work]
+    saved = len(plan) - len(cells)
+    if saved:
+        log.info("%d distinct cell(s) to render; %d repeated pose(s) will be "
+                 "copied instead of denoised", len(cells), saved)
 
     rendered = qwen_edit.denoise_cells(
         cells, torch.load(_embeds_path(a.work, "act")), seed=cfg["seed"],
         size=cfg["size"], with_angles=True, angles_scale=a.angles_scale)
 
-    for c in cells:
-        name = f"cell_{c['action']}_{c['direction']}_{c['frame']}.png"
-        rendered[c["key"]].save(os.path.join(a.work, name))
-    log.info("wrote %d cell(s) to %s", len(cells), a.work)
+    written = 0
+    for c, members in work:
+        img = rendered[c["key"]]
+        for act, d, f_i in members:
+            img.save(os.path.join(a.work, f"cell_{act}_{d}_{f_i}.png"))
+            written += 1
+    log.info("wrote %d cell(s) to %s", written, a.work)
 
 
 def stage_compose(a):
