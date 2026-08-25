@@ -135,8 +135,8 @@ Phases are ordered by dependency. Each ends in something demonstrable.
       8001; production build emitted to `static/dist` and served by FastAPI, so
       deployment stays one container.
 - [x] Port Core Generator, Spritesheet Generator, Settings, Gallery.
-- [ ] Port crop, single-image edit, task retry/delete, model warm - the
-      reason /legacy still exists.
+- [x] Port crop, single-image edit, task retry/delete, model warm. Parity
+      reached; /legacy is now only the not-yet-built fallback.
 - [ ] Typed API client generated from the OpenAPI schema FastAPI already emits -
       so a backend change breaks the build, not the page.
 

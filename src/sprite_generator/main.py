@@ -202,9 +202,15 @@ async def index(request: Request):
 async def legacy_index(request: Request):
     """The pre-React UI.
 
-    Kept during the migration because it still carries features React has not
-    taken over yet (crop, single-image edit, task retry). Not a permanent
-    fixture - it goes when parity is reached.
+    Feature parity was reached on 2026-08-25: React now covers core generation,
+    spritesheets, references, tiles, training, gallery, settings, crop, edit,
+    task retry/delete and model warm. This is no longer a feature fallback.
+
+    It stays for one reason only - `static/app` is a build artefact and is
+    gitignored, so a fresh clone has no React UI until someone runs
+    scripts/build-frontend.sh. `/` falls back here rather than serving a blank
+    page that looks like a broken deployment. Safe to delete once the build is
+    part of the image.
     """
     # The core-model dropdown is rendered from the roster, not hardcoded in the
     # template, so an archived checkpoint is shown as unselectable rather than

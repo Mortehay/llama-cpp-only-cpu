@@ -3,6 +3,7 @@ import { api, imageUrl } from '../api'
 import { useAsync, usePoll } from '../hooks'
 import TaskQueue from '../components/TaskQueue'
 import EditPanel from '../components/EditPanel'
+import CropModal from '../components/CropModal'
 
 /**
  * Step 1: one character concept.
@@ -19,6 +20,7 @@ export default function CoreGenerator() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [cropping, setCropping] = useState<{ id: number; url: string } | null>(null)
 
   // Default to whichever model the roster marks default AND available; an
   // archived checkpoint is rendered but not selectable, because the failure it
@@ -113,6 +115,14 @@ export default function CoreGenerator() {
                 <div className="name" title={c.prompt}>
                   {c.prompt}
                 </div>
+                <div className="acts">
+                  <button
+                    className="btn ghost sm"
+                    onClick={() => setCropping({ id: c.id, url: imageUrl(c.file_path) })}
+                  >
+                    Crop
+                  </button>
+                </div>
               </div>
             </div>
           ))}
@@ -120,6 +130,18 @@ export default function CoreGenerator() {
       </div>
 
       <TaskQueue />
+
+      {cropping && (
+        <CropModal
+          sourceId={cropping.id}
+          url={cropping.url}
+          onClose={() => setCropping(null)}
+          onSaved={() => {
+            cores.reload()
+            setStatus('Crop saved as a new concept.')
+          }}
+        />
+      )}
     </>
   )
 }
