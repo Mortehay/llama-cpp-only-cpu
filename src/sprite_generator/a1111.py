@@ -38,6 +38,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 import auth
+import core_models
 from tasks import celery_app, generate_raw_task
 
 logger = logging.getLogger(__name__)
@@ -176,17 +177,38 @@ def sd_models(authorization: str | None = Header(default=None)):
     must be a bare array of objects each carrying `model_name`.
     """
     _require_auth(authorization, "read")
-    return [
-        {
+
+    # Stock checkpoints, then adapters trained on this machine.
+    #
+    # The trained ones were missing entirely, so a model trained here could
+    # never be selected by the game - `/api/core-models` listed them and this
+    # endpoint, the one something2 actually discovers against, did not. Any
+    # adapter is useless to the client until it appears here.
+    #
+    # Only AVAILABLE trained adapters: an entry whose .safetensors has been
+    # deleted would fail at generation time, minutes later and opaquely, which
+    # is worse than not offering it.
+    trained = [e["value"] for e in core_models.local_roster()
+               if core_models.unavailable_reason(e["value"]) is None]
+
+    out = []
+    for name in KNOWN_MODELS + trained:
+        trigger = core_models.trigger_for(name)
+        out.append({
             "title": name,
             "model_name": name,
             "hash": None,
             "sha256": None,
             "filename": name,
             "config": None,
-        }
-        for name in KNOWN_MODELS
-    ]
+            # Extra, non-A1111 fields. Harmless to a `$[*].model_name` pointer,
+            # and they let a client show which entries are local and what token
+            # they respond to - though it does NOT need to send the trigger,
+            # because txt2img injects it. See apply_trigger below.
+            "trained": bool(trigger),
+            "trigger": trigger,
+        })
+    return out
 
 
 @router.post("/sdapi/v1/txt2img")
@@ -195,6 +217,18 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     _require_auth(authorization)
 
     model = req.override_settings.get("sd_model_checkpoint") or KNOWN_MODELS[0]
+
+    # Inject the adapter's trigger token server-side.
+    #
+    # A trained LoRA is INERT without its trigger: it loads, fuses, and returns
+    # plain base-model output with nothing saying why. Making each client carry
+    # a table of triggers is a design that leaks - something2's prompts come
+    # from its own tile and entity rows and have no business knowing what this
+    # machine last trained. Idempotent, so a caller that does send the trigger
+    # is not penalised with a doubled token.
+    prompt = core_models.apply_trigger(model, req.prompt)
+    if prompt != req.prompt:
+        logger.info("txt2img: injected trigger for %s", model)
 
     width = req.width or 512
     height = req.height or 512
@@ -214,7 +248,7 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
 
     started = time.time()
     task = generate_raw_task.delay(
-        req.prompt,
+        prompt,
         req.negative_prompt,
         model,
         width,

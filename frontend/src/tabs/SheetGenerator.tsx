@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, imageUrl, type Job } from '../api'
-import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
+import { api, imageUrl, type Core, type Job } from '../api'
+import { useAsync, useAuthedObjectUrl, useDebounced, usePoll } from '../hooks'
 
 /** Measured on this card in ADR 0005: ~33 s per cell, plus model load. */
 const SECONDS_PER_CELL = 33
@@ -19,12 +19,26 @@ const DIRECTIONS = [
 
 const JOB_KEY = 'sheetJobId'
 
+/** Concepts in the picker at once. Enough to browse, few enough to render. */
+const PICKER_PAGE = 48
+
 export default function SheetGenerator() {
-  const cores = useAsync(() => api.cores(), [])
+  // Searchable rather than "the 48 newest": once a project has a few dozen
+  // concepts, the one worth turning into a sheet is rarely the latest.
+  const [coreQ, setCoreQ] = useState('')
+  const coreSearch = useDebounced(coreQ)
+  const cores = useAsync(
+    () => api.cores({ q: coreSearch || undefined, limit: PICKER_PAGE }),
+    [coreSearch],
+  )
   const catalog = useAsync(() => api.actionCatalog(), [])
   const profiles = useAsync(() => api.profiles(), [])
 
-  const [coreId, setCoreId] = useState<number | null>(null)
+  // The whole concept, not its id: the selection has to survive a search that
+  // filters it out of the visible grid, or submit would report "choose a
+  // concept first" about one that is plainly still highlighted.
+  const [core, setCore] = useState<Core | null>(null)
+  const coreId = core?.id ?? null
   const [actions, setActions] = useState<string[]>(['walk'])
   const [directions, setDirections] = useState<string[]>(['s'])
   const [frames, setFrames] = useState(4)
@@ -47,8 +61,8 @@ export default function SheetGenerator() {
   // header for `<img src>` or `<a href>`. Fetch them with the token instead and
   // point at blobs. Null until the job is done, so nothing is requested early.
   const done = job?.status === 'done'
-  const sheet = useAuthedObjectUrl(done ? `/api/jobs/${job.id}/sheet` : null)
-  const atlas = useAuthedObjectUrl(done ? `/api/jobs/${job.id}/atlas` : null)
+  const sheet = useAuthedObjectUrl(done ? `/api/jobs/${job.job_id}/sheet` : null)
+  const atlas = useAuthedObjectUrl(done ? `/api/jobs/${job.job_id}/atlas` : null)
 
   // The frame ceiling is a MINIMUM across the selected actions - one 4-pose
   // action caps the whole sheet, because a sheet cannot have ragged rows.
@@ -99,7 +113,6 @@ export default function SheetGenerator() {
   usePoll(() => void refresh(), 3000, polling)
 
   async function submit() {
-    const core = cores.data?.find((c) => c.id === coreId)
     if (!core) {
       setError('Choose a concept first.')
       return
@@ -142,16 +155,44 @@ export default function SheetGenerator() {
 
         {error && <div className="note err">{error}</div>}
 
-        <label>Concept</label>
-        {cores.data?.length === 0 && (
-          <div className="empty">No concepts yet — generate one on the Core tab.</div>
+        <label htmlFor="sheet-core-q">Concept</label>
+        <div className="row tight" style={{ marginBottom: 12 }}>
+          <div style={{ flex: '2 1 240px' }}>
+            <input
+              id="sheet-core-q"
+              type="text"
+              list="sheet-core-terms"
+              value={coreQ}
+              onChange={(e) => setCoreQ(e.target.value)}
+              placeholder="Search concepts: zombie, knight…"
+            />
+            <datalist id="sheet-core-terms">
+              {cores.data?.suggestions.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          </div>
+          <div style={{ flex: '0 0 auto', alignSelf: 'center' }}>
+            <span className="muted">
+              {(cores.data?.total ?? 0) > PICKER_PAGE
+                ? `${cores.data?.items.length} of ${cores.data?.total} — search to narrow`
+                : `${cores.data?.total ?? 0} concept${cores.data?.total === 1 ? '' : 's'}`}
+            </span>
+          </div>
+        </div>
+        {cores.data?.total === 0 && (
+          <div className="empty">
+            {coreSearch
+              ? `Nothing matches "${coreSearch}".`
+              : 'No concepts yet — generate one on the Entity tab.'}
+          </div>
         )}
         <div className="grid" style={{ marginBottom: 16 }}>
-          {cores.data?.map((c) => (
+          {cores.data?.items.map((c) => (
             <button
               key={c.id}
               className="thumb"
-              onClick={() => setCoreId(c.id)}
+              onClick={() => setCore(c)}
               style={{
                 cursor: 'pointer',
                 padding: 0,
@@ -170,6 +211,14 @@ export default function SheetGenerator() {
             </button>
           ))}
         </div>
+
+        {/* The selection survives a search that hides it, so say so - an
+            invisible highlight is indistinguishable from nothing selected. */}
+        {core && !cores.data?.items.some((c) => c.id === core.id) && (
+          <div className="note info" style={{ marginBottom: 16 }}>
+            Selected (not in the current search): {core.prompt}
+          </div>
+        )}
 
         <label>Actions</label>
         <div className="row tight" style={{ marginBottom: 14 }}>
@@ -273,7 +322,7 @@ export default function SheetGenerator() {
       {job && (
         <div className="card">
           <h2>
-            Job <code>{job.id.slice(0, 8)}</code> · {job.status}
+            Job <code>{job.job_id.slice(0, 8)}</code> · {job.status}
           </h2>
           <div className="muted">
             {job.stage ? `${job.stage} — ` : ''}
@@ -296,7 +345,7 @@ export default function SheetGenerator() {
                   <a
                     className="btn ghost sm"
                     href={sheet.url}
-                    download={`sheet-${job.id}.png`}
+                    download={`sheet-${job.job_id}.png`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -307,7 +356,7 @@ export default function SheetGenerator() {
                   <a
                     className="btn ghost sm"
                     href={atlas.url}
-                    download={`atlas-${job.id}.json`}
+                    download={`atlas-${job.job_id}.json`}
                     target="_blank"
                     rel="noreferrer"
                   >
@@ -321,7 +370,7 @@ export default function SheetGenerator() {
             <button
               className="btn danger sm"
               style={{ marginTop: 12 }}
-              onClick={() => void api.cancelJob(job.id).then(refresh)}
+              onClick={() => void api.cancelJob(job.job_id).then(refresh)}
             >
               Cancel
             </button>

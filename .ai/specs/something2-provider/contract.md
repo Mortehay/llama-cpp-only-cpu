@@ -235,6 +235,13 @@ rather than trusting "still unsupported" here.
 today**. Closing it means a synchronous tile route on the facade - a cache
 reader over the background job - which is its own design decision.
 
+**Maps inherit this exact wall**, and harder - a map build is minutes to hours,
+not one tile. [decisions/0007](../../decisions/0007-maps-paint-then-quantize.md)
+takes the cache-reader route for both rather than waiting on SOMET-334, and
+[specs/maps/contract.md](../maps/contract.md) is the wire format. The useful
+point for this document: tiles and maps are **one blocker, not two**, so
+whichever is closed first should close the other.
+
 ### Multi-frame works now (their SOMET-346)
 
 `frames > 1` expects **one image containing a grid**, cut by

@@ -50,7 +50,7 @@ SHIN_BAND = (0.15, 0.35)
 
 # --- colour -------------------------------------------------------------
 
-def _srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
+def srgb_to_lab(rgb: np.ndarray) -> np.ndarray:
     """(..., 3) uint8 sRGB -> (..., 3) float CIELAB (D65).
 
     Nearest-colour matching is done in Lab rather than RGB because RGB distance
@@ -114,8 +114,8 @@ def extract_palette(img: Image.Image,
 def snap_to_palette(rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
     """Replace every pixel with its nearest palette entry, matched in Lab."""
     flat = rgb.reshape(-1, 3)
-    lab_px = _srgb_to_lab(flat)
-    lab_pal = _srgb_to_lab(palette)
+    lab_px = srgb_to_lab(flat)
+    lab_pal = srgb_to_lab(palette)
 
     # Chunked so a 1024x1024 frame does not allocate an N x P float64 matrix in
     # one go - that is 8 bytes * 1M * 24, which is survivable, but the same code

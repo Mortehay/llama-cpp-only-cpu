@@ -119,3 +119,19 @@ export function usePoll(fn: () => void, ms: number, active: boolean) {
     return () => clearInterval(id)
   }, [ms, active])
 }
+
+/**
+ * `value`, but only after it has stopped changing for `ms`.
+ *
+ * Search boxes here drive real queries — a keystroke-per-request list also
+ * races: `useAsync` keeps whichever response lands last, which is not
+ * necessarily the one for what is currently typed.
+ */
+export function useDebounced<T>(value: T, ms = 250): T {
+  const [settled, setSettled] = useState(value)
+  useEffect(() => {
+    const id = setTimeout(() => setSettled(value), ms)
+    return () => clearTimeout(id)
+  }, [value, ms])
+  return settled
+}

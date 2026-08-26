@@ -1,7 +1,7 @@
 """Reference examples: upload art the output should look like, and measure it.
 
-The three kinds map to the three UI tabs (`reference-core`, `reference-sprite`,
-`reference-tile`) and to the three questions in `measure.py`.
+The four kinds map to the four UI tabs (`reference-core`, `reference-sprite`,
+`reference-tile`, `reference-map`) and to the four questions in `measure.py`.
 
 WHAT AN UPLOAD ACTUALLY DOES
 
@@ -43,7 +43,7 @@ router = APIRouter()
 DB_URL = os.environ.get("DB_URL")
 IMAGES_DIR = "/app/images"
 
-KINDS = ("core", "sprite", "tile")
+KINDS = ("core", "sprite", "tile", "map")
 
 # Uploads are art, not archives. 24 MB is generous for a spritesheet and small
 # enough that a mis-drag of a video file fails fast.

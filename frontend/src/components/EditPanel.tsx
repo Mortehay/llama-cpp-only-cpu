@@ -11,7 +11,9 @@ import { useAsync } from '../hooks'
  */
 export default function EditPanel({ onDone }: { onDone?: () => void }) {
   const caps = useAsync(() => api.editCapabilities(), [])
-  const cores = useAsync(() => api.cores(), [])
+  // 200 is the server's page cap: a <select> of prompt text is cheap, and a
+  // truncated list here means an older concept simply cannot be edited.
+  const cores = useAsync(() => api.cores({ limit: 200 }), [])
 
   const [source, setSource] = useState('')
   const [instruction, setInstruction] = useState('')
@@ -57,7 +59,7 @@ export default function EditPanel({ onDone }: { onDone?: () => void }) {
           <label htmlFor="edit-src">Source image</label>
           <select id="edit-src" value={source} onChange={(e) => setSource(e.target.value)}>
             <option value="">Choose…</option>
-            {cores.data?.map((c) => {
+            {cores.data?.items.map((c) => {
               const name = c.file_path.split('/').pop() ?? ''
               return (
                 <option key={c.id} value={name}>

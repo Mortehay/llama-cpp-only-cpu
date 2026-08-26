@@ -30,7 +30,7 @@ export default function Tiles() {
   // `/api/jobs/{id}/sheet` requires a key, and neither `<img src>` nor
   // `<a href>` carries one. Fetch with the token and point at a blob instead.
   const tile = useAuthedObjectUrl(
-    job?.status === 'done' ? `/api/jobs/${job.id}/sheet` : null,
+    job?.status === 'done' ? `/api/jobs/${job.job_id}/sheet` : null,
   )
   const [info, setInfo] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -189,7 +189,7 @@ export default function Tiles() {
       {job && (
         <div className="card">
           <h2>
-            Tile job <code>{job.id.slice(0, 8)}</code> · {job.status}
+            Tile job <code>{job.job_id.slice(0, 8)}</code> · {job.status}
           </h2>
           <div className="muted">{job.progress_msg ?? ''}</div>
           <div className="bar">
@@ -217,7 +217,7 @@ export default function Tiles() {
                   <a
                     className="btn ghost sm"
                     href={tile.url}
-                    download={`tile-${job.id}.png`}
+                    download={`tile-${job.job_id}.png`}
                     target="_blank"
                     rel="noreferrer"
                   >

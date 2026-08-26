@@ -15,6 +15,7 @@ const TABS = [
   { id: 'ref-core', label: 'Reference · Core' },
   { id: 'ref-sprite', label: 'Reference · Sprite' },
   { id: 'ref-tile', label: 'Reference · Tile' },
+  { id: 'ref-map', label: 'Reference · Map' },
   { id: 'tiles', label: 'Tiles' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
@@ -71,6 +72,7 @@ export default function App() {
         {tab === 'ref-core' && <ReferenceTab kind="core" />}
         {tab === 'ref-sprite' && <ReferenceTab kind="sprite" />}
         {tab === 'ref-tile' && <ReferenceTab kind="tile" />}
+        {tab === 'ref-map' && <ReferenceTab kind="map" />}
         {tab === 'tiles' && <Tiles />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}

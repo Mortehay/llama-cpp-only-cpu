@@ -31,6 +31,16 @@ const COPY: Record<
     want: 'Finished character sprites or spritesheets, PNG with transparency.',
     measures: ['pixel scale', 'exact colour count', 'palette', 'outline', 'alpha hardness'],
   },
+  map: {
+    title: 'Reference · World maps',
+    hint:
+      'Example maps whose terrain colours your world should use. These are NOT judged on ' +
+      'colour count — a painted map legitimately has thousands. Each one is median-cut ' +
+      'into candidate terrains, and those become the palette a generated map is forced ' +
+      'to, which is what stops the picture and the walkable ground from disagreeing.',
+    want: 'Overworld or region maps — painted, pixel-art, or hand-drawn.',
+    measures: ['candidate terrains', 'terrain separation', 'palette', 'aspect'],
+  },
   core: {
     title: 'Reference · Character concepts',
     hint:
@@ -47,6 +57,7 @@ const HEADLINE: Record<ReferenceKind, string[]> = {
   tile: ['projection_ratio', 'elevation_deg', 'elevation', 'colors'],
   sprite: ['scale', 'art_w', 'art_h', 'colors', 'outline_color'],
   core: ['coverage', 'border', 'aspect', 'colors'],
+  map: ['terrains', 'terrain_separation', 'colors', 'aspect'],
 }
 
 const LABELS: Record<string, string> = {
@@ -61,6 +72,8 @@ const LABELS: Record<string, string> = {
   coverage: 'coverage',
   border: 'border',
   aspect: 'aspect',
+  terrains: 'terrains',
+  terrain_separation: 'separation',
 }
 
 /** Live counter while a drop is measured, one file at a time. */

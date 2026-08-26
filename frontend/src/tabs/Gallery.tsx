@@ -17,6 +17,18 @@ export default function Gallery() {
   const [offset, setOffset] = useState(0)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Cards whose full prompt is showing. A set rather than one id, because
+  // comparing two prompts means having both open at once - which is the whole
+  // reason a truncated title was not good enough.
+  const [open, setOpen] = useState<Set<string>>(new Set())
+
+  function toggle(key: string) {
+    setOpen((prev) => {
+      const next = new Set(prev)
+      if (!next.delete(key)) next.add(key)
+      return next
+    })
+  }
 
   const kinds = useAsync(() => api.assetKinds(), [])
   const page = useAsync(
@@ -24,11 +36,11 @@ export default function Gallery() {
     [kind, q, offset],
   )
 
-  async function remove(source: string, id: string) {
+  async function remove(source: string, id: string, purge = false) {
     setBusy(true)
     setError(null)
     try {
-      await api.deleteAsset(source, id)
+      await api.deleteAsset(source, id, purge)
       page.reload()
       kinds.reload()
     } catch (e) {
@@ -38,6 +50,16 @@ export default function Gallery() {
     }
   }
 
+  function confirmDelete(a: { source: string; id: string; title: string }) {
+    const ok = window.confirm(
+      `Delete the file for:\n\n${a.title}\n\n` +
+        `This removes the image from disk and cannot be undone. The job record ` +
+        `is kept, so something2 still resolves the id - but it will no longer ` +
+        `be able to fetch the image.\n\nUse Hide instead to keep the file.`,
+    )
+    if (ok) void remove(a.source, a.id, true)
+  }
+
   const total = page.data?.total ?? 0
   const shown = page.data?.items.length ?? 0
 
@@ -45,9 +67,11 @@ export default function Gallery() {
     <div className="card">
       <h2>Gallery</h2>
       <p className="hint">
-        Generated concepts and finished spritesheets in one list. Deleting hides an
-        item; the underlying job record is kept, because something2 may still be
-        polling that id.
+        Generated concepts and finished spritesheets in one list. <strong>Click a
+        title</strong> to read the whole prompt. <strong>Hide</strong> drops an item
+        from this list and keeps its file; <strong>Delete</strong> also removes the
+        file from disk. The job record survives either way, because something2 may
+        still be polling that id.
       </p>
 
       {error && <div className="note err">{error}</div>}
@@ -102,12 +126,23 @@ export default function Gallery() {
               {a.url && <img src={a.url} alt={a.title} loading="lazy" />}
             </div>
             <div className="meta">
-              <div className="name" title={a.title}>
+              <button
+                type="button"
+                className={`name ${open.has(`${a.source}-${a.id}`) ? 'open' : ''}`}
+                title={open.has(`${a.source}-${a.id}`) ? 'Collapse' : 'Show the full prompt'}
+                onClick={() => toggle(`${a.source}-${a.id}`)}
+              >
                 {a.title}
-              </div>
+              </button>
               <div className="why">
                 <span className="tag neutral">{a.kind}</span>{' '}
                 {a.created_at ? new Date(a.created_at).toLocaleString() : ''}
+                {open.has(`${a.source}-${a.id}`) && a.model && (
+                  <>
+                    <br />
+                    {a.model}
+                  </>
+                )}
               </div>
               <div className="acts">
                 {a.url && (
@@ -121,11 +156,20 @@ export default function Gallery() {
                   </a>
                 )}
                 <button
-                  className="btn danger sm"
+                  className="btn ghost sm"
                   disabled={busy}
+                  title="Remove from the gallery. The file stays on disk."
                   onClick={() => void remove(a.source, a.id)}
                 >
                   Hide
+                </button>
+                <button
+                  className="btn danger sm"
+                  disabled={busy}
+                  title="Remove from the gallery AND delete the file from disk."
+                  onClick={() => confirmDelete(a)}
+                >
+                  Delete
                 </button>
               </div>
             </div>

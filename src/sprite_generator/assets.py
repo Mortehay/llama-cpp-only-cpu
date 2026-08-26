@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 DB_URL = os.environ.get("DB_URL")
+IMAGES_DIR = "/app/images"
 
 # Anything the UI is allowed to filter on. A whitelist because these values
 # reach an SQL WHERE clause; the value itself is still parameterised, but a
@@ -128,32 +129,81 @@ def asset_kinds(authorization: str | None = Header(None)):
         return {"groups": [dict(r) for r in cur.fetchall()]}
 
 
+def _purge_file(path: str | None) -> str | None:
+    """Unlink a file, but only inside IMAGES_DIR. Returns its name, or None.
+
+    The containment check is not decoration. These paths come from our own
+    database, but this is the one route that turns a row into an `os.remove`,
+    and a bad row should cost a log line rather than a file outside the images
+    directory.
+    """
+    if not path:
+        return None
+
+    root = os.path.realpath(IMAGES_DIR)
+    resolved = os.path.realpath(path)
+    if os.path.commonpath([resolved, root]) != root:
+        logger.warning("refusing to purge outside %s: %s", root, path)
+        return None
+
+    try:
+        os.remove(resolved)
+        return os.path.basename(resolved)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        logger.warning("purge failed for %s: %s", path, e)
+        return None
+
+
 @router.delete("/api/assets/{source}/{asset_id}")
 def delete_asset(source: str, asset_id: str,
+                 purge: bool = Query(False,
+                                     description="also unlink the file on disk"),
                  authorization: str | None = Header(None)):
-    """Hide an asset. Soft in both tables.
+    """Hide an asset, and with `purge=true` delete its file too.
 
-    A job row is never destroyed: something2 may still poll that id, and a 404
-    on a job it was told to expect is a worse outcome than a hidden thumbnail.
-    The file on disk is left alone for the same reason.
+    A job ROW is never destroyed either way: something2 may still poll that id,
+    and a 404 on a job it was told to expect is a worse outcome than a hidden
+    thumbnail.
+
+    `purge` is the difference between reclaiming the listing and reclaiming the
+    disk. It is opt-in because it is the half that cannot be undone, and
+    because a something2 that polls afterwards gets a job whose `sheet_url` no
+    longer resolves - which is precisely why hiding leaves the file alone.
     """
     auth.require(authorization, "generate")
 
     if source not in SOURCES:
         raise HTTPException(status_code=400, detail=f"unknown source {source!r}")
 
+    # Paths are read before the UPDATE and unlinked after the transaction
+    # commits: a file removed against a row that then fails to commit would
+    # leave a visible asset pointing at nothing.
+    paths: list[str | None] = []
+
     with _db() as conn, conn.cursor() as cur:
         if source == "image":
             if not asset_id.isdigit():
                 raise HTTPException(status_code=400,
                                     detail="image ids are integers")
+            cur.execute("SELECT file_path FROM sprite_images "
+                        "WHERE id = %s AND deleted = false", (int(asset_id),))
+            row = cur.fetchone()
+            paths = list(row) if row else []
             cur.execute("UPDATE sprite_images SET deleted = true "
                         "WHERE id = %s AND deleted = false", (int(asset_id),))
         else:
+            cur.execute("SELECT sheet_path, atlas_path FROM jobs "
+                        "WHERE id = %s::uuid AND deleted = false", (asset_id,))
+            row = cur.fetchone()
+            paths = list(row) if row else []
             cur.execute("UPDATE jobs SET deleted = true "
                         "WHERE id = %s::uuid AND deleted = false", (asset_id,))
 
         if cur.rowcount == 0:
             raise HTTPException(status_code=404,
                                 detail="no such visible asset")
-    return {"deleted": {"source": source, "id": asset_id}}
+
+    purged = [n for n in (_purge_file(p) for p in paths) if n] if purge else []
+    return {"deleted": {"source": source, "id": asset_id}, "purged": purged}

@@ -39,9 +39,9 @@ BASE_MODEL = "stabilityai/stable-diffusion-xl-base-1.0"
 # front is cheaper than discovering it after an hour of GPU time.
 MIN_IMAGES = 8
 
-# The three reference tabs. Kept here rather than imported from references.py
+# The four reference tabs. Kept here rather than imported from references.py
 # so the API process does not need that module loaded to validate a request.
-REFERENCE_KINDS = ("core", "sprite", "tile")
+REFERENCE_KINDS = ("core", "sprite", "tile", "map")
 
 # Where scripts/train-lora.py writes adapters. Kept beside the HF cache rather
 # than inside it so archive-models.sh cannot sweep the most expensive artefact
@@ -79,6 +79,7 @@ class TrainRequest(BaseModel):
     #
     #     kinds=["core", "sprite"]  -> a character style adapter
     #     kinds=["tile"]            -> a ground/terrain adapter
+    #     kinds=["map"]             -> a world-map adapter
     #
     # Nothing stops you combining them; `mixed_kinds` in the response says so
     # rather than silently letting it happen.

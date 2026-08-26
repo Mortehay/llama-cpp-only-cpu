@@ -151,7 +151,7 @@ export interface Asset {
   atlas_url: string | null
 }
 
-export type ReferenceKind = 'core' | 'sprite' | 'tile'
+export type ReferenceKind = 'core' | 'sprite' | 'tile' | 'map'
 
 export interface Reference {
   id: string
@@ -195,7 +195,14 @@ export interface StyleProfile {
 }
 
 export interface Job {
-  id: string
+  /**
+   * The server calls this `job_id`, not `id` — see `_row_to_job` in jobs.py.
+   * It is the same name `POST /api/jobs` returns and the name something2 polls
+   * on, so the contract is right and the client was wrong. Declaring `id` here
+   * typed a field that never arrives, so `job.id.slice(0, 8)` threw on the
+   * first poll of every job and took the whole tab down with it.
+   */
+  job_id: string
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   kind?: string
   progress_pct: number
@@ -279,6 +286,16 @@ export interface Core {
   id: number
   file_path: string
   prompt: string
+  created_at?: string | null
+}
+
+export interface CoreList {
+  items: Core[]
+  total: number
+  limit: number
+  offset: number
+  /** Tags mined from every core prompt, most used first, for the search box. */
+  suggestions: string[]
 }
 
 // --- calls ----------------------------------------------------------------
@@ -305,8 +322,17 @@ export const api = {
   },
   assetKinds: () =>
     request<{ groups: { source: string; kind: string; n: number }[] }>('/api/assets/kinds'),
-  deleteAsset: (source: string, id: string) =>
-    request<unknown>(`/api/assets/${source}/${id}`, { method: 'DELETE' }),
+  /**
+   * Hide an asset, or with `purge` delete its file from disk too.
+   *
+   * The job row survives either way - something2 may still be polling that id.
+   * `purge` is what reclaims the disk, and it is the half that cannot be undone.
+   */
+  deleteAsset: (source: string, id: string, purge = false) =>
+    request<{ deleted: { source: string; id: string }; purged: string[] }>(
+      `/api/assets/${source}/${id}${purge ? '?purge=true' : ''}`,
+      { method: 'DELETE' },
+    ),
 
   references: (kind?: ReferenceKind) =>
     request<ReferenceList>(`/api/references${kind ? `?kind=${kind}` : ''}`),
@@ -401,7 +427,18 @@ export const api = {
       tile: { w: number; h: number; ratio: number }
       projection: string
     }>("/api/tiles", { method: "POST", body: JSON.stringify(body) }),
-  cores: () => request<Core[]>('/api/cores'),
+  /**
+   * Entities, newest first. Paged since the server stopped hard-capping at 24
+   * rows; pass `q` to filter by prompt substring.
+   */
+  cores: (params: { q?: string; limit?: number; offset?: number } = {}) => {
+    const qs = new URLSearchParams()
+    if (params.q) qs.set('q', params.q)
+    if (params.limit != null) qs.set('limit', String(params.limit))
+    if (params.offset) qs.set('offset', String(params.offset))
+    const s = qs.toString()
+    return request<CoreList>(`/api/cores${s ? `?${s}` : ''}`)
+  },
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),
 

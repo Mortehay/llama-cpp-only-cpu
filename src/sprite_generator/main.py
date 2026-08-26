@@ -9,7 +9,7 @@ import random
 from urllib.parse import urlparse
 from PIL import Image
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi import FastAPI, Form, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -525,28 +525,85 @@ async def crop_sprite(request: Request,
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# The vocabulary the Entity search box autocompletes against. Prompts here are
+# comma-separated tags ("green zombie, tattered clothes, pixel art"), so the
+# useful unit is the tag, not the whole prompt: nobody remembers the exact
+# sentence they typed a fortnight ago, but they do recognise "tattered clothes"
+# when it is offered. Ranked by how often a tag has actually been used, which
+# puts this project's real vocabulary first rather than an alphabet.
+CORE_SUGGEST_SQL = """
+    SELECT term FROM (
+        SELECT regexp_replace(lower(btrim(term)), '^cropped:[[:space:]]*', '') AS term,
+               count(*) AS n
+        FROM sprite_images, LATERAL unnest(string_to_array(prompt, ',')) AS tag(term)
+        WHERE image_type='core' AND deleted = false AND prompt IS NOT NULL
+        GROUP BY 1
+    ) s
+    WHERE length(term) BETWEEN 3 AND 40
+    ORDER BY n DESC, term ASC
+    LIMIT 40
+"""
+
+
 @app.get("/api/cores")
-def get_cores(authorization: str | None = Header(None)):
-    # One of the endpoints that ENUMERATES image filenames. That matters more
-    # than it looks: the /images mount is deliberately left unauthenticated, and
-    # the argument for that is only sound while no unauthenticated caller can
-    # discover a name to ask for. Keep this authenticated.
+def get_cores(q: str | None = Query(None, description="substring of the prompt"),
+              limit: int = Query(24, ge=1, le=200),
+              offset: int = Query(0, ge=0),
+              authorization: str | None = Header(None)):
+    """Entities, newest first, searchable and paged.
+
+    This used to return a bare list hard-capped at 24 rows, which is why the
+    Entity tab could only ever show the two dozen newest: everything older was
+    generated, stored, and then unreachable from the UI. `total` comes back
+    with the page so the pager can say "24 of 137" without a second round trip.
+
+    One of the endpoints that ENUMERATES image filenames. That matters more
+    than it looks: the /images mount is deliberately left unauthenticated, and
+    the argument for that is only sound while no unauthenticated caller can
+    discover a name to ask for. Keep this authenticated.
+    """
     auth.require(authorization, "read")
+    empty = {"items": [], "total": 0, "limit": limit, "offset": offset,
+             "suggestions": []}
     conn = get_db()
-    if not conn: return []
+    if not conn: return empty
+
+    where = ["image_type='core'", "file_path IS NOT NULL", "deleted = false"]
+    params: list = []
+    if q:
+        where.append("prompt ILIKE %s")
+        params.append(f"%{q}%")
+    clause = " AND ".join(where)
+
     try:
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, file_path, prompt 
-                FROM sprite_images 
-                WHERE image_type='core' AND file_path IS NOT NULL AND deleted = false
-                ORDER BY timestamp DESC LIMIT 24
-            """)
+            cur.execute(f"SELECT count(*) FROM sprite_images WHERE {clause}",
+                        params)
+            total = cur.fetchone()[0]
+
+            cur.execute(
+                f"SELECT id, file_path, prompt, timestamp FROM sprite_images "
+                f"WHERE {clause} ORDER BY timestamp DESC, id DESC LIMIT %s OFFSET %s",
+                params + [limit, offset])
             cols = [desc[0] for desc in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            items = []
+            for row in cur.fetchall():
+                r = dict(zip(cols, row))
+                ts = r.pop("timestamp", None)
+                r["created_at"] = ts.isoformat() if ts else None
+                items.append(r)
+
+            # Deliberately NOT filtered by `q`: the suggestions are the whole
+            # vocabulary to search within, so narrowing them by what has been
+            # typed so far would remove exactly the terms still worth offering.
+            cur.execute(CORE_SUGGEST_SQL)
+            suggestions = [row[0] for row in cur.fetchall()]
+
+            return {"items": items, "total": total, "limit": limit,
+                    "offset": offset, "suggestions": suggestions}
     except Exception as e:
         print(f"Error fetching cores: {e}")
-        return []
+        return empty
     finally: conn.close()
 
 @app.delete("/api/task/{id}")

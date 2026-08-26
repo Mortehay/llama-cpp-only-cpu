@@ -296,3 +296,39 @@ def default_model() -> str:
         if entry.get("default"):
             return entry["value"]
     return CORE_MODELS[0]["value"]
+
+
+def trigger_for(value: str) -> str | None:
+    """The trigger token a roster value needs in its prompt, or None.
+
+    A trained adapter is inert without its trigger: the LoRA loads, fuses, and
+    produces plain base-model output, with nothing anywhere saying why. The
+    token is a property of the ADAPTER, so every client having to know it is a
+    design that leaks - something2 would need a lookup table that goes stale the
+    moment an adapter is retrained under a new trigger.
+    """
+    for part in (value or "").split("+"):
+        part = part.strip()
+        if not part.startswith(LOCAL_PREFIX):
+            continue
+        name = part[len(LOCAL_PREFIX):]
+        for lora in trained_loras():
+            if lora["name"] == name:
+                return lora["trigger"]
+        return f"<{name}-style>"
+    return None
+
+
+def apply_trigger(value: str, prompt: str) -> str:
+    """Prepend the adapter's trigger to `prompt` unless it is already there.
+
+    Idempotent on purpose. A caller that DOES know the trigger and sends it
+    should not get it twice - a doubled token skews the conditioning toward it
+    rather than strengthening it.
+    """
+    trigger = trigger_for(value)
+    if not trigger:
+        return prompt
+    if trigger.lower() in (prompt or "").lower():
+        return prompt
+    return f"{trigger}, {prompt}" if prompt else trigger

@@ -10,7 +10,7 @@ is reliable about. They are, however, directly measurable from a single example.
 So the reference tabs do not just store examples. They measure them, and the
 measurements become hard constraints on the conveyor.
 
-Three kinds, three different questions:
+Four kinds, four different questions:
 
     tile    What camera does this world use?  A ground tile's diamond is a
             direct readout of the projection angle. This is the highest-value
@@ -21,6 +21,10 @@ Three kinds, three different questions:
 
     core    Is this a usable character concept at all? Delegated to
             `concept.judge`, which already answers exactly that.
+
+    map     What colours does this world's terrain come in? Median-cut into
+            candidate terrains, which become the default palette a map's
+            terrain set is forced to.
 
 WHAT THIS DELIBERATELY DOES NOT MEASURE
 
@@ -39,11 +43,20 @@ import numpy as np
 from PIL import Image
 
 import concept as concept_lib
+import pixelate
 
 # The camera vocabulary Qwen was trained on, in degrees. Measurement produces a
 # continuous angle; generation needs one of these four words, so the angle is
 # snapped to the nearest. Kept in sync with qwen_edit.ELEVATIONS by name.
 ELEVATION_DEGREES = {"low": -30.0, "eye": 0.0, "elevated": 30.0, "high": 60.0}
+
+# Candidate terrains read off a map reference. A world with more ground types
+# than this is not one the tile stage can build a set for.
+TERRAIN_PALETTE_N = 12
+
+# Below this CIELAB distance two candidate terrains cannot be quantised apart,
+# so they would collapse into a single tile id.
+TERRAIN_MIN_LAB_SEPARATION = 12.0
 
 # Below this fraction of transparent pixels a "tile" is treated as a full-bleed
 # rectangle rather than a diamond, and its aspect is measured from the image.
@@ -391,7 +404,77 @@ def measure_core(path_or_image) -> dict:
     }
 
 
-MEASURERS = {"tile": measure_tile, "sprite": measure_sprite, "core": measure_core}
+def _min_lab_separation(palette: np.ndarray) -> float:
+    """Smallest pairwise CIELAB distance in a palette; inf for fewer than two."""
+    if len(palette) < 2:
+        return float("inf")
+    lab = pixelate.srgb_to_lab(palette)
+    d = lab[:, None, :] - lab[None, :, :]
+    dist = np.sqrt(np.einsum("ijk,ijk->ij", d, d))
+    np.fill_diagonal(dist, np.inf)
+    return float(dist.min())
+
+
+def measure_map(path_or_image) -> dict:
+    """Read candidate terrain colours off an example map.
+
+    A map reference answers "what colours does this world's terrain come in?".
+    Those become the defaults a map's terrain set is forced to, which is what
+    makes a tile id a lookup rather than a nearest-match - see
+    `.ai/specs/maps/plan.md` section 0.
+
+    Unlike `measure_sprite`, a large colour count is NOT a defect here. A
+    painted reference map legitimately uses thousands, so it is median-cut into
+    candidate terrains rather than rejected. Gating on colour count is the
+    mistake migration 014 had to undo for sprites, where it rejected 100 of 106
+    real references.
+
+    What can fail is SEPARATION. Two candidates closer than
+    `TERRAIN_MIN_LAB_SEPARATION` cannot be quantised apart, so they would share
+    a tile id and the built map would show one terrain where the reference
+    shows two.
+    """
+    img = _rgba(path_or_image)
+    arr = np.asarray(img)
+
+    if not (arr[..., 3] >= 128).any():
+        return {"usable": False, "why": "map is fully transparent",
+                "metrics": {}, "trainable": False,
+                "trainable_why": "nothing visible - fully transparent"}
+
+    pal = palette_of(arr)
+    prof = alpha_profile(arr)
+
+    terrains = pixelate.extract_palette(img, TERRAIN_PALETTE_N)
+    separation = _min_lab_separation(terrains)
+
+    metrics = {
+        "image_w": img.width, "image_h": img.height,
+        "aspect": round(img.width / max(img.height, 1), 3),
+        "terrains": len(terrains),
+        "terrain_palette": [f"#{r:02x}{g:02x}{b:02x}" for r, g, b in terrains],
+        "terrain_separation": (None if separation == float("inf")
+                               else round(separation, 1)),
+        **pal, **prof,
+    }
+
+    reasons = []
+    if len(terrains) < 2:
+        reasons.append("only one colour - there is no terrain to tell apart")
+    elif separation < TERRAIN_MIN_LAB_SEPARATION:
+        reasons.append(f"closest two terrains are {separation:.1f} apart in "
+                       f"Lab, under {TERRAIN_MIN_LAB_SEPARATION} - they would "
+                       f"quantise into one tile")
+
+    return {"usable": not reasons, "metrics": metrics,
+            "why": "; ".join(reasons) or
+                   (f"{len(terrains)} candidate terrains, closest pair "
+                    f"{separation:.1f} apart in Lab"),
+            **judge_trainable(img, arr)}
+
+
+MEASURERS = {"tile": measure_tile, "sprite": measure_sprite,
+             "core": measure_core, "map": measure_map}
 
 
 def measure(kind: str, path_or_image) -> dict:

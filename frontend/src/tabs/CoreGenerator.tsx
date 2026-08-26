@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, imageUrl } from '../api'
-import { useAsync, usePoll } from '../hooks'
+import { useAsync, useDebounced, usePoll } from '../hooks'
 import TaskQueue from '../components/TaskQueue'
 import EditPanel from '../components/EditPanel'
 import CropModal from '../components/CropModal'
+
+/** Thumbnails per page. The server caps a page at 200. */
+const PAGE = 24
 
 /**
  * Step 1: one entity - character, creature, prop or item.
@@ -19,7 +22,6 @@ import CropModal from '../components/CropModal'
  */
 export default function CoreGenerator() {
   const models = useAsync(() => api.coreModels(), [])
-  const cores = useAsync(() => api.cores(), [])
 
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
@@ -27,6 +29,21 @@ export default function CoreGenerator() {
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [cropping, setCropping] = useState<{ id: number; url: string } | null>(null)
+
+  // The list used to be whatever the server's hard-coded LIMIT 24 returned, so
+  // entity 25 onwards existed on disk and in the database but could not be
+  // reached from anywhere in the UI. It is searched and paged server side now;
+  // `q` is debounced because every change to it is a query.
+  const [q, setQ] = useState('')
+  const [offset, setOffset] = useState(0)
+  const search = useDebounced(q)
+  const cores = useAsync(
+    () => api.cores({ q: search || undefined, limit: PAGE, offset }),
+    [search, offset],
+  )
+
+  const total = cores.data?.total ?? 0
+  const shown = cores.data?.items.length ?? 0
 
   // Default to whichever model the roster marks default AND available; an
   // archived checkpoint is rendered but not selectable, because the failure it
@@ -38,24 +55,40 @@ export default function CoreGenerator() {
     if (d) setModel(d.value)
   }, [models.data, model])
 
-  // The concept lands in the DB when the worker finishes, so poll the list
+  // The entity lands in the DB when the worker finishes, so poll the list
   // rather than the task: it is the thing the user is actually waiting for.
   usePoll(() => cores.reload(), 4000, busy)
 
-  const initialCount = cores.data?.length ?? 0
+  // The unfiltered row count at the moment the job was queued. Unfiltered on
+  // purpose: comparing against the *visible* count would make "is it done
+  // yet?" depend on the search box, so a filtered list would never grow and
+  // the button would stay on "Generating..." forever.
+  const countAtQueue = useRef<number | null>(null)
   useEffect(() => {
-    if (busy && (cores.data?.length ?? 0) > initialCount) {
+    if (!busy || countAtQueue.current === null) return
+    if (total > countAtQueue.current) {
+      countAtQueue.current = null
       setBusy(false)
       setStatus('Entity ready.')
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cores.data])
+  }, [total, busy])
 
   async function generate() {
     setBusy(true)
     setError(null)
     setStatus('Queued — the first run also loads the checkpoint, so allow a few minutes.')
+    // Show the list the new entity will actually arrive in, rather than
+    // leaving the user on page 3 of a filter it may not match.
+    setQ('')
+    setOffset(0)
     try {
+      // `limit: 1` because only `total` is wanted: the baseline the poll above
+      // compares against. A failure here costs the "Entity ready." message,
+      // not the generation, so it degrades to null rather than throwing.
+      countAtQueue.current = await api
+        .cores({ limit: 1 })
+        .then((r) => r.total)
+        .catch(() => null)
       await api.generateCore(prompt.trim(), model)
       cores.reload()
     } catch (e) {
@@ -111,13 +144,63 @@ export default function CoreGenerator() {
       <div className="card">
         <h2>Entities</h2>
         <p className="hint">
-          The most recent entities, newest first. Pick one on the Spritesheet tab.
-          Tiles are listed separately, on the Tiles tab.
+          Every entity generated so far, newest first. Pick one on the Spritesheet
+          tab. Tiles are listed separately, on the Tiles tab.
         </p>
+
+        <div className="row tight" style={{ marginBottom: 14 }}>
+          <div style={{ flex: '2 1 240px' }}>
+            <label htmlFor="core-q">Search prompt</label>
+            <input
+              id="core-q"
+              type="text"
+              list="core-terms"
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value)
+                setOffset(0)
+              }}
+              placeholder="zombie, tattered clothes…"
+            />
+            {/* The tags actually used in this project's prompts, most used
+                first. Typing one letter offers them, so nobody has to recall
+                the exact wording of a prompt from a fortnight ago. */}
+            <datalist id="core-terms">
+              {cores.data?.suggestions.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+          </div>
+          <div style={{ flex: '0 0 auto' }}>
+            <button className="btn ghost" onClick={cores.reload}>
+              Refresh
+            </button>
+          </div>
+          {q && (
+            <div style={{ flex: '0 0 auto' }}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setQ('')
+                  setOffset(0)
+                }}
+              >
+                Clear
+              </button>
+            </div>
+          )}
+        </div>
+
         {cores.error && <div className="note err">{cores.error}</div>}
-        {cores.data?.length === 0 && <div className="empty">No entities yet.</div>}
+        {cores.loading && !cores.data && <div className="empty">Loading…</div>}
+        {cores.data && total === 0 && (
+          <div className="empty">
+            {search ? `Nothing matches "${search}".` : 'No entities yet.'}
+          </div>
+        )}
+
         <div className="grid">
-          {cores.data?.map((c) => (
+          {cores.data?.items.map((c) => (
             <div className="thumb" key={c.id}>
               <div className="pic">
                 <img src={imageUrl(c.file_path)} alt={c.prompt} loading="lazy" />
@@ -126,6 +209,9 @@ export default function CoreGenerator() {
                 <div className="name" title={c.prompt}>
                   {c.prompt}
                 </div>
+                {c.created_at && (
+                  <div className="why">{new Date(c.created_at).toLocaleString()}</div>
+                )}
                 <div className="acts">
                   <button
                     className="btn ghost sm"
@@ -138,6 +224,29 @@ export default function CoreGenerator() {
             </div>
           ))}
         </div>
+
+        {total > 0 && (
+          <div className="row" style={{ marginTop: 16, justifyContent: 'space-between' }}>
+            <button
+              className="btn ghost"
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - PAGE))}
+            >
+              ← Previous
+            </button>
+            <span className="muted" style={{ textAlign: 'center' }}>
+              {offset + 1}-{offset + shown} of {total}
+              {search ? ` matching "${search}"` : ''}
+            </span>
+            <button
+              className="btn ghost"
+              disabled={offset + PAGE >= total}
+              onClick={() => setOffset(offset + PAGE)}
+            >
+              Next →
+            </button>
+          </div>
+        )}
       </div>
 
       <TaskQueue />

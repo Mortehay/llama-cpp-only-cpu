@@ -14,7 +14,15 @@ import { useAsync, usePoll } from '../hooks'
  * button, not the tab total.
  */
 export default function TrainPanel({ kind }: { kind: ReferenceKind }) {
-  const suggested = kind === 'tile' ? 'something2-terrain' : 'something2'
+  // One adapter per kind: a shared trigger cannot mean "character" and
+  // "ground" and "world map" at once.
+  const SUGGESTED: Record<ReferenceKind, string> = {
+    tile: 'something2-terrain',
+    map: 'something2-maps',
+    core: 'something2',
+    sprite: 'something2',
+  }
+  const suggested = SUGGESTED[kind]
   const [name, setName] = useState(suggested)
   const [fullRetrain, setFullRetrain] = useState(false)
   const [busy, setBusy] = useState(false)

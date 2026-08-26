@@ -31,17 +31,36 @@ DEFAULT_TILE_W = 64
 def diamond_mask(width: int, height: int) -> Image.Image:
     """An 'L' mask holding the tile rhombus.
 
-    The four points land exactly on the edge midpoints, which is what makes
-    adjacent tiles interlock without a seam. Drawn with width-1/height-1 so the
-    points sit ON the last pixel rather than one past it - an off-by-one here
-    leaves a transparent hairline down two sides of every tile, invisible on
-    one tile and obvious across a field of them.
+    Built row by row rather than as a polygon, because tessellation is a
+    property of the ROWS and polygon rasterisation does not respect it. Tiles
+    are laid on a (width/2, height/2) lattice, so a row and the row half a tile
+    below it must together span exactly one tile:
+
+        w(y) + w(y + height/2) == width      for every y
+
+    Each row is measured from its own midline (y + 0.5), which makes the top
+    and bottom halves exact mirrors and gives a mask of exactly
+    width*height/2 opaque pixels.
+
+    The previous polygon put its vertices at (width-1, height/2) and
+    (width/2, height-1) to keep them "on the last pixel". That made the diamond
+    asymmetric - measured row widths 1,5,9,13,16,20,24,28,32,28,23,... summing
+    to 248 of the required 256 - so w(0) + w(8) was 33, not 32, and a field of
+    tiles showed transparent pinholes along every other diagonal. Invisible on
+    one tile, obvious across a map.
     """
     mask = Image.new("L", (width, height), 0)
-    ImageDraw.Draw(mask).polygon(
-        [(width // 2, 0), (width - 1, height // 2),
-         (width // 2, height - 1), (0, height // 2)],
-        fill=255)
+    draw = ImageDraw.Draw(mask)
+    centre = width / 2
+
+    for y in range(height):
+        rows_from_edge = (y + 0.5) if y < height / 2 else (height - y - 0.5)
+        half_w = rows_from_edge * width / height
+        x0 = int(round(centre - half_w))
+        x1 = int(round(centre + half_w))
+        if x1 > x0:
+            draw.line([(max(0, x0), y), (min(width, x1) - 1, y)], fill=255)
+
     return mask
 
 

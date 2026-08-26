@@ -152,6 +152,15 @@ textarea { resize: vertical; min-height: 72px; }
 .thumb .meta .name {
   font-size: 12px; font-weight: 600; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis;
+  /* A button, so the full prompt is reachable by keyboard too - styled back
+     down to the plain text it replaced. */
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; padding: 0; color: inherit; font-family: inherit;
+}
+.thumb .meta .name:hover { text-decoration: underline; }
+.thumb .meta .name.open {
+  white-space: normal; overflow: visible; text-overflow: clip;
+  word-break: break-word;
 }
 .thumb .meta .why { font-size: 11px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
 .thumb .acts { display: flex; gap: 6px; margin-top: 8px; }

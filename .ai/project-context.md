@@ -44,6 +44,25 @@ The first external consumer is the admin panel of
 >   the cheaper answer, and training is only worth revisiting if that is
 >   measured to be insufficient.
 
+> **Extended by [decisions/0007](decisions/0007-maps-paint-then-quantize.md)
+> (2026-08-26): a fourth deliverable, maps.** A map is a walkable tilemap and a
+> picture that agree, built by painting a low-res biome layout with a trained
+> LoRA and quantizing it to terrain tiles. Three consequences reach the rest of
+> this document:
+>
+> - **Maps and tiles share one blocker, and it is not map-shaped.** something2
+>   is sync-only, so `POST /api/tiles` (202 + poll) is already "not connectable
+>   today". Maps inherit it. Both are unblocked by the same thing - a sync
+>   cache-reader facade here, or their SOMET-334 - and neither by map-specific
+>   work.
+> - **An LLM re-enters the stack, on the CPU.** It writes a ~2 KB region graph
+>   (towns, roads, landmarks) and never tile coordinates. It must not be moved
+>   onto the card: the GGUF and SDXL do not coexist in 12 GB.
+> - **"Map" is now the third badly overloaded word** in this codebase, after
+>   "core" and "task". See [domain.md](domain.md) before writing map code -
+>   *biome painting*, *tilemap*, *region graph* and *map picture* are four
+>   different objects and two of them are PNGs.
+
 ## Measured hardware (2026-08-19)
 
 These are measured, not assumed, and several are binding constraints:

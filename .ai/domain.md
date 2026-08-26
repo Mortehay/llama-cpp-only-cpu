@@ -114,3 +114,51 @@ so do not use "trigger" for both.
 
 Worth separating because a bug can be in the keypoints (wrong anatomy) or in the
 rendering and fitting (right anatomy, landed off the character).
+
+## "Map" is overloaded - five meanings, and it is the worst one yet
+
+Third in the series after "core" and "task", and written down *before* the code
+exists rather than after it hurt. Five distinct objects are in scope during a
+single map build, and four of them are things a person would casually call
+"the map":
+
+| Term | Means | Produced by |
+|---|---|---|
+| **Biome painting** | The low-res diffusion output. A few dozen pixels square, palette-locked, one colour per terrain. Not art anyone looks at - it is the LAYOUT in visual form | the map LoRA, one denoise |
+| **Tilemap** | The quantized terrain grid: `layers[[tile ids]]`. What makes ground walkable | quantizing the biome painting |
+| **Region graph** | The LLM's semantic output. Tens of items - regions, roads, landmarks - never coordinates for hundreds of props | CPU llama.cpp |
+| **Map picture** | The composited preview PNG. The only one that crosses something2's AI connector | compositing tiles + entity placements |
+| **World / level** | something2's own noun for the thing it renders. Not ours | something2 |
+
+**Rule:** never say bare "map" where two are in scope. The dangerous pair is
+*biome painting* and *map picture* - both are PNGs, both are "the map image",
+and they are at opposite ends of the pipeline at wildly different resolutions.
+Confusing them means compositing the layout or quantizing the artwork.
+
+Note the inversion that makes this design work and reads as backwards: the
+**biome painting is data** and the **map picture is derived**. A wrong reading
+here inverts the dependency and produces a picture the ground does not match -
+the exact property the design exists to guarantee.
+
+## Entity asset vs entity placement
+
+The Entity Generation tab produces **entity assets** - sprites, rows in the
+asset list, generated once and reused. A map contains **entity placements** -
+`{asset, x, y}` referring to one. One asset, many placements, across many maps.
+
+Kept apart because "generate the entities for this map" is ambiguous across a
+30-second reference lookup and five hours of GPU. Bare "entity" is fine in the
+generation tab, where only assets exist, and never fine in map code, where both
+do.
+
+## Provisional (of a map)
+
+A map whose terrain is final but whose entity placements are not all satisfied:
+some referenced asset does not exist yet and has a queued generation job behind
+it. Served, not withheld - `complete: false` plus a `pending` list, with
+placeholder art standing in.
+
+**Provisional is not "failed" and not "in progress".** The map is complete
+enough to walk on and will improve without being re-requested. A caller that
+treats it as an error abandons a usable map; a caller that treats it as final
+caches a placeholder forever.
