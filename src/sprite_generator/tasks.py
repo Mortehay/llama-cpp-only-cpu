@@ -2365,6 +2365,7 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
 
     duration_ms = (time.time() - start_time) * 1000
 
+    cutout_stats = None
     if strip_background:
         img = remove_background(img)
 
@@ -2378,12 +2379,36 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         import numpy as _np
         alpha = _np.asarray(img.convert("RGBA"))[..., 3]
         clear = float((alpha < 128).mean())
+
+        # ONLY THE UNAMBIGUOUS CASES ARE REFUSED HERE. Two attempts at detecting
+        # a subtler failure were written and measured and BOTH were wrong:
+        #
+        #   "under 2% transparent means it failed" - a full-frame grass texture
+        #   came back 15.6% transparent, sailing past the floor. The flood fill
+        #   had chewed 15.6% off a texture's edges, which is not a cutout.
+        #
+        #   "a real cutout has a clear border ring" - backwards twice over. A
+        #   legitimate tree cutout measured 54.3% transparent with only 40% of
+        #   its border clear, because the subject touched all four edges; while
+        #   the chewed grass scored HIGH, since flood fill removes only
+        #   border-connected pixels and so always clears the border it ate.
+        #
+        # "Object cut out" versus "texture with its edges eaten" is not
+        # recoverable from alpha statistics, and a third guess would be a third
+        # confident wrong answer. So: refuse what is certainly broken, measure
+        # the rest, and hand the numbers to the caller who knows what they asked
+        # for.
+        transparent = alpha < 128
+        ring = _np.zeros_like(transparent)
+        ring[0, :] = ring[-1, :] = True
+        ring[:, 0] = ring[:, -1] = True
+        border_clear = float(transparent[ring].mean())
+
         if clear < 0.02:
             return {"error": (
-                "cutout failed: only %.1f%% of the image is transparent, so the "
-                "subject is not separable from its background - it probably "
-                "touches every edge, or the background is not a flat colour. "
-                "Retry with a prompt that isolates the subject, or request "
+                "cutout produced no transparency (%.1f%%): the subject is not "
+                "separable from its background. This would be an opaque square. "
+                "Reword to isolate the subject on a flat background, or request "
                 "without cutout." % (clear * 100)),
                 "error_kind": "cutout_failed"}
         if clear > 0.97:
@@ -2393,7 +2418,10 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
                 "which happens when subject and background share a colour."
                 % (clear * 100)),
                 "error_kind": "cutout_failed"}
-        logger.info("cutout: %.1f%% transparent", clear * 100)
+        logger.info("cutout: %.1f%% transparent, border %.0f%% clear",
+                    clear * 100, border_clear * 100)
+        cutout_stats = {"transparent_pct": round(clear * 100, 1),
+                        "border_clear_pct": round(border_clear * 100, 1)}
 
     filename = f"raw_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
@@ -2406,6 +2434,9 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         "url": f"/images/{filename}",
         "seed": seed,
         "duration_ms": duration_ms,
+        # Surfaced so the CALLER can apply its own policy. It knows whether it
+        # asked for a tree or a texture; this process only knows the numbers.
+        **({"cutout": cutout_stats} if strip_background else {}),
     }
 
 

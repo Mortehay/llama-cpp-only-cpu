@@ -329,5 +329,9 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
             "height": height,
             "steps": req.steps,
             "duration_ms": result.get("duration_ms"),
+            # Present only when a cutout was requested. The caller knows
+            # whether it asked for an object or a texture; this service only
+            # knows the pixels, so it reports them rather than guessing.
+            **({"cutout": result["cutout"]} if result.get("cutout") else {}),
         }),
     }
