@@ -734,7 +734,8 @@ def _is_sdxl_checkpoint(llm_name: str) -> bool:
 
 
 def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
-                    pipeline_type: str = "text2img", controlnet: str = None):
+                    pipeline_type: str = "text2img", controlnet: str = None,
+                    lora_scale: float = None):
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
@@ -761,7 +762,25 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
     # with and without one are different objects, and keying them the same
     # hands back a plain img2img pipeline that rejects control_image. The LoRA
     # is part of that identity for the same reason.
-    cache_key = f"{llm_name}_{pipeline_type}_{controlnet or 'none'}_{lora or 'nolora'}"
+    # How strongly the LoRA's delta is folded into the base. 1.0 is full
+    # strength; below ~0.6 the base's prompt adherence starts to win back.
+    #
+    # This matters because an over-trained adapter BULLDOZES the prompt: both
+    # adapters trained here learned "grid of bordered cells" from contact-sheet
+    # references and reproduced that lattice whatever they were asked for. A
+    # scale is not a fix for a bad dataset, but it is the dial that says how
+    # much of the adapter you want at all.
+    if lora_scale is None:
+        lora_scale = float(os.environ.get("LORA_FUSE_SCALE", "1.0"))
+    lora_scale = max(0.0, min(2.0, float(lora_scale)))
+
+    # The scale is part of the pipeline IDENTITY, not a render-time argument:
+    # fuse_lora folds the delta into the base weights permanently. Leaving it
+    # out of the key would hand back the previously fused pipeline and silently
+    # ignore the new scale - the change would appear to do nothing, which is
+    # the worst possible way for a tuning knob to fail.
+    cache_key = (f"{llm_name}_{pipeline_type}_{controlnet or 'none'}_"
+                 f"{lora or 'nolora'}_s{lora_scale:g}")
     if cache_key in pipes:
         return pipes[cache_key]
         
@@ -920,8 +939,8 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
                         token=os.environ.get("HF_TOKEN") or None,
                         **lora_kwargs,
                     )
-                pipe.fuse_lora()
-                logger.info(f"LoRA '{lora}' fused.")
+                pipe.fuse_lora(lora_scale=lora_scale)
+                logger.info(f"LoRA '{lora}' fused at scale {lora_scale:g}.")
             except Exception as lora_err:
                 logger.warning(
                     f"Could not apply LoRA '{lora}' to '{llm_name}': "
@@ -2293,7 +2312,8 @@ def build_sheet_job(self, job_id: str):
 @celery_app.task(name="tasks.generate_raw_task", bind=True)
 def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
                       width: int, height: int, steps: int, cfg_scale: float,
-                      seed: int, strip_background: bool = False):
+                      seed: int, strip_background: bool = False,
+                      lora_scale: float = None):
     """Plain text2img with no prompt rewriting.
 
     Deliberately separate from generate_core_task, which prepends sprite-specific
@@ -2307,7 +2327,7 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     through the Redis result backend, and sheets can approach the 32MB cap.
     """
     task_id = self.request.id
-    p = get_sd_pipeline(llm_name)
+    p = get_sd_pipeline(llm_name, lora_scale=lora_scale)
     if not p:
         return {"error": f"Model '{llm_name}' failed to load"}
 

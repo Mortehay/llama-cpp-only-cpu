@@ -226,6 +226,14 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     # from its own tile and entity rows and have no business knowing what this
     # machine last trained. Idempotent, so a caller that does send the trigger
     # is not penalised with a doubled token.
+    # Optional, non-A1111: how strongly to fold the LoRA in. Clients that want
+    # less of an over-trained adapter can send override_settings.lora_scale.
+    raw_scale = req.override_settings.get("lora_scale")
+    try:
+        lora_scale = float(raw_scale) if raw_scale not in (None, "") else None
+    except (TypeError, ValueError):
+        lora_scale = None
+
     prompt = core_models.apply_trigger(model, req.prompt)
     if prompt != req.prompt:
         logger.info("txt2img: injected trigger for %s", model)
@@ -256,6 +264,8 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
         steps,
         cfg,
         req.seed,
+        False,
+        lora_scale,
     )
 
     try:
