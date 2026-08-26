@@ -63,31 +63,70 @@ const LABELS: Record<string, string> = {
   aspect: 'aspect',
 }
 
+/** Live counter while a drop is measured, one file at a time. */
+interface Progress {
+  done: number
+  total: number
+  current: string
+}
+
+/** What a finished drop was worth, in the terms the two verdicts use. */
+interface Report {
+  handed: number
+  accepted: number
+  trainable: number
+  measurable: number
+  rejected: { name: string; why: string }[]
+}
+
 export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
   const copy = COPY[kind]
   const list = useAsync(() => api.references(kind), [kind])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [over, setOver] = useState(false)
+  const [progress, setProgress] = useState<Progress | null>(null)
+  const [report, setReport] = useState<Report | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   async function upload(files: FileList | null) {
-    if (!files?.length) return
+    const picked = Array.from(files ?? [])
+    if (!picked.length) return
     setBusy(true)
     setError(null)
-    try {
-      // Sequential, not Promise.all: each upload runs a measurement, and a
-      // dozen at once would compete for the same CPU for no gain.
-      for (const file of Array.from(files)) {
-        await api.uploadReference(kind, file, file.name)
+    setReport(null)
+
+    const rejected: Report['rejected'] = []
+    let accepted = 0
+    let trainable = 0
+    let measurable = 0
+
+    // Sequential, not Promise.all: each upload runs a measurement, and a
+    // dozen at once would compete for the same CPU for no gain.
+    for (let i = 0; i < picked.length; i++) {
+      const file = picked[i]
+      setProgress({ done: i, total: picked.length, current: file.name })
+      try {
+        const ref = await api.uploadReference(kind, file, file.name)
+        accepted++
+        if (ref.trainable) trainable++
+        if (ref.usable) measurable++
+      } catch (e) {
+        // Caught per file, not per drop. One oversized JPEG in the middle of a
+        // dozen used to abort every upload after it, and nothing said so:
+        // twelve files handed over, four references stored, no explanation.
+        rejected.push({
+          name: file.name,
+          why: e instanceof Error ? e.message : String(e),
+        })
       }
-      list.reload()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-      if (fileInput.current) fileInput.current.value = ''
     }
+
+    setProgress(null)
+    setReport({ handed: picked.length, accepted, trainable, measurable, rejected })
+    setBusy(false)
+    if (fileInput.current) fileInput.current.value = ''
+    if (accepted) list.reload()
   }
 
   async function act(fn: () => Promise<unknown>) {
@@ -111,9 +150,11 @@ export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
 
         {error && <div className="note err">{error}</div>}
 
+        {report && <UploadReport report={report} kind={kind} />}
+
         <div
           className={`drop ${over ? 'over' : ''}`}
-          onClick={() => fileInput.current?.click()}
+          onClick={() => !busy && fileInput.current?.click()}
           onDragOver={(e) => {
             e.preventDefault()
             setOver(true)
@@ -122,13 +163,35 @@ export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
           onDrop={(e) => {
             e.preventDefault()
             setOver(false)
+            if (!e.dataTransfer.files.length) {
+              // A dropped folder arrives as zero files. Returning silently is
+              // indistinguishable from a dead drop zone, so it gets a count
+              // too - zero of zero, and why.
+              setReport({ handed: 0, accepted: 0, trainable: 0, measurable: 0, rejected: [] })
+              return
+            }
             void upload(e.dataTransfer.files)
           }}
         >
-          {busy ? 'Measuring…' : <>
-            <strong>Drop images here</strong>, or click to choose.
-            <div className="muted" style={{ marginTop: 6 }}>{copy.want}</div>
-          </>}
+          {progress ? (
+            <>
+              {/* A count, not a spinner. Measuring a drop of forty takes
+                  minutes, and an unchanging "Measuring…" is indistinguishable
+                  from a hang. */}
+              <strong>
+                Measuring {progress.done + 1} of {progress.total}
+              </strong>
+              <div className="muted" style={{ marginTop: 6 }}>{progress.current}</div>
+              <div className="bar">
+                <i style={{ width: `${(progress.done / progress.total) * 100}%` }} />
+              </div>
+            </>
+          ) : (
+            <>
+              <strong>Drop images here</strong>, or click to choose.
+              <div className="muted" style={{ marginTop: 6 }}>{copy.want}</div>
+            </>
+          )}
         </div>
         <input
           ref={fileInput}
@@ -198,6 +261,56 @@ export default function ReferenceTab({ kind }: { kind: ReferenceKind }) {
 
       <StyleProfilePanel onChange={list.reload} />
     </>
+  )
+}
+
+/**
+ * What the drop actually cost you. Uploading is the one place where the number
+ * of files that go in and the number of references that come out routinely
+ * differ - a file can be unreadable, oversized, or land as a reference that no
+ * profile will ever measure - and the grid below shows only the survivors, so
+ * without this the difference is invisible.
+ */
+function UploadReport({ report, kind }: { report: Report; kind: ReferenceKind }) {
+  const { handed, accepted, trainable, measurable, rejected } = report
+
+  if (handed === 0) {
+    return (
+      <div className="note warn">
+        <strong>Nothing to add — that drop carried no files.</strong>
+        <div style={{ marginTop: 4 }}>
+          A dropped folder arrives empty. Open it and drop the images inside it.
+        </div>
+      </div>
+    )
+  }
+
+  const tone = accepted === 0 ? 'err' : rejected.length > 0 ? 'warn' : 'ok'
+  return (
+    <div className={`note ${tone}`}>
+      <strong>
+        {accepted} of {handed} {handed === 1 ? 'image' : 'images'} added
+        {rejected.length > 0 && ` · ${rejected.length} rejected`}
+      </strong>
+      {accepted > 0 && (
+        <div style={{ marginTop: 4 }}>
+          Of those: <strong>{trainable}</strong> trainable,{' '}
+          <strong>{measurable}</strong> measurable.
+          {trainable === 0 && ` Nothing new to train a ${kind} style on.`}
+        </div>
+      )}
+      {rejected.length > 0 && (
+        <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+          {/* Keyed by position: a drop can carry two files of the same name
+              from different folders, and a duplicate key drops one row. */}
+          {rejected.map((r, i) => (
+            <li key={`${i}-${r.name}`}>
+              {r.name} — {r.why}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }
 
