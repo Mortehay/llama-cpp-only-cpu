@@ -2368,6 +2368,33 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     if strip_background:
         img = remove_background(img)
 
+        # A cutout that did not cut is the dangerous outcome, not a loud one.
+        #
+        # something2 composites entity images over terrain, so every one must be
+        # RGBA with a transparent surround. An opaque 512x512 square is a
+        # perfectly good picture of a tree and a field of grey blocks in the
+        # game, and nobody notices until a player looks at it. So measure the
+        # result and refuse rather than return it.
+        import numpy as _np
+        alpha = _np.asarray(img.convert("RGBA"))[..., 3]
+        clear = float((alpha < 128).mean())
+        if clear < 0.02:
+            return {"error": (
+                "cutout failed: only %.1f%% of the image is transparent, so the "
+                "subject is not separable from its background - it probably "
+                "touches every edge, or the background is not a flat colour. "
+                "Retry with a prompt that isolates the subject, or request "
+                "without cutout." % (clear * 100)),
+                "error_kind": "cutout_failed"}
+        if clear > 0.97:
+            return {"error": (
+                "cutout removed %.1f%% of the image - there is essentially no "
+                "subject left. The background flood fill consumed the subject, "
+                "which happens when subject and background share a colour."
+                % (clear * 100)),
+                "error_kind": "cutout_failed"}
+        logger.info("cutout: %.1f%% transparent", clear * 100)
+
     filename = f"raw_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)
     os.makedirs(IMAGES_DIR, exist_ok=True)

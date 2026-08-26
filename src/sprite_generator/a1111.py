@@ -153,6 +153,16 @@ class Txt2ImgRequest(BaseModel):
     # accept it so a sheet request does not 422, and widen the canvas below.
     frames: int = 1
 
+    # Return an RGBA cutout instead of an opaque square.
+    #
+    # EXPLICIT, never inferred from the prompt. something2 asked for it this way
+    # and they were right: their prompts do say "solid transparent background",
+    # but making that phrase load-bearing means a copy edit silently turns every
+    # entity into an opaque block. Entity images composite over terrain; tiles
+    # fill their diamond and are SUPPOSED to be opaque. That is a per-request
+    # decision the caller owns.
+    cutout: bool = False
+
     @field_validator("steps", "width", "height", "seed", "frames", mode="before")
     @classmethod
     def _coerce_ints(cls, v, info):
@@ -228,6 +238,11 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     # is not penalised with a doubled token.
     # Optional, non-A1111: how strongly to fold the LoRA in. Clients that want
     # less of an over-trained adapter can send override_settings.lora_scale.
+    # Accept the flag at the top level or inside override_settings: their
+    # template system substitutes into a fixed body shape, and which of the two
+    # is reachable depends on the template.
+    cutout = bool(req.cutout or req.override_settings.get("cutout"))
+
     raw_scale = req.override_settings.get("lora_scale")
     try:
         lora_scale = float(raw_scale) if raw_scale not in (None, "") else None
@@ -264,7 +279,7 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
         steps,
         cfg,
         req.seed,
-        False,
+        cutout,
         lora_scale,
     )
 
@@ -284,7 +299,13 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
 
     if not result or result.get("error"):
         detail = (result or {}).get("error", "unknown generation failure")
-        raise HTTPException(status_code=500, detail=detail)
+        # A failed cutout is the CALLER's request being unsatisfiable, not this
+        # service breaking, and the distinction matters to a bulk runner: 422
+        # means "this subject will not cut out, skip or reword it", 500 means
+        # "retry later". Returning an opaque image instead would be worse than
+        # either - it stores clean-looking data that is wrong.
+        status = 422 if (result or {}).get("error_kind") == "cutout_failed" else 500
+        raise HTTPException(status_code=status, detail=detail)
 
     file_path = result.get("file_path")
     if not file_path or not os.path.exists(file_path):

@@ -83,8 +83,11 @@ def main():
 
     key = os.environ.get("SPRITE_API_KEY", "")
     results = {}
-    for subject, prompt in PROMPTS.items():
-        for tag, model in MODELS:
+    # Models OUTER, prompts inner: each model switch reloads and re-fuses the
+    # whole pipeline (~40-60s), so alternating them would pay that six times
+    # instead of twice.
+    for tag, model in MODELS:
+        for subject, prompt in PROMPTS.items():
             print(f"  {subject:6} {tag:8} ...", flush=True)
             try:
                 results[(subject, tag)] = generate(
