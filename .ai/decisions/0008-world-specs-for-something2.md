@@ -437,3 +437,57 @@ checkable, describing a mechanism nobody had read:
 The last one is the instructive one: a convention was read off a spec file and
 passed on without the seeder that gives it meaning. A pattern without its
 meaning is not a convention, it is a coincidence.
+
+## D12 - A green suite says nothing about what is being served, 2026-08-27
+
+The sixth of the week's class, and the widest.
+
+D11's fix was committed, its 33 smoke cases passed, and the region something2
+downloads **still had three level-1 worlds**. The code was right, the tests were
+right, the artifact was wrong.
+
+**Nothing in the suite could have caught it.** Every smoke script runs as
+`docker exec sprite_generator python /app/scripts/...`, which starts a fresh
+interpreter and imports from disk. It therefore tests the code AS WRITTEN and
+never the code AS SERVED. The uvicorn process had not been restarted since the
+commit, so it kept serving the pre-fix module while every file on disk looked
+correct - the `uvicorn --reload` trap this project already had a memory note
+about.
+
+something2's diagnosis was sharper than "it did not deploy": the density TIERS
+had changed in the same artifact, so D10's fix was live and D11's was not. One
+process had been bounced between the two commits. That asymmetry is what proved
+it was a deploy boundary rather than a bad commit.
+
+**Why it matters past the deploy.** something2's admin downloads and seeds THE
+ARTIFACT, not this repository. A person reading "fixed in 110479f" and clicking
+Download and Seed would get three level-1 worlds, and it would validate 0/0 on
+their side forever.
+
+### `scripts/check-artifacts.py`
+
+Regenerates every stored region from its own stored parameters and compares the
+result to the artifact on disk. A mismatch means the artifact predates the
+running code. Not a smoke test - it has no fixtures and asserts nothing about
+correctness, only that the thing being served and the thing in the code are the
+same thing.
+
+**Run it after deploying, and before telling anyone a fix has landed.**
+
+Mutation-checked rather than trusted, because a guard that cannot go red is
+exactly the failure being guarded against: removing one `level_band` from the
+artifact produced `emerald_reach_hub.level_band: '(absent)' -> [1, 2]`, one
+difference, exit code 1.
+
+### The pattern this closes
+
+Twice now the artifact and the claim about it were checked separately, and only
+the claim was checked:
+
+- a test asserted surface worlds carry NO band, passed every run, and encoded
+  the defect as a requirement (D11);
+- then the fix for that defect did not reach the service, while the commit
+  message defended it (here).
+
+Both are the same error at different distances: **verifying the description
+instead of the thing.**
