@@ -986,6 +986,9 @@ def report(spec: dict, target_per_screen: float | None = None) -> dict:
     worlds = spec.get("worlds", [])
     keys = {w["key"] for w in worlds}
     rows, problems = [], []
+    # (key, KiB/s, per_screen) for every world over the socket threshold.
+    # Reported once after the loop rather than once per world - see below.
+    socket_hot: list[tuple[str, float, float]] = []
 
     for w in worlds:
         biomes = w.get("biomes", [])
@@ -1041,14 +1044,14 @@ def report(spec: dict, target_per_screen: float | None = None) -> dict:
                 f"{res['scatter']} creatures in the world - past the point "
                 f"their own measurement shows the socket cost biting.")
 
+        # Collected, not reported here. `socket_kib_s` is all-or-nothing per
+        # region - one target yields one tier for every world - so appending
+        # inside this loop printed the SAME sentence once per world. A 20-world
+        # region produced 20 identical lines, which is one finding wearing a
+        # count, and it buries the problems that really are per-world.
         kib = socket_kib_s(ps, int(w.get("chunk_size", 32)))
         if kib > SOCKET_WARN_KIB_S:
-            problems.append(
-                f"{w['key']}: ~{kib:.0f} KiB/s down a single socket for one "
-                f"parked player ({ps:.1f}/screen). Their measurement puts the "
-                f"cost at ~{BYTES_PER_CREATURE_PER_SEC} B/s per creature in "
-                f"the active neighbourhood, so this is a bandwidth decision "
-                f"rather than a flavour one.")
+            socket_hot.append((w["key"], kib, ps))
 
         types = w.get("allowed_creature_types", [])
         leaders = leader_count(types)
@@ -1141,6 +1144,39 @@ def report(spec: dict, target_per_screen: float | None = None) -> dict:
     # something2 read `resolveDensity` and settled it. Kept empty rather than
     # removed - the next such question should have somewhere to go that does
     # not fail a region.
+    # ONE line for the socket cost, however many worlds carry it.
+    #
+    # This is a region-level fact and the docstring on `socket_kib_s` has said
+    # so since the biome multiplier came out: one target yields one tier for
+    # every world, so it warns about all of them or none. Emitting it inside
+    # the per-world loop turned that into 20 identical sentences on a 20-world
+    # region - a single finding wearing a count, which buried the problems that
+    # genuinely differ per world.
+    #
+    # Still written as a list comprehension over the collected worlds rather
+    # than assuming uniformity, because per-world density is a live design
+    # question (ADR 0008 D13). If it ever returns, this reports the subset
+    # correctly instead of quietly speaking for all of them.
+    if socket_hot:
+        kibs = {round(k) for _, k, _ in socket_hot}
+        screens = {round(p, 1) for _, _, p in socket_hot}
+        scope = ("every world in the region" if len(socket_hot) == len(rows)
+                 else f"{len(socket_hot)} of {len(rows)} worlds "
+                      f"({', '.join(k for k, _, _ in socket_hot[:6])}"
+                      f"{', ...' if len(socket_hot) > 6 else ''})")
+        rate = (f"~{kibs.pop():.0f} KiB/s" if len(kibs) == 1
+                else f"~{min(kibs):.0f}-{max(kibs):.0f} KiB/s")
+        dens = (f"{screens.pop():.1f}/screen" if len(screens) == 1
+                else f"{min(screens):.1f}-{max(screens):.1f}/screen")
+        problems.append(
+            f"{scope}: {rate} down a single socket for one parked player "
+            f"({dens}). Their measurement puts the cost at "
+            f"~{BYTES_PER_CREATURE_PER_SEC} B/s per creature in the active "
+            f"neighbourhood, so this is a bandwidth decision rather than a "
+            f"flavour one. target_per_screen of 11 or below lands on `dense` "
+            f"(8.1/screen) and clears it; the tier, not the biomes, is what "
+            f"sets this.")
+
     caveats = []
     raw = sum(r["creatures"] for r in rows)
 

@@ -198,8 +198,24 @@ def _guard_reachable():
     loud = wg.report(wg.plan_region("L", world_count=4, target_per_screen=14.0))
     assert not [p for p in quiet["problems"] if "KiB/s" in p], quiet["problems"]
     assert [p for p in loud["problems"] if "KiB/s" in p], loud["problems"]
-    return (f"fires for {sorted(over)}, silent for {sorted(under)}, "
-            f"and a real region at 14.0/screen is flagged")
+
+    # ONCE, not once per world. The cost is a region-level fact - one target
+    # yields one tier for every world - and emitting it inside the per-world
+    # loop produced 20 identical sentences on a 20-world region. That is one
+    # finding wearing a count, and it buries the problems that really do differ
+    # per world. A user hit it and reported "20 problems".
+    #
+    # Checked at 20 worlds rather than the 4 above, because at 4 the duplicate
+    # form looks like a short list rather than an obvious defect.
+    big = wg.report(wg.plan_region("B", world_count=20, target_per_screen=14.0))
+    sock = [p for p in big["problems"] if "KiB/s" in p]
+    assert len(sock) == 1, (
+        f"20-world region emitted {len(sock)} socket warnings, expected 1 - "
+        f"the cost is per REGION, not per world")
+    assert "every world in the region" in sock[0], sock[0]
+
+    return (f"fires for {sorted(over)}, silent for {sorted(under)}, and a "
+            f"20-world region at 14.0/screen is flagged exactly once")
 
 
 @case("a generated region has no empty worlds")
