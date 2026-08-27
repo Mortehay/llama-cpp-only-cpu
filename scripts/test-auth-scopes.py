@@ -165,6 +165,69 @@ def runtime_check(fails):
                 fails.append("open mode returned a principal not marked open")
 
 
+def enforcement_check(fails):
+    """Are the scopes this file just validated actually protecting anything?
+
+    Everything above reads source. Source can be perfect while the running
+    service enforces nothing: `is_enforced()` is False when the keys table is
+    empty, and `require()` then returns a synthetic principal holding every
+    scope BEFORE any comparison. Every endpoint is open, the scope literals are
+    inert, and the static check above still passes - it would have to, because
+    nothing in the source changed.
+
+    That is the same class as a suite passing while the live process serves
+    older code: what is written and what is running are different questions,
+    and only one of them can be asked over HTTP.
+
+    Open mode is legitimate on a fresh box, so this does not fail on it. It
+    says so loudly instead, because the danger is a green run above reading as
+    "the endpoints are protected" when today they are not.
+
+    /api/auth/mode is unauthenticated on purpose - a client has to be able to
+    discover that it needs a token without already having one.
+    """
+    if os.environ.get("SPRITE_API"):
+        urls = [os.environ["SPRITE_API"]]
+    else:
+        urls = ["http://sprite-generator:8001", "http://localhost:8001"]
+
+    import json
+    import urllib.request
+
+    last = None
+    for u in urls:
+        try:
+            with urllib.request.urlopen(u + "/api/auth/mode", timeout=10) as r:
+                mode = json.load(r)
+            break
+        except Exception as e:
+            last = e
+    else:
+        # An honest skip, which is not a pass: it says what it could not learn.
+        print("  SKIPPED: no API at %s (%s)"
+              % (" or ".join(urls), type(last).__name__))
+        print("  Whether the running service enforces ANY of this is unknown.")
+        return
+
+    # Reaching the endpoint is not the same as understanding it. If the shape
+    # changed, everything below reads a missing key as falsey and reports OPEN
+    # mode on an enforcing service - a scary answer arrived at by accident.
+    if "enforced" not in mode:
+        fails.append("/api/auth/mode answered without an `enforced` key (%s); "
+                     "this check can no longer tell open from enforced"
+                     % sorted(mode))
+        return
+
+    print("  %s says: %s" % (u, mode.get("message", mode)))
+    if not mode.get("enforced"):
+        print("  WARNING: the API is in OPEN mode. Every scope checked above is")
+        print("  inert right now - require() returns a principal holding all of")
+        print("  them before it compares anything. The result above says the")
+        print("  scope NAMES are right, not that anything is protected.")
+    elif mode.get("legacy_token"):
+        print("  note: a legacy SPRITE_API_TOKEN is active alongside the keys")
+
+
 def main():
     if PKG is None:
         print("could not find sprite_generator/auth.py; looked in:")
@@ -178,6 +241,8 @@ def main():
     static_check(fails)
     print("\n== the guard fires, and fires early enough ==")
     runtime_check(fails)
+    print("\n== is the RUNNING service enforcing any of it ==")
+    enforcement_check(fails)
 
     print("\nFAILURES:", "none" if not fails else "")
     for f in fails:
