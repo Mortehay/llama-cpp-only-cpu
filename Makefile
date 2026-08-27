@@ -449,17 +449,35 @@ recover-entity-refs:
 # a laptop. Runs through `run --rm` like the others so it works on a machine
 # where nothing is up yet.
 #
-# `-` on none of them: the first failure should stop the set.
+# CONTINUES PAST A FAILURE, and the first version did not.
+#
+# It stopped at the first `|| exit 1`, so a broken FIRST suite hid the other
+# seven - the same "only run what you touched" blindness this target exists to
+# prevent, rebuilt inside the fix for it. Found by mutation-checking in first
+# position, which is the position that matters: failing the last suite proves
+# nothing about whether the loop continues.
 MAP_SUITES := smoke-map-build smoke-map-resolve smoke-map-facade \
               smoke-map-palette smoke-regions smoke-world-gen \
               smoke-world-api smoke-measure-map
 
 test-maps:
-	@for s in $(MAP_SUITES); do \
+	@fails=0; results=""; \
+	for s in $(MAP_SUITES); do \
 		echo "== $$s"; \
-		docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
-			--entrypoint python sprite-generator /app/scripts/$$s.py || exit 1; \
-	done
+		if docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+			--entrypoint python sprite-generator /app/scripts/$$s.py; then \
+			results="$$results\n  OK      $$s"; \
+		else \
+			results="$$results\n  FAILED  $$s"; \
+			fails=`expr $$fails + 1`; \
+		fi; \
+	done; \
+	printf '%b\n' "$$results"; \
+	if [ $$fails -gt 0 ]; then \
+		echo "$$fails of $(words $(MAP_SUITES)) suite(s) FAILED"; \
+		exit 1; \
+	fi; \
+	echo "$(words $(MAP_SUITES)) suites, all green"
 
 # Is what we SERVE what this code would produce?
 #
