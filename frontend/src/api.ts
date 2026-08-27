@@ -520,6 +520,23 @@ export const api = {
 
   jobs: (limit = 25) => request<{ jobs: Job[] }>(`/api/jobs?limit=${limit}`),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
+  // `Record<string, unknown>` here, and on startTraining and createTile, is
+  // where TypeScript stops helping: any key at all type-checks, and the API
+  // silently DROPS one its pydantic model does not declare. That pairing cost
+  // a real bug - JobSpec never declared `concept_check` while the server's own
+  // refusal message told callers to send it, so the documented escape hatch
+  // never worked. See scripts/test-spec-fields.py.
+  //
+  // Checked from this side too, 2026-08-27: all 12 call sites in
+  // frontend/src that pass an object body, against the 56 declared model
+  // fields and 24 Query/Form params. Every key is declared; nothing the UI
+  // sends is being dropped. 12 is the complete denominator - of 64 `api.*`
+  // call sites the other 52 pass scalars or nothing.
+  //
+  // Not automated, and worth knowing why: the suites run in a container that
+  // mounts only src/sprite_generator and scripts, so a check living there
+  // cannot see frontend/. Typing these three bodies would move the guarantee
+  // into the compiler and is the real fix.
   createJob: (spec: Record<string, unknown>) =>
     request<{ job_id: string; status: string }>('/api/jobs', {
       method: 'POST',
