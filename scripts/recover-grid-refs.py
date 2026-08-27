@@ -228,6 +228,124 @@ def recentre(img):
     return out
 
 
+def register(kept, results, images_dir, dry_run=True):
+    """Make the repaired files visible to training, and retire the originals.
+
+    WITHOUT THIS THE WHOLE RECOVERY IS INERT. `all_trainable_refs` selects from
+    `reference_assets` by `file_path`, so eleven repaired PNGs in
+    `images/recovered/entity/` are invisible to the trainer - and the ELEVEN
+    ORIGINALS are still `trainable = true`, pointing at the versions with the
+    backdrop, the floating diamond and the ember specks. A training run started
+    after the recovery would consume exactly what the recovery removed.
+
+    Follows `scripts/split-sheets.py`, which had the same problem and solved it
+    the same way: write the derived image into the images directory under a
+    fresh `ref_<kind>_<hex>.png` name, write a `thumb_` beside it (named so the
+    trainer's globs cannot match it), insert a row carrying `parent_id`, then
+    set the parent `trainable = false` with a reason that names its
+    replacement. Reusing that shape rather than inventing one means the
+    Reference tab, the audit and `--apply` all keep working on these rows.
+
+    A file that needed no repair gets NO new row. Its original is already the
+    usable file and is already trainable; inserting a copy would train on the
+    same image twice and quietly double its weight.
+
+    Idempotent by `metrics->>'recovered_from'`: a second run over the same
+    parent inserts nothing. Without that, re-running after adding one verdict
+    line would register eleven duplicates and retire nothing new.
+    """
+    import json
+    import uuid as _uuid
+
+    import psycopg2
+
+    by_file = {r["file"]: r for r in results}
+    plan = []
+    for path in kept:
+        name = os.path.basename(path)
+        row = by_file.get(name)
+        if row and row.get("stage") == "none needed":
+            continue          # already usable as it stands; see docstring
+        plan.append((name, path, row))
+
+    print()
+    print("REGISTER: %d repaired file(s) to insert, %d already-clean original(s)"
+          " left alone" % (len(plan), len(kept) - len(plan)))
+    if dry_run:
+        for name, _, row in plan:
+            print("  would register %s  (%s)" % (name, row.get("stage")))
+        print("  dry run - pass --register to write")
+        return 0, 0
+
+    # DB_URL, same as audit-entity-refs.py --apply. No default: guessing a DSN
+    # is how a write lands on a database nobody meant to touch, and this
+    # investigation already reported an empty production once after querying
+    # the wrong Docker daemon.
+    db = os.environ.get("DB_URL")
+    if not db:
+        sys.exit("DB_URL unset - run inside the container (make register-"
+                 "entity-cutouts), or set it explicitly")
+    conn = psycopg2.connect(db)
+    made = retired = 0
+    with conn, conn.cursor() as cur:
+        for name, path, row in plan:
+            cur.execute(
+                "SELECT id FROM reference_assets "
+                "WHERE deleted = false AND right(file_path, %s) = %s",
+                (len(name) + 1, "/" + name))
+            parent = cur.fetchone()
+            if not parent:
+                print("  NO PARENT ROW for %s - skipped, and this is reported "
+                      "rather than silent" % name)
+                continue
+            pid = parent[0]
+
+            cur.execute(
+                "SELECT id FROM reference_assets "
+                "WHERE deleted = false AND metrics->>'recovered_from' = %s",
+                (str(pid),))
+            if cur.fetchone():
+                print("  already registered: %s" % name)
+                continue
+
+            cid = _uuid.uuid4()
+            out = os.path.join(images_dir, "ref_core_%s.png" % cid.hex[:12])
+            img = Image.open(path).convert("RGBA")
+            img.save(out, "PNG")
+            thumb = img.copy()
+            thumb.thumbnail((320, 320), Image.Resampling.LANCZOS)
+            thumb.save(os.path.join(images_dir,
+                                    "thumb_" + os.path.basename(out)), "PNG")
+
+            cur.execute(
+                "INSERT INTO reference_assets "
+                "  (id, kind, file_path, label, metrics, usable, why, "
+                "   trainable, trainable_why) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (str(cid), "core", out,
+                 "entity cutout of %s" % name[:-4],
+                 json.dumps({"recovered_from": str(pid),
+                             "recovered_source": name,
+                             "recovery_stages": row.get("stage"),
+                             "image_w": img.width, "image_h": img.height}),
+                 None, "repaired cutout - re-measured, not re-scored by hand",
+                 True,
+                 "entity cutout: %s. Transparent, centred, single subject, no "
+                 "pedestal" % row.get("stage")))
+            made += 1
+
+            cur.execute(
+                "UPDATE reference_assets SET trainable = false, "
+                "  trainable_why = %s WHERE id = %s",
+                ("cut out into %s, which is trained on instead. As stored this "
+                 "one still teaches its backdrop"
+                 % os.path.basename(out), pid))
+            retired += 1
+    conn.close()
+    print("  registered %d cutout(s), retired %d original(s)" % (made, retired))
+    return made, retired
+
+
 def read_verdicts(path):
     """By-eye verdicts, as a reviewable input rather than a claim in prose.
 
@@ -287,6 +405,16 @@ def main():
                    default=os.path.join(HERE, "..", ".ai", "specs",
                                         "entity-cutout", "entity_verdicts.txt"),
                    help="by-eye verdicts applied after the automatic checks")
+    p.add_argument("--register", action="store_true",
+                   help="write the repaired files into the images directory as "
+                        "new trainable references and retire the originals. "
+                        "Without this the recovery is inert: the trainer reads "
+                        "reference_assets, and the originals are still "
+                        "trainable and still point at the un-repaired files")
+    p.add_argument("--images-dir", default="/app/images",
+                   help="where registered references live; the path stored in "
+                        "the database is built from this, so it must be the "
+                        "path the WORKER sees, not the host's")
     a = p.parse_args()
     verdicts = read_verdicts(a.verdicts)
 
@@ -457,6 +585,8 @@ def main():
     print("NOT YET TRAINING DATA. Every recovered file needs an eye on it - "
           "`measure` cannot tell a subject from half a subject, and a subject "
           "that was border-connected leaves with its own backdrop.")
+
+    register(kept, results, a.images_dir, dry_run=not a.register)
 
     if a.contact_sheet and kept:
         out = a.contact_sheet

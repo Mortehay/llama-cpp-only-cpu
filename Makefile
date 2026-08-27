@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks
+.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -498,3 +498,29 @@ test-maps:
 check-artifacts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-generator /app/scripts/check-artifacts.py
+
+# Make the repaired entity cutouts visible to training.
+#
+# WITHOUT THIS THE RECOVERY IS INERT. all_trainable_refs selects from
+# reference_assets by file_path, so repaired PNGs in images/recovered/entity
+# are invisible to the trainer - and the originals are still trainable and
+# still point at the versions with the backdrop and the floating litter. A
+# training run started after the recovery consumes what the recovery removed.
+#
+# Writes: inserts one reference per cutout and retires its original. Snapshot
+# reference_assets first. test-register-cutouts proves the shape on a throwaway
+# database.
+register-entity-cutouts:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/recover-grid-refs.py --dir /app/images \
+		--grid-list /app/images/_audit/grid483.txt \
+		--out /app/images/recovered/entity \
+		--images-dir /app/images --register
+
+# Does --register put the cutouts where training will see them?
+# Builds a throwaway database from production's schema; production is read-only.
+test-register-cutouts:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-register-cutouts.py
