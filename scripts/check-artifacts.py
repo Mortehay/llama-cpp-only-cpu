@@ -38,8 +38,25 @@ import sys
 
 sys.path.insert(0, "/app")
 
-import world_gen  # noqa: E402
-import worlds  # noqa: E402
+try:
+    import world_gen  # noqa: E402
+    import worlds  # noqa: E402
+except ModuleNotFoundError as e:
+    # This is container-only: it imports the service's modules from /app and
+    # needs DB_URL and the images volume. Run from a host shell it died on
+    # `ModuleNotFoundError: world_gen`, which is true and tells nobody why.
+    #
+    # Said out loud because a peer's equivalent check SKIPPED politely on a
+    # path where it could have run, and an honest skip reads like a check that
+    # worked. A crash is better than that and a clear crash is better still.
+    raise SystemExit("\n".join([
+        f"check-artifacts runs inside the service container, not on the "
+        f"host ({e}).",
+        "    make check-artifacts",
+        "  or",
+        "    docker exec sprite_generator python "
+        "/app/scripts/check-artifacts.py",
+    ]))
 
 IMAGES_DIR = "/app/images"
 
@@ -211,14 +228,21 @@ def check_served_models() -> tuple[int, int]:
         which is the API under `docker exec` and is the throwaway container
         itself under `docker compose run` - it skipped honestly instead of
         passing, and that is how the missing host was found.
-      - the DIFFERS branch is NOT mutation-verified. Creating a served-vs-code
-        gap means editing a model and beating the reload, and the reload wins:
-        by the time `docker exec` has started a python and imported, the API is
-        already serving the new field. Tried, lost, saying so.
+      - the DIFFERS branch HAS NEVER FIRED AND WE COULD NOT MAKE IT. Creating a
+        served-vs-code gap means editing a model and beating the reload, and
+        the reload wins - by the time `docker exec` has started a python and
+        imported, the API already serves the new field. TWO sessions tried
+        independently, by different routes, and neither opened the window.
 
-    That failure to reproduce is the same one that makes the incident behind
-    this check unexplained. It is set arithmetic over two field lists and it is
-    simple enough to read, but read it as unproven.
+    Phrased that way on purpose. "Unproven" invites the reader to assume it
+    works; "we tried twice and could not make it fail" tells them what they are
+    actually relying on - set arithmetic over two field lists, readable and
+    never exercised in anger.
+
+    It may be that on this box the window cannot be opened by a file edit at
+    all, which is a claim about StatReload's poll interval against process
+    startup time and is testable if anyone ever needs it. That same failure to
+    reproduce is what leaves the incident behind this check unexplained.
     """
     import json as _json
     import time
