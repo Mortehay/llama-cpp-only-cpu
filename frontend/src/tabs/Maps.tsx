@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, type Job, type Terrain } from '../api'
+import { api, type Job, type MapSummary, type PropsStatus, type Terrain } from '../api'
 import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /**
@@ -290,23 +290,85 @@ export default function Maps() {
 
       <div className="card">
         <h2>Maps</h2>
+        {/* Rendered only on `data` before, which meant an auth failure showed
+            an empty list rather than a reason - the same bug the Worlds tab
+            had. "No maps yet" is a claim, and it should only be made when it
+            is actually known to be true. */}
+        {made.loading && <div className="note">Loading…</div>}
+        {made.error && <div className="note err">{made.error}</div>}
         {made.data && made.data.items.length === 0 && (
           <div className="empty">No maps yet.</div>
         )}
         <div className="grid">
           {made.data?.items.map((m) => (
-            <div className="thumb" key={m.job_id}>
-              <div className="meta">
-                <div className="name">{m.name ?? '(unnamed)'}</div>
-                <div className="why">
-                  <span className="tag neutral">{m.status}</span> {m.size}×{m.size} ·{' '}
-                  {m.terrains.join(', ')}
-                </div>
-              </div>
-            </div>
+            <MapCard key={m.job_id} map={m} onRefresh={() => made.reload()} />
           ))}
         </div>
       </div>
     </>
+  )
+}
+
+/**
+ * One map in the list, with its provisional state spelled out.
+ *
+ * `complete: false` is not a failure - the terrain is final and the map is
+ * walkable - so this says which props are standing in rather than marking the
+ * whole map bad. What it must never do is leave the two provisional cases
+ * looking the same: art that is still coming, and art that is not.
+ */
+function MapCard({ map, onRefresh }: { map: MapSummary; onRefresh: () => void }) {
+  const pic = useAuthedObjectUrl(map.picture_url)
+  const props = map.props
+
+  // Only a working resolver will change on its own, so only that is polled.
+  // Polling a `partial` or `failed` map would ask forever for an answer that
+  // has already arrived.
+  usePoll(onRefresh, 4000, props != null && !props.final)
+
+  return (
+    <div className="thumb">
+      {pic.url && (
+        <img
+          src={pic.url}
+          alt={map.name ?? 'map'}
+          loading="lazy"
+          style={{ imageRendering: 'pixelated' }}
+        />
+      )}
+      <div className="meta">
+        <div className="name">{map.name ?? '(unnamed)'}</div>
+        <div className="why">
+          <span className="tag neutral">{map.status}</span> {map.size}×{map.size} ·{' '}
+          {map.terrains.join(', ')}
+        </div>
+        {props && <PropsLine props={props} />}
+        {map.map_url && (
+          <div className="why muted">
+            <code>{map.map_url}</code>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function PropsLine({ props }: { props: PropsStatus }) {
+  // The wording is the point. "Provisional" invites waiting; the terminal
+  // states have to say that waiting will not help, because the placeholders on
+  // the picture look identical either way.
+  const copy: Record<string, { tag: string; text: string }> = {
+    working: { tag: 'warn', text: `Filling in missing art — ${props.progress_pct ?? 0}%` },
+    partial: { tag: 'warn', text: 'Some art could not be generated. Rebuild to retry' },
+    failed: { tag: 'err', text: 'Art generation failed. Rebuild to retry' },
+    lost: { tag: 'err', text: 'The art job is gone. Rebuild to retry' },
+  }
+  const c = copy[props.state] ?? { tag: 'neutral', text: props.state }
+
+  return (
+    <div className="why">
+      <span className={`tag ${c.tag}`}>{c.text}</span>
+      {props.detail && <div className="muted">{props.detail}</div>}
+    </div>
   )
 }

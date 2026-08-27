@@ -167,6 +167,24 @@ export interface Terrain {
   tile?: string | null
 }
 
+/**
+ * How a map's missing props are getting on.
+ *
+ * `final` is the field to branch on, not `state`. A map can sit at
+ * `complete: false` because the resolver is still working or because it died,
+ * and those look identical from the outside - so a UI without this either
+ * spins forever or gives up on a map that was about to finish.
+ *
+ * `null` on a map means nothing was ever missing.
+ */
+export interface PropsStatus {
+  state: 'working' | 'partial' | 'failed' | 'lost' | string
+  final: boolean
+  progress_pct: number | null
+  detail: string | null
+  job_id: string
+}
+
 export interface MapSummary {
   job_id: string
   name: string | null
@@ -175,6 +193,7 @@ export interface MapSummary {
   terrains: string[]
   picture_url: string | null
   map_url: string | null
+  props: PropsStatus | null
   created_at: string | null
 }
 

@@ -327,14 +327,7 @@ def _with_props_status(tilemap: dict) -> dict:
         }
         return tilemap
 
-    # `done` is never the right word here. This function only runs while the
-    # map is INCOMPLETE, so a finished resolver means some wants could not be
-    # generated and never will be without a rebuild. Reporting that as "done"
-    # sends a caller back to wait for art that is not coming - the same
-    # indefinite wait the reaper exists to end, arriving by a different route.
-    state = {"queued": "working", "running": "working",
-             "done": "partial"}.get(job["status"], job["status"])
-
+    state = _props_state(job["status"])
     tilemap["props_status"] = {
         "state": state,
         "progress_pct": job["progress_pct"],
@@ -346,23 +339,69 @@ def _with_props_status(tilemap: dict) -> dict:
     return tilemap
 
 
+def _props_state(job_status: str | None) -> str:
+    """A resolver job's status, as it means something to a map that is not done.
+
+    `done` is never the right word from here. Both callers only reach this
+    while the map is INCOMPLETE, so a finished resolver means some wants could
+    not be generated and never will be without a rebuild. Reporting that as
+    "done" sends a caller back to wait for art that is not coming - the same
+    indefinite wait the reaper exists to end, arriving by a different route.
+
+    Shared by the map route and the list so the two cannot drift, which they
+    would: one saying `done` and the other `partial` about the same map is
+    exactly the kind of disagreement nobody notices until it matters.
+    """
+    return {"queued": "working", "running": "working",
+            "done": "partial"}.get(job_status or "", job_status or "lost")
+
+
 @router.get("/api/maps")
 def list_maps(limit: int = 50, authorization: str | None = Header(None)):
-    """Named maps, newest first. The facade resolves a name through this."""
+    """Named maps, newest first. The facade resolves a name through this.
+
+    The resolver job is JOINED rather than the tilemaps being read. Reading
+    them would be the obvious way to report `complete`, and it would mean
+    opening fifty JSON files - a 128x128 grid is around 100 KB - on every
+    render of the list. The resolver's own row carries the same answer and
+    costs one query.
+    """
     auth.require(authorization, "read")
 
     with _db() as conn, conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
-            "SELECT id, status, spec->>'name' AS name, spec, sheet_path, "
-            "       atlas_path, created_at "
-            "FROM jobs WHERE kind = 'map' AND deleted = false "
-            "ORDER BY created_at DESC LIMIT %s", (limit,))
+            "SELECT m.id, m.status, m.spec->>'name' AS name, m.spec, "
+            "       m.sheet_path, m.atlas_path, m.created_at, "
+            "       p.status AS props_status, p.progress_pct AS props_pct, "
+            "       p.progress_msg AS props_msg, p.error AS props_error, "
+            "       p.id AS props_id "
+            "FROM jobs m "
+            "LEFT JOIN LATERAL ("
+            "    SELECT id, status, progress_pct, progress_msg, error "
+            "      FROM jobs p2 "
+            "     WHERE p2.kind = 'map_props' "
+            "       AND p2.spec->>'map_job' = m.id::text "
+            "     ORDER BY p2.created_at DESC LIMIT 1"
+            ") p ON true "
+            "WHERE m.kind = 'map' AND m.deleted = false "
+            "ORDER BY m.created_at DESC LIMIT %s", (limit,))
         rows = cur.fetchall()
 
     items = []
     for r in rows:
         spec = r["spec"] or {}
+        # No resolver row means nothing was ever missing - or the map predates
+        # the resolver, which reads the same way round: there is no art still
+        # coming. Either way the honest answer is `null`, not a guess.
+        props = None
+        if r["props_id"]:
+            state = _props_state(r["props_status"])
+            props = {"state": state, "final": state != "working",
+                     "progress_pct": r["props_pct"],
+                     "detail": r["props_error"] or r["props_msg"],
+                     "job_id": str(r["props_id"])}
+
         items.append({
             "job_id": str(r["id"]),
             "name": r["name"],
@@ -372,6 +411,7 @@ def list_maps(limit: int = 50, authorization: str | None = Header(None)):
             "picture_url": (f"/api/jobs/{r['id']}/sheet"
                             if r["sheet_path"] else None),
             "map_url": f"/api/maps/{r['id']}" if r["atlas_path"] else None,
+            "props": props,
             "created_at": r["created_at"].isoformat() if r["created_at"] else None,
         })
     return {"items": items, "total": len(items)}
