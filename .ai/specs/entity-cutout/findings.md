@@ -650,11 +650,41 @@ have failure modes a human can see and the measurement cannot.
 > separate filesystem. Verified afterwards: 2,555/573 unchanged, no `audit_smoke`
 > on the real instance, and the stray container and network removed.
 
-So **`--apply` can be run for real**, against 573 trainable rows. It has not
-been, deliberately: it would flip verdicts, change what `ReferenceTab.tsx`
-displays and what the next training run consumes. That is a decision for whoever
-owns the dataset, not a step in verifying a script. The verification below used
-a throwaway database instead.
+**`--apply` HAS NOW BEEN RUN against `llm_monitoring`**, on the owner's
+instruction, for `core` and `sprite` only. `tile` and `map` were deliberately
+excluded: this audit's verdicts on them are a category error (see §2), and
+writing them would have been worse than not running at all.
+
+```
+                 before          after
+  core      333 trainable   ->   212     334 rows audited, 121 excluded
+  sprite    102 trainable   ->    18     106 rows audited,  87 excluded
+  map       114 trainable   ->   114     untouched
+  tile       24 trainable   ->    24     untouched
+
+  total     573             ->   368
+```
+
+Every one of the 334 `core` files matched a row, which confirms the basename
+suffix match against real `/app/images/...` paths. 43 of 149 sprite findings
+matched nothing, which is the soft-deleted rows and is reported rather than
+silent.
+
+**The metrics merge held on production**: all 334 core rows still contain the
+measurements they had before, with `entity_audit` added alongside. That was the
+scratch test's most important case and the one whose failure would have been
+invisible.
+
+**To revert.** The four columns were snapshotted first:
+
+```sql
+UPDATE reference_assets r
+   SET trainable = b.trainable, trainable_why = b.trainable_why, metrics = b.metrics
+  FROM reference_assets_pre_entity_audit b
+ WHERE r.id = b.id;
+```
+
+Drop `reference_assets_pre_entity_audit` once the verdicts are accepted.
 
 One mismatch worth knowing before running it: the DB holds **106** live sprite
 rows while there are **149** `ref_sprite_*.png` files on disk. Chased down by
