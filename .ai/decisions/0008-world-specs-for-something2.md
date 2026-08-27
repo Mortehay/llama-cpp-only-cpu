@@ -527,6 +527,96 @@ success must report its denominator. "Nothing was wrong" and "nothing was
 looked at" produce identical output otherwise, and only one of them is good
 news.
 
+### Two more, in one afternoon, 2026-08-27
+
+Both mine, both found within an hour of writing the section above, which is
+the useful part: knowing the pattern did not stop me producing it twice.
+
+**A switch that was on and did nothing.** The map painting stopped fitting on
+the card, so `_map_pipe` enabled VAE tiling. `pipe.enable_vae_tiling()` does
+not exist in diffusers 0.40, so the call moved to `pipe.vae.enable_tiling()` -
+and I added a check that `vae.use_tiling` was True afterwards, on the reasoning
+that a switch which silently failed to flip is worth less than no switch. The
+check passed. The decode still ran whole and still OOMed.
+
+`_decode` gates on `z.shape[-1] > vae.tile_latent_min_size`, and that is
+`sample_size / 8` = 128 for the SDXL VAE, while a 1024x1024 image has a 128x128
+latent. `128 > 128` is false. The flag was set, the branch was unreachable, and
+my verification confirmed the flag. **I checked the description of the
+behaviour rather than the behaviour**, in a check written specifically to avoid
+that. The fix lowers the thresholds and wraps `tiled_decode` to count calls, so
+the run now reports `decode: tiled (1 call(s))` - the path, not the flag.
+
+**A metric that scored two coastlines at zero.** `map-discriminator.py` asks
+whether a map adapter paints a coast, screening on the share of the image that
+reads as water. It reported **0.0% for both adapters** and printed a confident
+verdict: "No coast either way."
+
+Both images are roughly a fifth open water, with cliffs, bays and islands. I
+found out by opening them.
+
+The screen measured the four-colour palette fit rather than the pixels. Four
+median-cut colours over a map that varied never allocated an entry to the
+water at all - it averaged into the greens - and the entry that did emerge,
+`#488269`, is a teal sitting just under the 0.47 blue cutoff. Two independent
+reasons, both invisible from the number.
+
+The metric now counts pixels, and reports **20.0%** for the image it scored at
+zero.
+
+### What these two add to D12
+
+D12 said: verify the artifact, not the claim about it. These sharpen it, because
+in both cases a verification step existed and ran:
+
+- the tiling check tested a **flag that the behaviour did not follow**;
+- the coast screen tested a **summary the artifact did not survive**.
+
+**A derived value is a description too.** A flag, a palette fit, a percentage,
+a passing assertion - each is a claim about the artifact, and checking one is
+not checking the artifact. The only things that closed either of these were
+running the actual code path and looking at the actual picture.
+
+Which is also why `map-discriminator.py` writes its images to disk and says so
+in its output. The number is a screen; the file is the evidence.
+
+### And the investigation those two were serving was already dead
+
+The map adapter was retrained specifically to test whether a hash-polluted
+caption set was what made the first adapter paint a monochromatic green island.
+33 minutes of GPU, and a peer session's experiment design that was better than
+my hypothesis.
+
+Three arms at the same prompt and seed - first adapter, retrained adapter, and
+the first adapter with its trigger withheld:
+
+| arm | water | flatness |
+|---|---|---|
+| `mapstyle` | 20.0% | 13.1 |
+| `mapstyle2` | 15.6% | 15.1 |
+| `mapstyle`, no trigger | 20.6% | 14.3 |
+
+**Every arm paints a coast.** Bays, cliffs, islands, forest. The green island
+does not reproduce, so neither candidate explanation can be tested - and the
+recorded first-adapter measurement does not reproduce either: 14.6 flatness with
+an all-green palette came back as 13.1 with a teal in it.
+
+That last part is the finding. **The original run was not recorded, so only a
+description of it survives**, and the description is now the only evidence that
+the defect ever existed. The green island was most likely a property of that
+one run's unwritten conditions rather than of the adapter.
+
+The caption bug was real and worth fixing on its own terms - 1,863 tile captions
+reduced to the single word "of" - and the fix is verified against real rows. But
+it was never shown to fix anything, and saying it was would be the overclaim
+this whole document is about. The investigation is closed as **cause unknown**,
+not as solved.
+
+**Cost of not recording a run: 33 minutes of training, four failed generations,
+and an experiment that could not have answered its question.** Cheaper next
+time: write the prompt, seed, model string and output path next to any result
+worth citing later.
+
 ## D13 - Density is uniform across a region, and that is a decision to make
 
 D10 removed the biome multiplier because it described nothing real. It was also
