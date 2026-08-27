@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard recover-entity-refs
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes recover-entity-refs
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -324,16 +324,12 @@ test-split-sheets:
 # This builds a throwaway database from production's schema, exercises it there,
 # and drops it. Production is read-only throughout.
 #
-# THIS TARGET DOES NOT WORK AS WRITTEN, and saying so is more useful than the
-# note that used to be here ("Needs postgresql-client"). The image these
-# containers build from has no `pg_dump`, so the run dies on FileNotFoundError.
-# It was only ever executed from a host shell, where the binary exists - green
-# where it was written, dead where it ships.
-#
-# Run it from a shell with postgresql-client and access to the database:
-#     python3 scripts/test-apply-verdicts.py
-# or add postgresql-client to compose/develop/sprite_generator/Dockerfile,
-# which is a deployment change and is deliberately not made here.
+# This target used to be dead: the image had no `pg_dump`, so the run died on
+# FileNotFoundError. It was only ever executed from a host shell, where the
+# binary exists - green where it was written, dead where it shipped.
+# postgresql-client is now in compose/develop/sprite_generator/Dockerfile, so
+# the target runs where it claims to. `make rebuild-app` if you are on an image
+# built before that.
 test-apply-verdicts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
@@ -365,6 +361,19 @@ test-pedestal-guard:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-pedestal-guard.py
+
+# Does every endpoint ask for a scope this server can actually grant?
+#
+# auth.require passes an admin key unconditionally, so a scope name outside
+# ALL_SCOPES does not fail loudly - it silently becomes "admin only" and tells
+# everyone else they lack a scope that cannot be granted. POST /api/commands
+# asked for "write" from the day it was written and was only ever exercised in
+# open mode, where require() returns before the comparison. Static, so it also
+# covers endpoints nobody has called.
+test-auth-scopes:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-auth-scopes.py
 
 # Repair the grid-locked references into entity training data, and count what
 # actually survives.

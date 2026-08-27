@@ -157,15 +157,29 @@ COMMANDS: dict[str, dict] = {
                   "throughout, and the script refuses to run if the scratch "
                   "name resolves to the live database.",
         "argv": ["python", f"{SCRIPTS}/test-apply-verdicts.py"],
-        # Not present in the image these containers are built from, so this is
-        # the one command here that CANNOT run where the UI runs it. Declared
-        # rather than discovered: without this the button would queue a job
-        # that always dies on `FileNotFoundError: pg_dump`, which reads as a
-        # broken test rather than a missing package.
-        #
-        # Installing postgresql-client in the Dockerfile would fix it and is a
-        # deployment change, so it is not made here.
+        # postgresql-client is now installed in the image, so this passes. The
+        # declaration stays: it is what turns "the image is missing a package"
+        # into a disabled button with a reason, instead of a queued job that
+        # dies on `FileNotFoundError: pg_dump` and reads as a broken test. If
+        # the package is ever dropped from the Dockerfile, this reappears as a
+        # clear message rather than as a mystery.
         "requires": ["pg_dump"],
+        "minutes": 1,
+    },
+    "test-auth-scopes": {
+        "label": "Endpoint scopes",
+        "group": "Tests",
+        "order": 4,
+        "writes": "nothing",
+        "summary": "Every endpoint asks for a scope this server can actually "
+                   "grant.",
+        "detail": "auth.require passes an admin key unconditionally, so a "
+                  "scope outside ALL_SCOPES becomes 'admin only' silently and "
+                  "tells everyone else they lack a scope that cannot be "
+                  "granted. Reads the source, so it covers endpoints nobody "
+                  "has called - including this one, which had exactly that "
+                  "bug.",
+        "argv": ["python", f"{SCRIPTS}/test-auth-scopes.py"],
         "minutes": 1,
     },
 }

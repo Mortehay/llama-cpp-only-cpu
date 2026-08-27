@@ -128,7 +128,14 @@ def list_commands(authorization: str | None = Header(None)):
 @router.post("/api/commands/{name}", status_code=202)
 def run_command(name: str, body: RunRequest | None = None,
                 authorization: str | None = Header(None)):
-    auth.require(authorization, "write")
+    # "admin", not "write": there is no `write` scope. auth.ALL_SCOPES is
+    # (read, generate, admin), and a scope no key can hold passes only for an
+    # admin key while telling everyone else they lack a scope that does not
+    # exist. Admin is the right bar anyway - these commands rewrite training
+    # pixels and the reference table - so this changes the 403 message and
+    # nothing else. Open mode returns before the check, which is why the
+    # mistake survived being exercised.
+    auth.require(authorization, "admin")
 
     spec = command_table.COMMANDS.get(name)
     if spec is None:

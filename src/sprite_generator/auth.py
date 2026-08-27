@@ -205,6 +205,19 @@ def require(authorization: str | None, scope: str = "read") -> dict:
     In open mode returns a synthetic principal marked `open`, so a caller that
     wants to warn about it can.
     """
+    # A scope this server does not define is a programming error, not a
+    # permission problem. Without this it degrades silently into
+    # "admin only" - the `scope not in principal["scopes"]` test can never
+    # pass for a name no key can hold - and reports 403 "lacks the '<typo>'
+    # scope", sending the operator off to create a key with a scope
+    # add_key() will reject. Raised before the open-mode return so a
+    # keyless machine finds it too; that is where the one real instance of
+    # this hid (maintenance.py asked for "write").
+    if scope not in ALL_SCOPES:
+        raise RuntimeError(
+            f"unknown scope {scope!r} requested by this endpoint; "
+            f"known: {', '.join(ALL_SCOPES)}")
+
     if not is_enforced():
         return {"id": None, "name": "anonymous (open mode)",
                 "scopes": list(ALL_SCOPES), "open": True}
