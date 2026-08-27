@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard recover-entity-refs
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -365,3 +365,24 @@ test-pedestal-guard:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-pedestal-guard.py
+
+# Repair the grid-locked references into entity training data, and count what
+# actually survives.
+#
+# The audit said 21 of 23 candidates were held back only by a flat backdrop,
+# which remove_background fixes outright. That was a claim about the BACKDROP -
+# how much a flood fill would take - and it never asked what is left standing.
+# This keys them with the real function, re-measures the REPAIRED file, and
+# yields six. Two survivors kept most of a solid backdrop and passed every
+# automatic check; three more were killed only by eye at magnification.
+#
+# Look at the sheet it writes. Do not take the count on trust - that is the
+# mistake this target exists to stop repeating.
+recover-entity-refs:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/recover-grid-refs.py --dir /app/images \
+		--grid-list /app/images/_audit/grid483.txt \
+		--out /app/images/recovered/entity \
+		--contact-sheet /app/images/_audit/recovered_entity.png \
+		--markdown /app/images/_audit/recovered_entity.md

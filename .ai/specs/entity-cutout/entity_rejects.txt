@@ -1,0 +1,16 @@
+# Repaired files rejected BY EYE, with the reason.
+#
+# Read by scripts/recover-grid-refs.py and applied after every automatic check.
+# These exist because the automatic checks passed all three: `measure` sees a
+# single centred opaque blob and cannot tell how much of that blob is the
+# entity. Each line is one file and the reason it is toxic for sprite training.
+#
+# Format:  filename<TAB or spaces>reason
+#
+# Checked at magnification against images/_audit/_zoom9.png on 2026-08-27.
+
+ref_core_fefbb01e57b5.png  pedestal - the figure stands on a solid black bar that is not part of it. The pedestal rule missed it because the subject is small and its shins are not narrower than its body, so the require_legs precondition declines rather than cutting
+
+ref_core_eabdbd199746.png  ground patch and interior background - the dragon sits on brown rock slabs that continue past it to the right, and there are white regions ENCLOSED by its silhouette. Enclosed background is invisible to remove_background by construction: the flood fill only takes border-connected pixels, so a hole surrounded by the subject can never be reached
+
+ref_core_06bb8045fba3.png  ground patch - the frog is fused to a white and grey blob under its feet. Wide-bodied, so shins are never narrower than the body and strip_ground_patch correctly declines; nothing else in the pipeline looks at it

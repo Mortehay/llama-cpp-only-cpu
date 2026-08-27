@@ -571,6 +571,64 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    abstract. It is 23 files, it is listed in `images/_audit/grid483.txt`, and
    the work to make them usable is one pass of an existing function.
 
+   > **THE REPAIR HAS NOW BEEN RUN, AND IT YIELDS SIX FILES, NOT 21.**
+   > `scripts/recover-grid-refs.py` keys every candidate with the real
+   > `remove_background` lifted out of `tasks.py`, cuts pedestals with
+   > `strip_ground_patch(require_legs=True)` where that helps, and **re-measures
+   > the repaired file**:
+   >
+   > ```
+   >   rejected by eye             3
+   >   clean already               1
+   >   clean after repair          5
+   >   repaired, still not clean  17
+   >   not repairable by keying   13
+   >   TOTAL USABLE                6
+   > ```
+   >
+   > "21 recoverable" was a claim about the BACKDROP — how much of the frame a
+   > flood fill would take — asserted three times in this note before anything
+   > keyed a single file. It never asked what is left standing afterwards, and
+   > that is where the files are lost: a pedestal is fused and survives, a drop
+   > shadow survives as a stray, and keying `ref_core_ca0070408096` *created* a
+   > second subject by severing a piece.
+   >
+   > **Two of the survivors passed every automatic check while still carrying
+   > most of a solid rectangular backdrop** — `ref_core_17e21a84ac41` (a bush on
+   > a grey slab) and `ref_core_e618100f0726` (a figure on a green card with
+   > "KING" lettered into it). They pass because the audit's thresholds are set
+   > for references that have not been keyed yet: `ALPHA_IN_USE_PCT` is 0.02, so
+   > keying a 2% margin is enough to read as "alpha in use", and the full-bleed
+   > rule then wants coverage > 0.85 *and* border > 0.75. Nothing else looks at
+   > the border. After a successful cutout the border must be EMPTY, and over
+   > the 22 repaired files the split is not a close call — `0.000` sixteen
+   > times, then 0.005, 0.008, 0.051, then nothing until 0.359, 0.395, 0.550.
+   > `BORDER_AFTER_KEY = 0.10` sits in that gap; anywhere in 0.10–0.30 gives the
+   > same answer, which is why it reads the data rather than fitting the two
+   > files that prompted it.
+   >
+   > **Three more were killed by eye at magnification and by nothing else**, and
+   > they are recorded with reasons in `.ai/specs/entity-cutout/entity_rejects.txt` so the
+   > judgement is dated and re-checkable instead of buried in prose:
+   > `fefbb01e57b5` stands on a black bar; `06bb8045fba3` is a frog fused to a
+   > white ground blob; `eabdbd199746` sits on rock slabs **and has white
+   > background enclosed by its own silhouette**. That last one is not a
+   > threshold that could be tightened — `remove_background` takes
+   > border-connected pixels only, so a hole surrounded by the subject is
+   > unreachable by construction and no flood fill will ever find it.
+   >
+   > The two ground-patch rejects are both wide-bodied, so their shins are never
+   > narrower than their bodies and `require_legs=True` correctly declines to
+   > cut. **The guard is doing its job and the pedestal still gets through** —
+   > width is simply not enough information on a frog. The 128px contact sheet
+   > showed none of this; `scripts/zoom-sheet.py` at 1:1 showed all of it.
+   >
+   > The six survivors are in `images/recovered/entity/`, sheeted at
+   > magnification in `images/_audit/entity_usable_zoom.png`: a spirit, a
+   > treant, a goblin, a lich, a caterpillar, a pod creature. Every one is
+   > `ref_core`, centred, transparent, with no pedestal and nothing beside it —
+   > which is exactly the target, and there are six.
+
    **The `sprite` kind contributes zero.** All 23 are `ref_core`, which is the
    kind ADR 0009 argues should be split off as painted concept art. Crossing
    the two audits is what surfaced it, and neither of us saw it alone.
