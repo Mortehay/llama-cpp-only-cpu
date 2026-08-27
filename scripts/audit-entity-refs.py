@@ -108,31 +108,58 @@ QUANT = 8
 # Measurement
 # ---------------------------------------------------------------------------
 
-def key_background(img, tolerance=24):
-    """Corner flood fill to transparent. Vectorised twin of pixelate.key_background.
+def key_background(img, tolerance=22):
+    """What `tasks.remove_background` would actually clear, as a boolean mask.
 
-    Reimplemented rather than imported because pixelate.py's version is a
-    per-pixel Python stack walk - fine for one sprite in a worker, far too slow
-    for a few thousand references in a sweep. Same rule, which is the part that
-    matters: only regions of near-corner colour REACHABLE FROM THE BORDER are
-    background, so a white highlight inside the subject survives.
+    MIRRORS THAT FUNCTION DELIBERATELY, RULE FOR RULE. The whole point of this
+    audit is to predict what the cutout stage does to an image, and the cutout
+    stage is `remove_background` - so any difference between the two is this
+    script lying about its own subject.
+
+    It is reimplemented rather than imported only because importing `tasks`
+    drags in celery, psycopg2, torch and a CUDA availability check.
+
+    THE RULE, and the first version got it wrong: take the colour MOST CORNERS
+    AGREE ON - a majority vote - and key pixels within `tolerance` of that one
+    colour which are also reachable from the border. The first version matched
+    against ANY of the four corners, which is `pixelate.key_background`'s rule
+    and not this one.
+
+    That difference is not academic. Measured over the 462 references where
+    keying decides the verdict, the two rules disagree on the BLOCKING verdict
+    for 25 files, and always in the dangerous direction: on
+    `ref_core_022767411230` the any-corner rule reports 68% of the image as
+    removable and `remove_background` actually clears 0.06%. Those 25 have
+    corners of different colours - a gradient, a border, a subject running into
+    one corner - so "close to any corner" matches most of the frame while
+    "close to the majority corner" matches nearly none. Every one of them was
+    being passed as a recoverable backdrop when the real cutout cannot key it
+    at all.
     """
-    a = np.asarray(img.convert("RGBA"))
-    rgb = a[..., :3].astype(np.int16)
-    h, w = rgb.shape[:2]
+    img = img.convert("RGBA")
+    w, h = img.size
+    samples = [img.getpixel(c)[:3] for c in
+               [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]]
+    bg = np.array(max(set(samples), key=samples.count), dtype=np.int16)
 
-    corners = [rgb[0, 0], rgb[0, w - 1], rgb[h - 1, 0], rgb[h - 1, w - 1]]
-    match = np.zeros((h, w), dtype=bool)
-    for c in corners:
-        match |= np.all(np.abs(rgb - c) <= tolerance, axis=-1)
+    arr = np.array(img, dtype=np.int16)
+    # `< tolerance`, not `<=`: remove_background uses a strict comparison.
+    match = np.all(np.abs(arr[:, :, :3] - bg) < tolerance, axis=-1)
 
     labels, n = ndimage.label(match)
     if n == 0:
         return np.zeros((h, w), dtype=bool)
     border = np.concatenate([labels[0, :], labels[-1, :],
                              labels[:, 0], labels[:, -1]])
-    keep = np.unique(border[border > 0])
-    return np.isin(labels, keep)
+    mask = np.isin(labels, np.unique(border[border > 0]))
+
+    # remove_background's safety trigger: clearing over 98% means the corner
+    # sample was not background at all, so it keeps the image untouched. An
+    # audit that reported 99% removable where the real stage removes nothing
+    # would be wrong in the worst direction.
+    if mask.mean() > 0.98:
+        return np.zeros((h, w), dtype=bool)
+    return mask
 
 
 def subject_mask(img):

@@ -66,17 +66,17 @@ eye:
 ```
 kind=core  images: 334
   fit for entity training:      1
-  BLOCKING (certain):         115
-  REVIEW  (measured, judge):  218
+  BLOCKING (certain):         121
+  REVIEW  (measured, judge):  212
 
-    323  background is flat, not transparent
-     98  multi-subject
-     50  stray marks beside the subject
-     37  pedestal or ground patch
+    304  background is flat, not transparent
+     87  multi-subject
+     48  stray marks beside the subject
+     35  pedestal or ground patch
+     26  opaque background
+     17  full bleed
       8  checkerboard baked in
-      7  opaque background
       6  off centre
-      4  full bleed
       2  dense atlas
       1  clean
 ```
@@ -90,14 +90,14 @@ white, black, grey, parchment and gradient backdrops.
 
 ### The defects, in order of how much they cost
 
-**Opaque backdrops (323).** The defining problem. These are not cutouts and
+**Opaque backdrops (304).** The defining problem. These are not cutouts and
 were never cut out. Most are *keyable* — a flat white or grey that the flood
 fill would remove — so the images are recoverable, but as stored every one of
-them teaches "an entity comes with a backdrop". Seven are worse: ornate
+them teaches "an entity comes with a backdrop". Twenty-six are worse: ornate
 full-page character sheets on parchment with gilt borders and body text, where
 there is no flat region to key at all.
 
-**Multi-subject sheets (98).** Icon grids, weapon racks, tree collections,
+**Multi-subject sheets (87).** Icon grids, weapon racks, tree collections,
 character line-ups. This is the failure mode this repo has already been burned
 by twice: `CORE_TRIGGERS` in `tasks.py` records that a sheet-trained trigger
 returned four characters in a row *at guidance 7.5 with duplicate-suppression
@@ -117,7 +117,7 @@ Files: `039fd1bc0d72`, `189b515f46c9`, `3089d99f1c8a`, `9e6ee38ae4c6`,
 check in pink and navy rather than grey, which is how the grey assumption in
 the first version of the detector got caught.
 
-**Pedestals and ground patches (37, needs eyes).** Bases, plinths, dirt discs,
+**Pedestals and ground patches (35, needs eyes).** Bases, plinths, dirt discs,
 water pools and contact shadows fused to the feet. `NEGATIVE_SINGLE` exists
 precisely because of this — the comment at
 [`tasks.py:376-390`](../../../src/sprite_generator/tasks.py) explains that a
@@ -129,7 +129,7 @@ to judge rather than acted on blind. Confirmed by eye in the contact sheet:
 `3214bbee74f0` (tree on a green ground disc), `f197486c7e9a` (creature standing
 in water), `2ad3524afa1b`, `5121288de0f5`, `02fd319439e9`.
 
-**Stray marks beside the subject (50, needs eyes).** A detached blob clear of
+**Stray marks beside the subject (48, needs eyes).** A detached blob clear of
 the entity — most often a **drop shadow floating free of the feet**, sometimes a
 loose speck of foliage or a signature. Added late, after
 `scripts/audit-character-refs.py` flagged one of the four images this note had
@@ -162,16 +162,18 @@ adapter might draw on:
 ```
 kind=sprite  images: 149
   fit for entity training:      1
-  BLOCKING (certain):         129
-  REVIEW  (measured, judge):   19
+  BLOCKING (certain):         117
+  REVIEW  (measured, judge):   31
 
-    132  background is flat, not transparent
-     98  multi-subject
-     23  dense atlas
-     14  stray marks beside the subject
+    126  background is flat, not transparent
+     82  multi-subject
+     28  stray marks beside the subject
+     17  dense atlas
      12  checkerboard baked in
+     10  pedestal or ground patch
       8  too small
-      4  pedestal or ground patch
+      6  opaque background
+      5  full bleed
       1  clean
 ```
 
@@ -725,6 +727,28 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+- **Mirroring the WRONG function.** `key_background` here exists to predict
+  what `tasks.remove_background` will do to an image — that is the audit's
+  entire subject. It was written as a twin of `pixelate.key_background`
+  instead, which is a *different* function with a different rule: match any of
+  the four corner colours, rather than the colour a majority of corners agree
+  on. Nothing in the docstring was false; it named the wrong original.
+
+  Not academic. Over the 462 references where keying decides the verdict, the
+  two rules disagree on **25 files**, always in the dangerous direction — on
+  `ref_core_022767411230` the any-corner rule reports 68% of the frame
+  removable and `remove_background` actually clears **0.06%**. All 25 were
+  being passed as recoverable backdrops that the real cutout cannot key at all.
+  Found only because ADR 0009's session disclosed the same class of flaw in a
+  duplicated function of theirs, which prompted testing mine; it had never been
+  compared against the original at all.
+
+  Fixed by transcribing the real rule, strict `<` and 98% safety trigger
+  included. `core` opaque-background rose 7 → 26 and full-bleed 4 → 17; the
+  stricter mask also merges blobs that the loose one separated, so multi-subject
+  fell 98 → 87. The 36 pixel-art candidates were **unaffected** — none of the 25
+  is among them — so the "23 usable" figure survives the correction unchanged,
+  which is worth stating because it could easily have gone the other way.
 - **`palette <= 300` as a pixel-art test.** Withdrawn the same day it was
   added. It detects pixel art that was cleanly EXPORTED, and throws out the
   heavily-shaded and lossily-saved files that are the whole reason a
