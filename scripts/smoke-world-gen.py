@@ -155,6 +155,53 @@ def _bands():
     return f"{bands[0]} through {bands[-1]}, all present, none null"
 
 
+@case("the socket guard is reachable, and discriminating")
+def _guard_reachable():
+    """A guard that cannot fire is worse than a missing one: it reads as
+    "checked and fine".
+
+    Raised by something2 after the biome multiplier came out, on the theory
+    that `normal` had become the only reachable tier. MEASURED, and it is not
+    so - every tier is reachable, the target decides which:
+
+        sparse  2.0/screen    75 KiB/s   targets 0.1-3.0
+        normal  4.0          149         3.1-6.0
+        dense   8.1          298         6.1-11.0
+        horde  13.9          513  fires  11.1-16.9
+        swarm  20.0          737  fires  17.0-30.0
+
+    What DID change is that the guard is now all-or-nothing per region rather
+    than per world, because one target yields one tier for every world. It can
+    no longer say "this world is the problem", only "this region is".
+
+    This asserts the threshold still sits INSIDE the reachable set - some tier
+    under it, some tier over. A threshold above every reachable tier is
+    unreachable; one below all of them is noise. Either would otherwise be
+    invisible, because a guard that never fires and a guard with nothing to
+    catch look identical from the outside.
+    """
+    reachable = {wg.choose_density(x / 10.0) for x in range(1, 301)}
+    assert len(reachable) >= 4, f"only {reachable} reachable from any target"
+
+    kib = {t: wg.socket_kib_s(wg.DENSITY_TIERS[t] * wg.TILES_PER_SCREEN / 1000.0,
+                              32) for t in reachable}
+    over = {t for t, k in kib.items() if k > wg.SOCKET_WARN_KIB_S}
+    under = {t for t, k in kib.items() if k <= wg.SOCKET_WARN_KIB_S}
+
+    assert over, (f"no reachable tier exceeds {wg.SOCKET_WARN_KIB_S} KiB/s - "
+                  f"the guard can never fire: {kib}")
+    assert under, (f"every reachable tier exceeds {wg.SOCKET_WARN_KIB_S} KiB/s "
+                   f"- the guard fires always: {kib}")
+
+    # And end to end, because a reachable tier is not proof the report emits it.
+    quiet = wg.report(wg.plan_region("Q", world_count=4, target_per_screen=4.1))
+    loud = wg.report(wg.plan_region("L", world_count=4, target_per_screen=14.0))
+    assert not [p for p in quiet["problems"] if "KiB/s" in p], quiet["problems"]
+    assert [p for p in loud["problems"] if "KiB/s" in p], loud["problems"]
+    return (f"fires for {sorted(over)}, silent for {sorted(under)}, "
+            f"and a real region at 14.0/screen is flagged")
+
+
 @case("a generated region has no empty worlds")
 def _no_empty():
     spec = wg.plan_region("Emerald Reach", world_count=8, target_per_screen=6.0)

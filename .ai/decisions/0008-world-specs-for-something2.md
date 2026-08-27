@@ -491,3 +491,61 @@ the claim was checked:
 
 Both are the same error at different distances: **verifying the description
 instead of the thing.**
+
+## D13 - Density is uniform across a region, and that is a decision to make
+
+D10 removed the biome multiplier because it described nothing real. It was also
+**the only thing making two worlds in one region differ in density**, so its
+removal took the variation with it. Every world in a region now gets the same
+tier, because one target maps to one tier.
+
+```
+before D10   horde, dense, normal, normal, normal, normal, normal, sparse
+after D10    normal x8      - 295 creatures, 4.1/screen, every world
+```
+
+This is not a regression: the variation came from a mechanism that turned out
+to be fiction, so it was never describing anything. But "every world identical"
+is unlikely to be what anyone wants, and something2's original *density runs
+backwards* finding is now retired rather than fixed.
+
+**If per-world density is wanted it has to come from somewhere real** - a
+per-depth target, or an explicit density in the plan. That is a feature
+decision and belongs to the user, not to either generator. Nothing is
+implemented on a peer's observation.
+
+Two consequences worth recording either way:
+
+- **The tier snapping is now visible.** A target of 6.0 gives 4.1 on all eight
+  worlds - the 32% shortfall of D10, applied uniformly instead of being masked
+  per-world. The `caveats` entry says so.
+- **The socket guard is all-or-nothing per region.** It can no longer say
+  "this world is the problem", only "this region is".
+
+### The guard-reachability check
+
+something2 raised that the 400 KiB/s guard might have become **unreachable** -
+worse than wrong, because an unreachable guard reads as "checked and fine".
+
+**Measured, and it is reachable.** The claim that `normal` is the only tier a
+target can reach is not so; every tier is reachable and the target picks which:
+
+```
+sparse  2.0/screen    75 KiB/s          targets  0.1-3.0
+normal  4.0          149                         3.1-6.0
+dense   8.1          298                         6.1-11.0
+horde  13.9          513  fires                 11.1-16.9
+swarm  20.0          737  fires                 17.0-30.0
+```
+
+A real region at target 14.0 emits four socket warnings.
+
+The suggestion was worth taking anyway, as an instrument rather than a fix:
+`smoke-world-gen` now asserts the threshold sits INSIDE the reachable set -
+some tier under it, some tier over. A threshold above every reachable tier
+cannot fire; one below all of them is noise. Both are invisible otherwise,
+because **a guard that never fires and a guard with nothing to catch look
+identical from the outside.**
+
+That is the same instrument as `check-artifacts.py` in D12: compare the thing
+against what it claims to cover, rather than against itself.

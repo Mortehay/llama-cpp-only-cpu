@@ -661,6 +661,13 @@ def socket_kib_s(per_screen_count: float, chunk_size: int) -> float:
     ~20 Hz in every world measured. It is reported because a `horde` region on
     a 224 map is a network decision, and nothing should be able to reach one by
     accident through a theme string.
+
+    ALL-OR-NOTHING PER REGION since the biome multiplier came out. One target
+    yields one tier for every world, so this either warns about all of them or
+    none - it can no longer say "this world is the problem", only "this region
+    is". Reachable at `horde` (target 11.1+) and `swarm`; `smoke-world-gen`
+    asserts the threshold still sits inside the reachable set, because a guard
+    that cannot fire reads as "checked and fine".
     """
     tiles = NEIGHBOURHOOD_CHUNKS * chunk_size * chunk_size
     creatures = per_screen_count * tiles / TILES_PER_SCREEN
