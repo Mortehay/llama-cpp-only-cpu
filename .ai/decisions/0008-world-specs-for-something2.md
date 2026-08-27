@@ -907,6 +907,35 @@ every model in the package is a change to make deliberately, and the user may
 reasonably prefer `forbid` at the boundary now that the shape is known. Named
 and left, the same treatment D13 gives density variation.
 
+## D17 - Capture the failing state before you fix it, 2026-08-27
+
+Three real effects today, and **no surviving explanation for any of them**:
+
+| effect | evidence, and how it was lost |
+|---|---|
+| the monochromatic green island | generated outside any recorded run - conditions unrecoverable |
+| the VAE decode OOM | ran by calling worker functions directly, so no traceback reached `docker logs` |
+| the served schema missing `walkable` | a restart made it agree, and it has never reproduced |
+
+**Not one was lost to the effect. All three were lost to something we did about
+it** - a restart, an ad-hoc run outside the queue, a sampler writing to `/tmp`.
+
+That is D14 from the other end. There the rule was *the shortcut trades away the
+recording*; here it is *the fix destroys the evidence*. Both are about the
+moment you stop observing and start acting, and in all three cases the acting
+looked obviously correct - a restart when a process seems stale, a direct call
+when the endpoint wants a key, a quick sampler when you want a number.
+
+The habit that would have caught all three costs seconds: **capture the failing
+state before touching it.** The traceback, the PNG, the served schema. Once the
+fix works you cannot get any of them back, and a fix that works is exactly when
+nobody thinks to try.
+
+It also explains why the restart hardened into a diagnosis. The disagreement
+disappeared right after the restart, which reads as confirmation - but a fix
+coinciding with a symptom clearing is not evidence about the cause, and by then
+the state that could have settled it was gone.
+
 ### A note on how both were found
 
 They were found in opposite directions and neither route reaches the other's

@@ -178,6 +178,121 @@ def check_maps() -> tuple[int, int]:
     return broken, len(rows)
 
 
+def check_served_models() -> tuple[int, int]:
+    """Does the RUNNING api describe the models this code defines?
+
+    The rest of this file compares artifacts on disk to the code. This asks the
+    live process directly, which is a different question and the one nothing
+    here could answer: `/openapi.json` is the server describing its own models,
+    so it reports what is SERVED rather than what is importable.
+
+    Why it exists: `Terrain` gained a `walkable` field, 24 cases passed, and the
+    served schema did not have it. Every suite here runs in a fresh interpreter
+    and imports from disk, so not one of them could have noticed - and neither
+    could the two halves above, which read files.
+
+    REPORT THE DIFFERENCE; DO NOT NAME A MECHANISM FOR IT. When I hit this I
+    concluded the process was stale, restarted it, and the disagreement went
+    away - which felt like confirmation and was not. `uvicorn` reloads here in
+    about seven seconds (StatReload polls mtimes; drvfs defeating inotify does
+    not defeat polling), and afterwards I could not reproduce the staleness by
+    any route. The reading was right and the cause I attached to it was
+    invented. So this prints what differs and stops.
+
+    Retries once before skipping. There is a ~7s window after any edit to a
+    watched file where the API is genuinely unreachable rather than slow, and
+    that is exactly when someone runs this - a skip that reads like a pass is
+    the failure this whole file is about.
+
+    HOW FAR THIS IS VERIFIED, since the rest of this file is about not
+    overclaiming:
+
+      - the SKIP branch fired for real. The first version asked localhost,
+        which is the API under `docker exec` and is the throwaway container
+        itself under `docker compose run` - it skipped honestly instead of
+        passing, and that is how the missing host was found.
+      - the DIFFERS branch is NOT mutation-verified. Creating a served-vs-code
+        gap means editing a model and beating the reload, and the reload wins:
+        by the time `docker exec` has started a python and imported, the API is
+        already serving the new field. Tried, lost, saying so.
+
+    That failure to reproduce is the same one that makes the incident behind
+    this check unexplained. It is set arithmetic over two field lists and it is
+    simple enough to read, but read it as unproven.
+    """
+    import json as _json
+    import time
+    import urllib.error
+    import urllib.request
+
+    # Two hosts, because this file is run two ways and the first attempt at it
+    # only worked one of them. `docker exec sprite_generator` shares the API's
+    # network namespace, so localhost answers. `docker compose run --rm` - what
+    # the Makefile does - starts a SIBLING container where localhost is itself,
+    # and the API is reachable only by its name on the compose network.
+    #
+    # It skipped honestly rather than passing, which is the point of the skip.
+    # It was also useless, which is the point of trying both.
+    hosts = ([os.environ["API_URL"]] if os.environ.get("API_URL") else
+             ["http://sprite_generator:8001", "http://localhost:8001"])
+
+    served, used = None, None
+    for attempt in (1, 2):
+        for host in hosts:
+            try:
+                with urllib.request.urlopen(host + "/openapi.json",
+                                            timeout=8) as fh:
+                    served, used = _json.load(fh), host
+                break
+            except (urllib.error.URLError, OSError, ValueError):
+                continue
+        if served is not None:
+            if attempt == 2:
+                print("  --    api reachable on retry - that was a reload, "
+                      "not a dead API")
+            break
+        if attempt == 1:
+            # A reload takes about 7s and the API is genuinely unreachable for
+            # it, not slow. That window is exactly when someone runs this.
+            time.sleep(9)
+
+    if served is None:
+        print(f"  SKIP  no api answered at {' or '.join(hosts)} after a retry. "
+              f"NOT CHECKED - this says nothing about what is served.")
+        return 0, 0
+    print(f"  --    asking {used}")
+
+    schemas = (served.get("components") or {}).get("schemas") or {}
+
+    import maps  # noqa: E402
+
+    pairs = [("MapSpec", maps.MapSpec), ("Terrain", maps.Terrain),
+             ("Scatter", maps.Scatter)]
+
+    bad = 0
+    for name, model in pairs:
+        if name not in schemas:
+            bad += 1
+            print(f"  BROKEN {name} - the running api serves no such schema")
+            continue
+        live = set((schemas[name].get("properties") or {}))
+        here = set(model.model_fields)
+        missing, extra = sorted(here - live), sorted(live - here)
+        if missing or extra:
+            bad += 1
+            print(f"  DIFFERS {name} - served and code disagree")
+            if missing:
+                print(f"          this code defines, the api does not serve: "
+                      f"{missing}")
+            if extra:
+                print(f"          the api serves, this code does not define: "
+                      f"{extra}")
+        else:
+            print(f"  ok    {name}  - {len(here)} field(s), served matches code")
+
+    return bad, len(pairs)
+
+
 def main() -> int:
     pattern = os.path.join(worlds.WORLDS_DIR, "*.map.json")
     paths = sorted(glob.glob(pattern))
@@ -244,7 +359,20 @@ def main() -> int:
         # it sat here reporting a pass over nothing.
         print("NO maps were checked. This says nothing about maps.")
 
-    return 1 if (stale_count or broken) else 0
+    print()
+    served_bad, served_n = check_served_models()
+    print()
+    if served_bad:
+        print(f"{served_bad} model(s) differ between this code and the running "
+              f"api. Something is serving different code - do not guess which; "
+              f"the difference above is the finding.")
+    elif served_n:
+        print(f"{served_n} model(s) checked against the running api, all match.")
+    else:
+        print("NO models were checked against the api. This says nothing "
+              "about what is served.")
+
+    return 1 if (stale_count or broken or served_bad) else 0
 
 
 if __name__ == "__main__":
