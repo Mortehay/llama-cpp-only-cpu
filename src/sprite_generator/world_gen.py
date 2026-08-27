@@ -87,18 +87,40 @@ def _b(color, density, path, flora, creatures, depth):
 
 
 BIOMES = {
-    # --- surface: the five starter biomes, legacy creatures only ----------
+    # --- surface: the five starter biomes ---------------------------------
+    #
+    # WIDENED 2026-08-27, applied on the something2 side and mirrored here.
+    # These five shipped with legacy creatures only, which capped a
+    # surface-only region at FOUR kinds no matter how many biomes it used -
+    # the ceiling this generator kept hitting. The P3 biomes were caught
+    # because they shipped EMPTY; these were populated with legacy names, so
+    # nothing flagged them.
+    #
+    # The pairings are not a choice made here or there: `scripts/bestiary/
+    # template.js` has a LINES table where every P4 line already declares its
+    # home biome, and these five biomes are exactly the five it names.
+    #
+    # Copied from the applied lists rather than retyped from memory - the
+    # Frozen Waste row in ADR 0008 was wrong for exactly that reason once
+    # already. The check that it is right is arithmetic: these five together
+    # must field 19 kinds, and `smoke-world-gen` asserts it.
     "Meadow": _b("#5aa84f", 0.5, "road_dirt",
-                 ["bush", "rose_bush", "Tree", "Stone"], ["Slime", "Wolf"], "surface"),
+                 ["bush", "rose_bush", "Tree", "Stone"],
+                 ["Slime", "Wolf", "Beast Swarm", "Beast Skirmisher",
+                  "Beast Line"], "surface"),
     "Deep Forest": _b("#2f6b3a", 1.0, "road_dirt",
                       ["Tree", "pine_tree", "dead_tree", "bush", "Stone"],
-                      ["Wolf", "Bat", "Skeleton"], "surface"),
+                      ["Wolf", "Bat", "Skeleton", "Woodland Swarm",
+                       "Woodland Skirmisher", "Woodland Line"], "surface"),
     "Arid Dunes": _b("#c9a227", 0.8, "road_sand", ["dead_tree", "Stone"],
-                     ["Skeleton", "Bat"], "surface"),
+                     ["Skeleton", "Bat", "Desert Swarm", "Desert Skirmisher",
+                      "Desert Line"], "surface"),
     "Frozen Waste": _b("#8fb8d6", 1.1, "road_snow", ["IceRock", "pine_tree"],
-                       ["Bat", "Skeleton"], "surface"),
+                       ["Bat", "Skeleton", "Tundra Swarm", "Tundra Skirmisher",
+                        "Tundra Line"], "surface"),
     "Mire": _b("#4d6b41", 2.0, "road_dirt", ["dead_tree", "bush", "Stone"],
-               ["Slime", "Bat"], "surface"),
+               ["Slime", "Bat", "Swamp Swarm", "Swamp Skirmisher",
+                "Swamp Line"], "surface"),
     # Highlands and Storm Coast are P4-creature biomes but read as outdoors,
     # so they are the bridge between the surface ring and the deep ones.
     "Highlands": _b("#7d8471", 0.9, "road_stone", ["Stone", "pine_tree"],
@@ -249,10 +271,14 @@ BIOME_CREATURES = {n: b["creatures"] for n, b in BIOMES.items()}
 # entirely by `allowed_creature_types` and the biome's `creature_types` - there
 # is no terrain gate to fall back on.
 #
-# This matters more than the density tier for how a world FEELS. The five
-# starter biomes reference only the four legacy creatures (Slime, Wolf, Bat,
-# Skeleton), so a world can be at `swarm` and still read as monotonous: the
-# same four things, forever. Density fixes how many; this fixes how many KINDS.
+# This matters more than the density tier for how a world FEELS. Density fixes
+# how many; this fixes how many KINDS, and a world can be at `swarm` and still
+# read as monotonous.
+#
+# Until 2026-08-27 the five starter biomes referenced only the four legacy
+# creatures (Slime, Wolf, Bat, Skeleton), so a surface-only region saw the same
+# four things forever whatever it did. The widening gave each of the five its
+# own P4 line family - see BIOMES - and took that number from 4 to 19.
 _BESTIARY_PATH = os.path.join(os.path.dirname(__file__), "bestiary_p4.json")
 with open(_BESTIARY_PATH, "r", encoding="utf-8") as _fh:
     BESTIARY = json.load(_fh)

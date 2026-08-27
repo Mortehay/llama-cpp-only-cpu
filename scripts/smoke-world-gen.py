@@ -180,12 +180,23 @@ def _spawnable():
 @case("a biome/creature mismatch is reported as EMPTY, not as healthy")
 def _mismatch():
     """The verdict that lied. A hand-built world with P4 names and a starter
-    biome must read as zero, not as whatever its density tier budgeted."""
+    biome must read as zero, not as whatever its density tier budgeted.
+
+    The example had to change on 2026-08-27: this used `Beast Swarm`, which the
+    widening put INTO Meadow, so the world stopped being empty and the test
+    failed - correctly, by noticing its own premise had expired. Meadow now
+    admits the Beast line, so the unspawnable names have to come from a family
+    it does not have.
+    """
+    unspawnable = ["Woodland Line", "Desert Swarm"]
+    assert not set(unspawnable) & set(wg.BIOME_CREATURES["Meadow"]), (
+        f"the example is stale again: Meadow now admits {unspawnable}")
+
     rep = wg.report({"worlds": [{
         "key": "w", "name": "w", "biomes": ["Meadow"], "density": "swarm",
         "width": 128, "height": 128, "is_entry": True,
         # Real rows in entity_types; not in Meadow's creature_types.
-        "allowed_creature_types": ["Beast Swarm", "Woodland Line"]}],
+        "allowed_creature_types": unspawnable}],
         "links": []})
     row = rep["worlds"][0]
     assert row["verdict"] == "EMPTY", row["verdict"]
@@ -229,20 +240,60 @@ def _variety_repair():
     With only the five surface biomes, every combination admitted four
     creatures - Slime, Wolf, Bat, Skeleton - so a variety floor of five was
     unreachable and the honest behaviour was to report the shortfall. The full
-    32-biome table lifts that: the deep biomes carry the P4 families.
+    32-biome table lifted that, and the 2026-08-27 widening lifted it again:
+    Mire ALONE now meets the floor, so `enrich_variety` correctly declines to
+    add anything to it. This asserted that the repair fired, which is no longer
+    a thing a healthy biome should make it do.
     """
     ceiling = len({c for b in wg.BIOMES for c in wg.BIOMES[b]["creatures"]})
     assert ceiling >= wg.THIN_VARIETY_BELOW, ceiling
 
-    before = wg.spawnable(["Mire"])
-    fixed = wg.enrich_variety(["Mire"], [1, 5])
-    assert len(wg.spawnable(fixed)) > len(before), (before, fixed)
+    # A biome that is already varied enough is left alone. Adding a second one
+    # would be churn, and on the surface it would also break the descent.
+    assert len(wg.spawnable(["Mire"])) >= wg.THIN_VARIETY_BELOW
+    assert wg.enrich_variety(["Mire"], [1, 5]) == ["Mire"], "repaired a healthy biome"
+
+    # A genuinely thin one still gets help. Every biome now carries at least
+    # its own line family, so thinness has to be constructed to be tested.
+    thin = min(wg.BIOMES, key=lambda b: len(wg.BIOMES[b]["creatures"]))
+    fixed = wg.enrich_variety([thin], [1, 5])
+    assert len(wg.spawnable(fixed)) >= len(wg.spawnable([thin])), (thin, fixed)
     assert len(fixed) <= 2, "repair should add at most one biome"
 
     rep = wg.report(wg.plan_region("Kinds", world_count=9, target_per_screen=6.0))
     assert not any("read repetitive" in p for p in rep["problems"]), rep["problems"]
-    return (f"catalogue admits {ceiling} creatures; a 9-world region reports "
+    return (f"catalogue admits {ceiling} creatures; thinnest biome {thin!r} has "
+            f"{len(wg.BIOMES[thin]['creatures'])}; a 9-world region reports "
             f"{rep['totals']['creature_types']} kinds and no repetition")
+
+
+@case("the five original biomes carry their P4 lines")
+def _widening():
+    """The widening something2 applied on 2026-08-27, mirrored here.
+
+    Those five shipped with legacy creatures only, which capped a SURFACE-ONLY
+    region at four kinds however many biomes it used. The P3 biomes were caught
+    because they shipped empty; these were populated with legacy names, so
+    nothing flagged them.
+
+    Nineteen is the checksum on the transcription, and it is why this asserts a
+    number rather than a shape: a single mistyped or duplicated creature name
+    would not sum to 19. The Frozen Waste row in ADR 0008 was wrong once
+    already, from hand-copying exactly this table.
+    """
+    five = ["Meadow", "Deep Forest", "Arid Dunes", "Frozen Waste", "Mire"]
+    kinds = wg.spawnable(five)
+    assert len(kinds) == 19, f"{len(kinds)} kinds, expected 19: {sorted(kinds)}"
+
+    # Every one of the five gained its own line family; none is still legacy-only.
+    legacy = {"Slime", "Wolf", "Bat", "Skeleton"}
+    for b in five:
+        gained = set(wg.BIOMES[b]["creatures"]) - legacy
+        assert len(gained) == 3, f"{b} has {sorted(gained)}, expected 3 P4 lines"
+
+    # And a surface-only region is no longer thin.
+    assert len(kinds) >= wg.THIN_VARIETY_BELOW, len(kinds)
+    return f"4 -> {len(kinds)} kinds without leaving the surface"
 
 
 @case("a region descends: surface at the entry, deep further out")

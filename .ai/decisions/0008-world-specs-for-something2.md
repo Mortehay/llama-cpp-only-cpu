@@ -237,3 +237,58 @@ visible rather than described, before `make seed-map` is ever run.
 - **Bandwidth.** Their measurement puts swarm on 224x224 at ~940 KiB/s down one
   socket. The generator will happily produce that if asked; the report flags it
   as CROWDED, but nothing refuses it.
+
+## D9 - The four-creature ceiling was fixed at the source, 2026-08-27
+
+Every statement above about "four creatures between them" is now **historical**.
+something2 widened the five starter biomes' `creature_types` and applied it to
+its database; this generator's table mirrors it.
+
+```
+Meadow        Slime, Wolf,     + Beast Swarm / Skirmisher / Line
+Deep Forest   Wolf, Bat, Skel. + Woodland Swarm / Skirmisher / Line
+Arid Dunes    Skeleton, Bat,   + Desert Swarm / Skirmisher / Line
+Frozen Waste  Bat, Skeleton,   + Tundra Swarm / Skirmisher / Line
+Mire          Slime, Bat,      + Swamp Swarm / Skirmisher / Line
+```
+
+Measured here after mirroring: the five together go from **4 kinds to 19**, the
+entry world from 2 to 5, and a 9-world region from 37 kinds to **49**. A
+3-world region now reports 22 kinds, 0 empty, 0 problems.
+
+**It did not invent the pairings, and neither did this side.**
+`scripts/bestiary/template.js` has a LINES table in which every P4 line already
+declares its home biome, and these five biomes are exactly the five it names.
+This repo had independently written the same relationship down in
+`BIOME_FAMILIES` - Beast for Meadow, Woodland for Deep Forest, Desert for Arid
+Dunes, Tundra for Frozen Waste, Swamp for Mire. Two sides reading a
+relationship the data already held.
+
+**Why it was invisible for two slices.** The P3 biomes shipped EMPTY and were
+caught precisely because they were empty. These five shipped populated - with
+legacy names - so nothing flagged them. An incomplete list is much harder to
+see than a missing one.
+
+**The safety argument, checked before it was applied:**
+`creatureTileCandidates` in `services/mapService.js` intersects a world's
+`allowed_creature_types` with its biome's list, so the world allowlist stays
+authoritative and a biome can only ever REMOVE candidates, never add. No
+already-seeded world changes behaviour.
+
+**Transcribing it is the risky part, so the check is arithmetic.** The Frozen
+Waste row in D2 above was wrong once from hand-copying exactly this table. The
+five lists must union to 19 - a single mistyped or duplicated name would not -
+and `smoke-world-gen` asserts that number rather than the shape.
+
+### The density retraction, recorded
+
+something2 also withdrew its reading that entry `dense` at 5.7/screen and final
+`sparse` at 4.2 was a bug. The tier NAME is not felt density once the biome
+multiplier applies: `sparse` in Infernal Gate (x2.5) outnumbers `dense` in
+Meadow (x0.5). A constant `target_per_screen` producing flat felt density is
+this generator working as specified. Its level-band half stands and is verified
+monotonic.
+
+Whether difficulty should RAMP with depth is a design question for the user,
+not for either generator, and is deliberately not implemented on a peer's
+say-so.
