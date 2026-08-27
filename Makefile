@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts
+.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -279,6 +279,34 @@ key-checkerboard:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/key-checkerboard.py --out /app/images/recovered/keyed --write
+
+# Every suite, in one run, continuing past a failure and summarising at the end.
+#
+# This target exists because running them as a SET is what found the bug that
+# running them individually could not. Each suite is normally run when its own
+# subject changes, so `test-audit-mirrors-cutout` sat broken by the ENVIRONMENT
+# rather than by the code under test - it resolved tasks.py through
+# `<repo>/src/sprite_generator` and died on FileNotFoundError through this very
+# Makefile, while passing from a host shell. Nobody had reason to run it,
+# because nobody had touched its subject.
+#
+# `-` on each line so one red suite does not hide the ones after it. The
+# summary is what you read; the output above it is where you look afterwards.
+test-all:
+	@fail=0; \
+	for t in test-train-prep test-split-sheets test-apply-verdicts \
+	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
+	         test-pedestal-guard; do \
+	    printf '\n=== %s ===\n' "$$t"; \
+	    if $(MAKE) --no-print-directory $$t; then \
+	        echo "--- $$t OK"; \
+	    else \
+	        echo "--- $$t FAILED"; fail=1; \
+	    fi; \
+	done; \
+	echo; \
+	if [ $$fail -eq 0 ]; then echo "ALL SUITES GREEN"; \
+	else echo "AT LEAST ONE SUITE FAILED - see above"; exit 1; fi
 
 # The trainer's GPU-free half. No CUDA, no weights - runs in seconds.
 test-train-prep:
