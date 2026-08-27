@@ -194,10 +194,15 @@ suggest and is stated carefully in §7: the two audits agree this image is
 cleanly *cut out*, and disagree about whether it is *usable*, because they ask
 different questions.
 
-Across both sets: **483 references, 2 fit to teach an entity cutout** —
+Across both sets: **483 references, 2 fit to teach an entity CUTOUT** —
 `ref_core_08e39eb3c931` and `ref_sprite_06074972c0ad`.
 
-### The dataset that DOES work: `images/recovered/cells` (103 images)
+"Cutout" is doing real work in that sentence. Fitness to teach the *pixel-art
+style* is a separate question this audit never asks, and answering it separates
+those two: the core one is palette-locked art on an exact 3x grid, the sprite
+one is smooth art that merely looks blocky. See recommendation 2 in §4.
+
+### `images/recovered/cells` (103 images): clean cutouts, but not pixel art
 
 Added after the fact, and it is the most useful number in this note.
 
@@ -216,13 +221,42 @@ kind=core  images: 103
 
 **Every one of them, clean.** Checked by eye across the contact sheets: single
 whole characters, centred, on real transparency, no pedestals, no ground
-shadows, no backdrop. This is the shape the entity conveyor needs, and it did
-not exist in any `ref_*` set.
+shadows, no backdrop. As *cutouts* these are the shape the entity conveyor
+needs, and nothing in any `ref_*` set matches them for it.
 
-So the conclusion in §4 changes in an important way. It is not "there is no
-usable entity data" — it is **"the usable entity data is the recovered cells,
-and the `ref_core` set is not it"**. 103 clean single-subject cutouts is a
-plausible floor for a first entity adapter; 1 was not.
+> ### CORRECTION: they are not pixel art, and an earlier draft over-sold them
+>
+> This note originally called them "the first dataset in the repo that is
+> actually the right shape for an entity cutout" and recommended training from
+> them. The cutout half stands. The implied "so train the pixel-art entity
+> adapter on these" does not, and ADR 0009's session caught it: their audit
+> rejects all 103 on *many colours, no pixel grid*, which is a question this
+> audit never asks.
+>
+> Measured here independently rather than taken. Collapse every NxN block to its
+> mean and compare — real pixel art is flat blocks, so the error is ~0:
+>
+> | set | best block error | distinct colours in a 32x32 patch |
+> |---|---|---|
+> | `recovered/cells` | **16.81** median, 10.42 best | **976** of 1024 pixels |
+> | `ref_sprite` | 5.03 median, **0.00** best | 137 |
+> | `ref_core` | 3.20 median, **0.00** best | 747 |
+>
+> The recovered cells are the worst of the three and **never once** show a grid
+> at any factor from 2 to 12, while both `ref_*` sets contain images that hit a
+> perfect 0.00. Nearly every pixel in a cell is its own colour. They are an
+> imitation of pixel art — blocky at thumbnail size, per-pixel noise underneath —
+> which is what their 1024x1024 sources with painted-on checkerboards suggest.
+>
+> **What survives:** the alpha is genuine, so as clean silhouettes they still
+> serve. What they cannot do is teach a palette, a grid, or the hard 1px edges
+> the conveyor spends a whole stage producing.
+>
+> I should have caught this. I verified these cells by *looking at contact
+> sheets*, which is exactly the resolution at which imitation pixel art is
+> indistinguishable from the real thing — the same "checked by eye" that has
+> been the right instrument all through this note, used on the one question it
+> cannot answer.
 
 ### The sliver bug, and why it was not a margin setting
 
@@ -425,13 +459,32 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    checkerboarded sheets among them, still `deleted=false, trainable=true`**. So
    this is not a hypothetical about a future run; it describes what the next
    training job would consume if started now.
-2. **Train from `images/recovered/cells`, not from `ref_core`.** All 103 cells
-   are clean by these rules and none is blocking — ready as they stand, with the
-   edge slivers already erased at the split. This supersedes what this note
-   originally recommended — "rebuild the set from the ~200 keyable single-subject
-   references" — because someone already built a better one by keying and
-   splitting the checkerboard sheets.
-   Rebuilding from `ref_core` is still worth doing *afterwards*, to grow the set
+2. **There is no dataset here that is both a clean cutout AND real pixel art at
+   any useful size. Two images qualify.** This replaces an earlier
+   recommendation to train from `images/recovered/cells`, which was wrong for
+   the reason in the correction above — those 103 are clean cutouts and are not
+   pixel art.
+
+   Measured across every candidate, the intersection is:
+
+   | file | cutout verdict | block error | colours / 32x32 |
+   |---|---|---|---|
+   | `ref_core_08e39eb3c931` | clean | **0.00** (grid 3) | **9** |
+   | `ref_core_ca0070408096` | strays are its own drips | 0.28 (grid 3) | 34 |
+
+   Both are genuine palette-locked pixel art on an exact 3x grid, and both are
+   in `ref_core` — the set this note spends most of its length criticising. The
+   criticism stands for the other 332.
+
+   Note what this also says about the one `sprite` survivor:
+   `ref_sprite_06074972c0ad` measures 7.14 with 875 colours. It is a clean
+   cutout and it is **not** pixel art either, so ADR 0009 was right to reject it
+   and this note was too generous. My "1 clean sprite" was 1 clean *silhouette*.
+
+   So the honest options are: use the 103 recovered cells for silhouette and
+   composition while accepting they cannot teach the style, or grow the
+   genuinely-pixel-art set from `ref_core` as below. They are not exclusive.
+   Growing from `ref_core` is worth doing to grow the set
    past 103: run the keyable single-subject references through
    `remove_background`, re-store as RGBA, split the 98 sheets with
    `scripts/split-sheets.py`, and re-audit the cells. The terrain work
@@ -594,6 +647,15 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+- **Verifying "is this the right training data" by looking at contact sheets.**
+  It is the right instrument for backdrops, pedestals, strays and sheets — it
+  found or confirmed every one of those. It is the *wrong* instrument for
+  "is this really pixel art", because a thumbnail is exactly the resolution at
+  which imitation pixel art is indistinguishable from the real thing. 103 cells
+  were called clean on that basis and are per-pixel noise underneath. The
+  measurement that separates them costs nothing: collapse each NxN block to its
+  mean and compare. Real pixel art scores 0.00; those cells never score under
+  10.42 at any factor.
 - **Believing two detectors covered "nothing else in frame".** They did not.
   `pedestal_ratio` only sees what is FUSED to the base and `subject_count` only
   sees blobs over 1% of the frame, so a detached drop shadow at 0.22% was
