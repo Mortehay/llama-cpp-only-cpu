@@ -150,17 +150,16 @@ def paint(model: str, seed: int, trigger: bool = True) -> Image.Image:
     print(f"    prompt: {brief[:110]}...")
     pipe = get_sd_pipeline(model)
 
-    # The VAE decode is what does not fit on this box, and it is not
-    # fragmentation - three identical OOMs, all asking for 512 MiB, all with
-    # only 55 MiB reserved-but-unallocated, and `expandable_segments:True`
-    # changed nothing. The card is simply full: 7.71 GB of fused SDXL plus the
-    # 3.6 GB llama.cpp holds permanently is 11.3 of 12.
+    # The VAE decode is what does not fit: SDXL upcasts the VAE to float32 and
+    # the decoder's intermediates at 1024x1024 need several GB of transient,
+    # more than is left once a fused pipeline is resident. Three identical
+    # OOMs, 55 MB reserved-but-unallocated, `expandable_segments:True` making
+    # no difference - nothing to reclaim, no setting that makes it fit.
     #
-    # llama.cpp does NOT give that back when it sleeps - it has been idle for
-    # hours and still holds it. So a 12 GB card running both services has
-    # roughly 8.4 GB for diffusion, not 12, and `_release_vram`'s measured
-    # figures were taken with llama.cpp asleep, which is not the state a map
-    # build runs in.
+    # NOT llama.cpp, though the first version of this comment said so. The
+    # error reported 3.18 GB free against 7.71 GB allocated by PyTorch, which
+    # leaves 1.11 GB for everything else - not the 3.6 GB I had attributed to
+    # it from a reading taken at a different moment. It does release on sleep.
     #
     # Tiling decodes the latent in pieces. It does not touch the latent, so
     # composition and seed behaviour are unchanged; only the decode is cheaper.

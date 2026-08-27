@@ -156,7 +156,27 @@ def _db():
 def create_map(spec: MapSpec, authorization: str | None = Header(None)):
     """Queue a world map. Returns a job id pollable at /api/jobs/{id}."""
     auth.require(authorization, "generate")
+    return queue_map(spec)
 
+
+def queue_map(spec: MapSpec) -> dict:
+    """Validate a map spec and put it on the queue. No auth, no HTTP.
+
+    Split out of `create_map` so that the ONLY thing the endpoint adds is the
+    scope check. Everything below - the validation and the job row - is the
+    real queueing path, and it is now callable by operational scripts on the
+    box without minting an API key to talk to localhost.
+
+    That is not a convenience. Every map ever built on this machine was built
+    by calling worker functions directly, which is why no `kind='map'` row has
+    ever existed here and why `check-artifacts.py` spent a day reporting a
+    clean bill of health over an empty set (ADR 0008 D12). The ad-hoc path
+    existed because the real one was unreachable without a credential; this
+    makes the real one reachable, so there is no reason to reach past it.
+
+    Still raises `HTTPException` - the endpoint needs those statuses, and a
+    caller here gets a message that says what is wrong either way.
+    """
     if not spec.prompt and not spec.painting_from:
         raise HTTPException(
             status_code=400,

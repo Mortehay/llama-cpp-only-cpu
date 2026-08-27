@@ -617,6 +617,62 @@ and an experiment that could not have answered its question.** Cheaper next
 time: write the prompt, seed, model string and output path next to any result
 worth citing later.
 
+Two footnotes, both corrections to the above:
+
+- The training peak WAS recorded. The trainer logs `Peak VRAM` per run, and
+  `mapstyle` and `mapstyle2` both read 5.60/12.00 GiB. I reported it lost
+  because the ad-hoc sampler I had set up did not survive; I had not checked
+  whether the thing already recorded it. **Look for the existing record before
+  announcing that a measurement is gone.**
+- The 5.60 GiB allocator figure and the 6741 MiB device figure are the same
+  run, not two numbers in tension: the ~1.1 GiB gap is CUDA context, cuBLAS
+  and cuDNN workspaces.
+
+### D14 - The OOM was not what I said it was, 2026-08-27
+
+Recorded because the correction is more instructive than the fix.
+
+The map painting stopped fitting on the card. I fixed it by tiling the VAE
+decode, and the fix is right - three runs failed without it, three succeeded
+with it, and the production map build now completes. **The explanation attached
+to it was wrong.**
+
+I wrote that llama.cpp holds 3.6 GB permanently, that it does not release on
+sleep, and that a 12 GB card therefore has ~8.4 GB for diffusion. The error
+message I quoted in the same paragraph says otherwise:
+
+```
+total 12.00 GiB, 3.18 GiB free, 7.71 GiB allocated by PyTorch
+```
+
+`12.00 - 3.18 - 7.71` leaves **1.11 GB** for everything else. And `7.71 + 3.6`
+would have left 0.69 GB free, not the 3.18 the error reported. The arithmetic
+contradicted the evidence sitting next to it and I did not check it.
+
+The 3.6 GB was a real reading, taken at a different moment with llama.cpp
+awake, carried into an explanation of a failure it was not present for.
+llama.cpp does release on sleep - it entered the sleeping state two minutes
+after this build's region-naming call and idles at ~390 MB.
+
+The actual cause: SDXL upcasts the VAE to float32, and the decoder's
+intermediates at 1024x1024 need several GB of transient - more than remains
+once a fused pipeline is resident. Which also explains the two facts I had no
+account for: `expandable_segments:True` changed nothing, and only 55 MB was
+reserved-but-unallocated. There was nothing to reclaim.
+
+**The practical note that survives is a peer's, and is better than mine:** the
+LLM and the diffusion model do contend, but on a TIMER. Sleep fires about two
+minutes after the last request, and a map build names its regions immediately
+before painting - inside that window every time. A standing "8.4 GB available"
+would have looked like a constant to plan around. It is a collision to avoid,
+and tiling avoids it.
+
+**What this adds to D12.** The other entries are about verifying a description
+instead of the thing. This one is narrower and nastier: *the evidence was
+already in front of me, in the same paragraph, and the claim did not match it.*
+Not a missing measurement - an unread one. Arithmetic in a commit message is a
+claim like any other, and nobody checks it because it looks like a citation.
+
 ## D13 - Density is uniform across a region, and that is a decision to make
 
 D10 removed the biome multiplier because it described nothing real. It was also

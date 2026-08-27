@@ -110,22 +110,41 @@ def _triggered(model: str, prompt: str) -> str:
 def _map_pipe(model: str):
     """The diffusion pipeline, with the VAE decoded in tiles.
 
-    MEASURED on this box, 2026-08-27: a fused SDXL pipeline allocates 7.71 GB,
-    llama.cpp holds 3.6 GB, and the card has 12. The decode then asks for 512
-    MB it cannot have. Three runs failed identically, with 55 MB reserved and
-    unallocated and `expandable_segments:True` making no difference - so this
-    is not fragmentation and no allocator setting fixes it. It does not fit.
+    MEASURED on this box, 2026-08-27, three identical failures: with a fused
+    SDXL pipeline resident, the VAE decode of a 1024x1024 latent does not fit.
+    Tiling decodes that latent in pieces. The latent itself is untouched, so
+    the seed and the composition are exactly what they would have been.
 
-    llama.cpp does not release that 3.6 GB when it sleeps; it has been idle for
-    hours and still holds it. And a map build has ALWAYS just used it, because
-    naming the regions is an LLM call that happens immediately before this. So
-    the map path is the one path guaranteed to meet the shortage.
+    WHY, CORRECTLY - the first version of this comment got it wrong
 
-    `_release_vram`'s figures were measured with llama.cpp asleep, which is not
-    a state a map build is ever in. Read them as a floor, not a budget.
+    It blamed llama.cpp for holding 3.6 GB permanently. The error message says
+    otherwise, and it was quoted in the same paragraph as the arithmetic that
+    contradicts it:
 
-    Tiling decodes the latent in pieces. The latent is untouched, so the seed
-    and the composition are exactly what they would have been.
+        total 12.00 GiB, 3.18 GiB free, 7.71 GiB allocated by PyTorch
+
+    12.00 - 3.18 - 7.71 leaves 1.11 GB for everything else, not 3.6. And
+    7.71 + 3.6 would have left 0.69 GB free, not the 3.18 the error reported.
+    The 3.6 GB was real but measured at a different moment, with llama.cpp
+    awake; it was carried into an explanation of a failure it was not present
+    for.
+
+    llama.cpp DOES release its VRAM on sleep - it entered the sleeping state
+    two minutes after this build's region-naming call, and idles at ~390 MB.
+
+    So llama.cpp was never the cause. The cause is the decode itself: SDXL
+    upcasts the VAE to float32, and the decoder's intermediates at 1024x1024
+    need several GB of transient - more than the 3-4 GB left once the fused
+    pipeline is resident. That is why `expandable_segments:True` changed
+    nothing and why only 55 MB was reserved-but-unallocated: there was no
+    fragmentation to reclaim and no setting that makes it fit.
+
+    The practical note that survives: the LLM and the diffusion model DO
+    contend, because sleep fires about two minutes after the last request and
+    a map build names its regions immediately before painting - inside that
+    window every time. That is a collision to avoid, not a budget to plan
+    around, and tiling avoids it. Do not write a fixed "N GB available" figure
+    here; measure it at run time if it matters.
     """
     from tasks import get_sd_pipeline
 
