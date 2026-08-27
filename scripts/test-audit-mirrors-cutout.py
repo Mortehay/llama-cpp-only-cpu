@@ -51,7 +51,21 @@ from PIL import Image
 from scipy import ndimage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TASKS = os.path.join(HERE, "..", "src", "sprite_generator", "tasks.py")
+# Two layouts, because this suite is run from both and only worked in one.
+# On the host the package is `<repo>/src/sprite_generator`. In the container the
+# repo is mounted AS `/app` with the scripts at `/app/scripts`, so the same
+# relative walk lands on `/app/src/sprite_generator/tasks.py`, which does not
+# exist - `make test-audit-mirrors-cutout` died on FileNotFoundError while the
+# identical run from a host shell passed. test-train-prep.py had the same fault
+# and the same fix; this one outlived it because nothing ran the whole set.
+_TASKS_CANDIDATES = [
+    os.path.join(HERE, "..", "src", "sprite_generator", "tasks.py"),
+    os.path.join(HERE, "..", "tasks.py"),
+]
+TASKS = next((p for p in _TASKS_CANDIDATES if os.path.isfile(p)), None)
+if TASKS is None:
+    sys.exit("cannot find tasks.py; looked in: "
+             + ", ".join(os.path.abspath(p) for p in _TASKS_CANDIDATES))
 
 # Above this fraction of transparent pixels an image already has usable alpha,
 # so `subject_mask` never consults `key_background` and the comparison would be
