@@ -110,6 +110,21 @@ class JobSpec(BaseModel):
     # depends on which profile happened to be derived last is not reproducible.
     style_profile: str | None = None
 
+    # Declared because `build_sheet_job` reads `spec.get("concept_check", True)`
+    # and tells the caller, in the failure message, to "Pass concept_check=false
+    # to build anyway". Pydantic drops undeclared fields silently and
+    # `model_dump()` is what gets stored, so that flag never reached the task:
+    # a caller followed the instruction, sent it, and got the identical refusal.
+    # The escape hatch for a wide creature or a vehicle did not exist.
+    #
+    # This is the pairing to watch for anywhere - a field the model does not
+    # declare, read downstream with `.get(name, default)`. The drop is silent,
+    # the default is plausible, and nothing between them can tell that the
+    # caller ever spoke. `tiles.py` shows the other correct shape: it augments
+    # the dump explicitly, `{**spec.model_dump(), "tile_h": h}`, for values the
+    # server computes rather than the caller supplies.
+    concept_check: bool = True
+
     def cells(self) -> int:
         """Cell count, which is what actually predicts runtime."""
         return len(self.actions) * len(self.directions) * self.frames

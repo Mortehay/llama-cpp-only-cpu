@@ -182,6 +182,22 @@ COMMANDS: dict[str, dict] = {
         "argv": ["python", f"{SCRIPTS}/test-auth-scopes.py"],
         "minutes": 1,
     },
+    "test-spec-fields": {
+        "label": "Request fields",
+        "group": "Tests",
+        "order": 5,
+        "writes": "nothing",
+        "summary": "A caller's flag reaches the worker instead of being "
+                   "dropped in silence.",
+        "detail": "Pydantic ignores undeclared fields and model_dump() emits "
+                  "only declared ones, so a field a task reads with a default "
+                  "but the model never declares is replaced by that default "
+                  "with nothing able to tell. JobSpec did not declare "
+                  "concept_check while the refusal message told callers to "
+                  "send it.",
+        "argv": ["python", f"{SCRIPTS}/test-spec-fields.py"],
+        "minutes": 1,
+    },
 }
 
 # Ordered for display. Curation first because it is the reason this exists;
