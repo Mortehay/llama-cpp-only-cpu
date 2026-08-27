@@ -27,7 +27,7 @@ A peer found the same pairing in the map path, where `Terrain` never declared
 walkable, water included, and three guards that depended on it returned
 answers indistinguishable from a legitimate "nothing here".
 
-TWO CHECKS
+THREE CHECKS
 
 The behavioural one sends a flag through the real model and asserts it
 survives to the dump. It fails the moment the field stops being declared.
@@ -41,9 +41,18 @@ declared on the model. It needs no server and no database.
 the dump explicitly - `{**spec.model_dump(), "tile_h": h}` - for values the
 SERVER computes. A key added that way is not a dropped one, so the pairs below
 name the reader function rather than sweeping every `.get` in the file.
+
+The third asks the RUNNING service. Both of the others read source, and both
+pass in a fresh interpreter against a fixed file while the live process still
+runs the old one - which is what happened on the map side: the walkable fix
+was committed and its suite 24/24 green while the API, up for four hours,
+still dropped the field. `/openapi.json` is the process describing its own
+models and needs no key. It reports a SKIP, loudly, when the API is not
+reachable; a skip that reads like a pass is the failure this file is about.
 """
 
 import ast
+import json
 import os
 import sys
 
@@ -159,6 +168,49 @@ def behaviour_check(fails):
         print("  omitted, it still defaults to True")
 
 
+def served_check(fails):
+    """What the RUNNING process serves, which is not what is on disk.
+
+    Both checks above read source. Both pass in a fresh interpreter against a
+    fixed file while the live service still runs the old one - which is exactly
+    what happened: the walkable fix was committed and 24/24 green while the API
+    had been up for four hours and was still dropping the field. A peer caught
+    it by asking the process instead of reasoning from timestamps.
+
+    /openapi.json is the running process describing its own models, and it
+    needs no key. It answers "what is served", which no source-reading check
+    can.
+    """
+    url = os.environ.get("SPRITE_API", "http://sprite-generator:8001")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url + "/openapi.json", timeout=10) as r:
+            schemas = json.load(r)["components"]["schemas"]
+    except Exception as e:
+        # NOT a pass. A skip that reads like a pass is the failure this whole
+        # file is about, so it says what it could not do and why.
+        print("  SKIPPED: no API at %s (%s)" % (url, type(e).__name__))
+        print("  This says NOTHING about what the running service serves.")
+        print("  Set SPRITE_API, or run this where the API is reachable.")
+        return
+
+    for mod, model, _rmod, _func, _var in PAIRS:
+        declared = model_fields(os.path.join(PKG, mod), model) or set()
+        served = set(schemas.get(model, {}).get("properties", {}))
+        if not served:
+            fails.append("%s is not in the served schema at all" % model)
+            continue
+        missing = sorted(declared - served)
+        print("  %s serves %d properties" % (model, len(served)))
+        if missing:
+            fails.append("%s declares %s in source but the RUNNING service "
+                         "does not serve %s - the process is older than the "
+                         "code; restart it"
+                         % (model, ", ".join(missing), ", ".join(missing)))
+        else:
+            print("  everything the source declares is served")
+
+
 def main():
     if PKG is None:
         print("could not find sprite_generator/jobs.py; looked in:")
@@ -172,6 +224,8 @@ def main():
     static_check(fails)
     print("\n== a caller's flag survives validation ==")
     behaviour_check(fails)
+    print("\n== the RUNNING service serves what the source declares ==")
+    served_check(fails)
 
     print("\nFAILURES:", "none" if not fails else "")
     for f in fails:
