@@ -132,12 +132,24 @@ def _map_pipe(model: str):
     llama.cpp DOES release its VRAM on sleep - it entered the sleeping state
     two minutes after this build's region-naming call, and idles at ~390 MB.
 
-    So llama.cpp was never the cause. The cause is the decode itself: SDXL
-    upcasts the VAE to float32, and the decoder's intermediates at 1024x1024
-    need several GB of transient - more than the 3-4 GB left once the fused
-    pipeline is resident. That is why `expandable_segments:True` changed
-    nothing and why only 55 MB was reserved-but-unallocated: there was no
-    fragmentation to reclaim and no setting that makes it fit.
+    So llama.cpp was never the cause. THE CAUSE IS OPEN.
+
+    I replaced the llama.cpp story with a float32-VAE-transient story, which
+    fits `expandable_segments:True` changing nothing and the 55 MB
+    reserved-but-unallocated - and does NOT fit a 512 MB request failing
+    against 3.18 GB free. If 3.18 GB were genuinely free, that allocation
+    succeeds. One of those three numbers is not what it appears to be, and
+    swapping one confident explanation for another on the same unread evidence
+    is how the first one got written.
+
+    The raw tracebacks are gone: those runs called worker functions directly
+    rather than going through the queue, so nothing persisted to
+    `docker logs`. Only a paraphrase survives - the same position the green
+    island left us in.
+
+    Reproducible now if it is ever worth closing: `maps.queue_map` makes the
+    failing path reachable through the queue, where logs persist. Revert the
+    tiling on a scratch branch, queue one map, and read the traceback verbatim.
 
     The practical note that survives: the LLM and the diffusion model DO
     contend, because sleep fires about two minutes after the last request and

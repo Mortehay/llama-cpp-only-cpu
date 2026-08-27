@@ -35,8 +35,18 @@ sys.path.insert(0, "/app")
 
 import maps  # noqa: E402
 
+# The map adapter, not the global default. The first run of this script left
+# `llm_name` unset, so the painting came from `nerijs/pixel-art-xl` - the
+# general pixel-art LoRA - and produced a map with 0.0% water on a theme that
+# says "coast", plus stone as speckle rather than a range. The map adapter was
+# trained on 114 world maps for exactly this step; at the same prompt it paints
+# 20% water in coherent regions. Named explicitly because `default_model()` is
+# global and knows nothing about maps.
+MAP_MODEL = "stabilityai/stable-diffusion-xl-base-1.0+local:mapstyle"
+
 SPEC = {
-    "name": "harbour-reach",
+    "llm_name": MAP_MODEL,
+    "name": "harbour-reach-3",
     "size": 24,
     "seed": 7,
     "prompt": "an island continent with a central mountain range, forests "
@@ -44,7 +54,14 @@ SPEC = {
     "terrains": [
         {"id": 0, "name": "grass", "color": "#4a7c3f", "walkable": True,
          "prompt": "short green meadow grass"},
-        {"id": 1, "name": "water", "color": "#2850c8", "walkable": False,
+        # #39888f, NOT the #2850c8 the smoke-test set uses. MEASURED: the
+        # painted water is a desaturated teal, and #2850c8 is 77.7 Lab away
+        # from it while stone's mid-grey #6e6e73 is 26.0 - so a grey was the
+        # nearest declared colour to every water pixel and quantisation, which
+        # IS the tile-id binding, assigned the entire sea to stone. Two builds
+        # warned "water covers 0.0%" before I stopped blaming the model.
+        # Correcting this one value moves water 0.0% -> 20.0%. See ADR 0008 D15.
+        {"id": 1, "name": "water", "color": "#39888f", "walkable": False,
          "prompt": "shallow blue sea water"},
         {"id": 2, "name": "sand", "color": "#c8be78", "walkable": True,
          "prompt": "pale coastal sand"},

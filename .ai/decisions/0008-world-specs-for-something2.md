@@ -654,11 +654,25 @@ awake, carried into an explanation of a failure it was not present for.
 llama.cpp does release on sleep - it entered the sleeping state two minutes
 after this build's region-naming call and idles at ~390 MB.
 
-The actual cause: SDXL upcasts the VAE to float32, and the decoder's
-intermediates at 1024x1024 need several GB of transient - more than remains
-once a fused pipeline is resident. Which also explains the two facts I had no
-account for: `expandable_segments:True` changed nothing, and only 55 MB was
-reserved-but-unallocated. There was nothing to reclaim.
+**The cause is OPEN, and my replacement for it was no better founded.** I
+swapped the llama.cpp story for a float32-VAE-transient story, which fits
+`expandable_segments:True` changing nothing and the 55 MB
+reserved-but-unallocated - and does not fit a 512 MB request failing against
+3.18 GB free. If 3.18 GB were genuinely free, that allocation succeeds. One of
+those three numbers is not what it appears to be. A peer caught it, having made
+the mirror-image mistake: they corrected my sleep claim and then reused the
+residency as the cause, quoting the same error and not doing the subtraction
+either - fixing the smaller half of a wrong claim while carrying the larger
+half forward, and feeling audited.
+
+What is established, and is enough to justify the fix: three decodes failed
+untiled, three succeeded tiled, and the production map build now completes.
+
+The raw tracebacks are gone. Those runs called worker functions directly, so
+nothing persisted to `docker logs`; only our paraphrase survives - the same
+position the green island left us in. It is reproducible now if closing it is
+ever worth the GPU: `queue_map` makes the failing path reachable through the
+queue, where logs persist.
 
 **The practical note that survives is a peer's, and is better than mine:** the
 LLM and the diffusion model do contend, but on a TIMER. Sleep fires about two
@@ -672,6 +686,79 @@ instead of the thing. This one is narrower and nastier: *the evidence was
 already in front of me, in the same paragraph, and the claim did not match it.*
 Not a missing measurement - an unread one. Arithmetic in a commit message is a
 claim like any other, and nobody checks it because it looks like a citation.
+
+### The mechanism behind most of these: routing around the real path
+
+A peer's generalisation, and it explains a whole class at once. Each of these
+lost its evidence the same way:
+
+- the map rows - built by calling worker functions directly, so
+  `check-artifacts.py` had no denominator;
+- the OOM tracebacks - same ad-hoc path, so nothing reached `docker logs` and
+  only a paraphrase survives;
+- the training VRAM sampler - an ad-hoc `/tmp/vram.log` that died, while the
+  trainer's own `Peak VRAM` line had it all along;
+- the green island - generated outside any recorded run, so the conditions
+  cannot be recovered.
+
+**Every one is someone routing around the real path and losing the recording
+that comes with it.** The real path was unreachable for a reason that felt
+trivial at the time - a scope check on an endpoint nobody wanted to mint a key
+for - and the shortcut silently traded away the audit trail.
+
+`maps.queue_map` is the fix for the specific case: the endpoint now adds
+exactly the scope check, and the queueing path is callable by operational
+scripts, so there is no longer a reason to reach past it. The general rule:
+**when you find yourself calling an internal function because the supported
+path needs a credential, the recording is what you are giving up.** Make the
+supported path reachable instead.
+
+### D15 - A declared terrain colour must exist in the art, 2026-08-27
+
+The first two maps built through the queue both warned:
+
+```
+terrain 'water' (#2850c8) covers 0.0% of this map
+```
+
+Both were painted from a prompt asking for a coast, and one used the trained
+map adapter, whose painting is measurably 20% open water. The water was in the
+art. It did not survive quantisation.
+
+Measured, on the adapter's own painting:
+
+| declared terrain | Lab distance from the painted water | share captured |
+|---|---|---|
+| water `#2850c8` | 77.7 | 0.0% |
+| stone `#6e6e73` | **26.0** | **97.5%** |
+
+The painted water is `#39888f`, a desaturated teal. The declared water is a
+saturated blue three times further away in Lab than a mid-grey. So a *grey*
+is the nearest declared colour to every water pixel, and quantisation - which
+IS the tile-id binding - assigns the whole sea to stone.
+
+Correcting that one colour to `#39888f`, with nothing else changed, moves water
+from 0.0% to 20.0% and stone from 43.7% to 24.5%. That matches the 20% the
+pixel metric reads directly off the image. Verified on CPU by re-quantising the
+existing painting; no GPU needed to check this.
+
+**This is sharper than the near-neutral-sink hazard already recorded in the
+plan.** That one says neutral colours attract. This says something stronger:
+a declared colour that does not appear in the art is not merely under-used -
+it can be *entirely* displaced by a colour that has no business representing
+it, and the loss is silent apart from the coverage warning.
+
+The demo terrain set in the smoke tests is the trap: `#2850c8`, `#4a7c3f`,
+`#c8be78`, `#6e6e73` are legible primaries chosen to be far apart from each
+other, which is the wrong criterion. They need to be close to the ART.
+`GET /api/maps/palette/{reference_id}` exists to derive them from a reference
+and is the right way to pick them.
+
+**And the guard did its job.** `_coverage_warnings` reported 0.0% on both
+builds. Nothing was silently wrong - it was loudly wrong for two builds while
+I read the warning as noise and went looking for a model problem. Three
+explanations of mine were wrong before I measured: the default model, then the
+adapter, then the prompt. The measurement took two minutes and no GPU.
 
 ## D13 - Density is uniform across a region, and that is a decision to make
 
