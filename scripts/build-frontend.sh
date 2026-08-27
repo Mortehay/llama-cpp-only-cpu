@@ -34,7 +34,11 @@ fi
 # npm's cache lives in a named volume rather than the bind mount: it is
 # thousands of small files, and on a /mnt/c bind mount that is punishingly slow.
 run_node() {
-    docker run --rm \
+    # Git Bash rewrites any argument that looks like a Unix path into a Windows
+    # one before docker sees it, so `-w /work/frontend` arrives as
+    # `C:/Program Files/Git/work/frontend` and the run dies on an invalid
+    # working directory. WSL and Linux ignore this variable.
+    MSYS_NO_PATHCONV=1 docker run --rm \
         -v "$REPO":/work \
         -v sprite_npm_cache:/root/.npm \
         -w /work/frontend \

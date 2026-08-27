@@ -21,3 +21,7 @@ images/*
 # React build
 frontend/node_modules/
 src/sprite_generator/static/app/
+# tsc -b writes this incremental cache on every build. It was tracked from the
+# React port onward, so every front-end change left the tree dirty and four
+# concurrent sessions kept re-committing each other's compile timestamps.
+frontend/tsconfig.tsbuildinfo
