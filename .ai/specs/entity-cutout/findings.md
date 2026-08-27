@@ -476,13 +476,28 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    the set this note spends most of its length criticising. The criticism stands
    for the other 332.
 
-   > **These two are a floor, not the answer.** They come from measuring 20
-   > files per set plus the ones already flagged, which answers "what is this
-   > set like" and not "what is in it" — a sample used for a question it cannot
-   > answer, which is the same error class as everything else in §6. ADR 0009's
-   > session swept all 483 and found **fourteen** grid-locked files, six of them
-   > in `ref_core`. Take fourteen as the better number and this table as two
-   > confirmed examples.
+   > **These two were a floor, not the answer, and the swept answer is below.**
+   > They came from measuring 20 files per set plus the ones already flagged,
+   > which answers "what is this set like" and not "what is in it" — a sample
+   > used for a question it cannot answer, the same error class as everything
+   > else in §6.
+   >
+   > **Swept properly: 16 of the 483 are real pixel art.** Two tests are needed
+   > and neither works alone:
+   >
+   > - *block error ≤ 1.0 alone* returns **36**, and 20 are false. At factor 2 a
+   >   large smoothly-shaded render has almost no within-block variance, so it
+   >   passes trivially. `ref_core_ee265a10678a` scores 0.24 — better than a
+   >   confirmed pixel-art file — with 25,402 colours.
+   > - *edge-divisibility alone* (ADR 0009's `pixel_scale`) returns **14**, and
+   >   misses real grids that a lossy re-save has scuffed.
+   >
+   > Together — error ≤ 1.0 **and** palette ≤ 300 — the answer is 16, and the
+   > threshold barely matters because the palette distribution has no middle:
+   > the hits run 4, 4, 4, 4, 4, 5, 5, 5, 9, 11, 16, 18, 19, 20, 241, 246, then
+   > nothing until 4,455. That reproduces ADR 0009's fourteen exactly and adds
+   > two it could not see: `ref_core_ca0070408096` (0.28, damaged grid) and
+   > `ref_sprite_9e2539f0bbea` (0.01, 241 colours).
    >
    > The 0.28 on `ca0070408096` is not noise in the measurement, it is damage in
    > the file. Its per-factor profile is 5.15 / **0.28** / 10.32 / 11.85 — an 18x
@@ -495,6 +510,35 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    > against an ideal 0.500, 0.333, 0.250, 0.200 — and no scale can clear the
    > bar. Judge a grid by the depth of the minimum, not by whether edges land
    > perfectly.
+
+   ### Which of the 16 can actually teach an entity cutout
+
+   Being pixel art and being a cutout are independent, and crossing the two is
+   what the recommendation actually needs:
+
+   | file | px-art | cutout verdict |
+   |---|---|---|
+   | `ref_core_08e39eb3c931` | 0.00, 9 col | **clean** |
+   | `ref_core_ca0070408096` | 0.28, 246 col | strays are its own drips |
+   | `ref_core_93f55ceabeae` | 0.00, 19 col | flat backdrop — **recoverable** |
+   | `ref_core_22e10326d210` | 0.00, 11 col | flat backdrop + strays |
+   | `ref_core_b667f8002995` | 0.00, 18 col | flat backdrop + pedestal |
+   | `ref_core_68076e9e3f53` | 0.00, 20 col | off centre |
+   | 8x `ref_sprite_*` 64x96 | 0.00, 4-5 col | blocked: **too small** |
+   | `ref_core_a0f76603de29` | 0.00, 16 col | blocked: multi-subject |
+   | `ref_sprite_9e2539f0bbea` | 0.01, 241 col | blocked: multi-subject |
+
+   **Six candidates, one pristine.** Four of the five defects on the others are
+   "flat backdrop, not transparent", which `remove_background` fixes — these are
+   the recoverable population this note has been describing in the abstract, and
+   here they are by name.
+
+   The eight 64x96 sprites are the interesting rejection. They are flawless
+   pixel art — 4 colours, error 0.00 — and are blocked only by `MIN_TRAIN_SIDE`
+   at 128px. They are not bad art, they are *small* art, at roughly the
+   resolution the game actually renders. Upscaling them is precisely what
+   `curate-training-set.py` was written to stop. Train at 64px or use them as
+   style references; do not stretch them to 1024 and call it data.
 
    Note what this also says about the one `sprite` survivor:
    `ref_sprite_06074972c0ad` measures 7.14 with 875 colours. It is a clean
