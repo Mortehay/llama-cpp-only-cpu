@@ -1,0 +1,85 @@
+# Editor/type-checker configuration ONLY. This project is not a pip package and
+# is never installed; there is no build backend here on purpose.
+#
+# WHY THIS FILE EXISTS
+#
+# Every Python dependency in this repo lives inside a container image - torch,
+# diffusers, celery, fastapi, psycopg2, PIL, numpy, scipy are installed by
+# compose/develop/*/requirements*.txt and nowhere else. The host has no usable
+# interpreter at all: `python` on Windows is the Microsoft Store stub, and the
+# WSL distro has no pip.
+#
+# So "Cannot find module `numpy`" in the editor is the STEADY STATE, not a
+# defect. Left alone it puts red errors on essentially every Python file in the
+# repo, which trains everyone to ignore the error list - and then a real
+# unresolved import hides in the noise.
+#
+# Two settings, doing two different jobs:
+#
+#   extra-paths / extraPaths  FIXES local imports properly rather than hiding
+#     them. Modules under src/sprite_generator are imported flat (`import
+#     auth`, `import measure`) because the container mounts that directory at
+#     /app, which is the working directory. Without these entries the checker
+#     cannot resolve them either, and those failures are worth resolving.
+#
+#   unresolved-import = ignore  SILENCES what is left, which after the above is
+#     the container-only third-party packages. This is a real trade: a typo in
+#     a third-party import name will no longer be flagged here. It is caught on
+#     first run instead, and that is the better trade against a permanently red
+#     error list that nobody reads.
+#
+# Both checkers are configured because the editor's bundled one is not pinned
+# by this repo and has changed before.
+#
+# WHAT TURNING THIS ON REVEALED, so nobody thinks the config broke something
+#
+# With the import noise gone, `ty check src scripts` reports 82 diagnostics
+# (ty 0.0.75, 2026-08-27). They are PRE-EXISTING and they are real - they were
+# simply invisible underneath the wall of unresolved imports. Sampled and
+# confirmed, the two big classes are:
+#
+#   17x invalid-parameter-default - `def f(controlnet: str = None)`. The
+#       annotation says `str` and the default is None, so every call site is
+#       being told the wrong thing. Wants `str | None = None`.
+#   31x unresolved-attribute - a mix of real None-chains
+#       (`spec.loader.exec_module` where both halves are Optional) and
+#       `Image.LANCZOS`, which works at runtime but is the legacy alias; the
+#       repo already prefers `Image.Resampling.LANCZOS` in pixelate.py and
+#       tasks.py.
+#
+# They are NOT fixed here. 24 of them are in tasks.py and several more in
+# world_*.py, which are mid-edit in the working tree, and rewriting someone
+# else's in-flight file to satisfy a checker they have not seen yet is a worse
+# trade than leaving the list honest. Run the check before clearing them:
+#
+#     docker run --rm -v "$(pwd -W)":/work -w //work sprite-audit \
+#         sh -c "pip install -q ty && ty check src scripts"
+
+[tool.ty.environment]
+extra-paths = [
+    "src/sprite_generator",
+    "src/collector",
+    "src/orchestrator",
+    "src/mesh_worker",
+    "src/rig_worker",
+    "scripts",
+]
+
+[tool.ty.rules]
+unresolved-import = "ignore"
+
+[tool.ty.src]
+exclude = ["frontend", "images", "models", "compose/develop/db"]
+
+[tool.pyright]
+extraPaths = [
+    "src/sprite_generator",
+    "src/collector",
+    "src/orchestrator",
+    "src/mesh_worker",
+    "src/rig_worker",
+    "scripts",
+]
+exclude = ["frontend", "images", "models", "compose/develop/db", "**/__pycache__"]
+reportMissingImports = "none"
+reportMissingModuleSource = "none"
