@@ -13,9 +13,12 @@ from their repo on 2026-08-26:
     horde         62                   14.0
     swarm         89                   20.0
 
-and `biomes.creature_density` multiplies that - Meadow 0.5, Mire 2.0. A
-Meadow world at 'normal' therefore holds ~2 creatures per screen, which is the
-emptiness this generator exists to remove.
+`biomes.creature_density` does NOT scale these. It used to be documented here as
+multiplying them - Meadow 0.5, so a Meadow world at 'normal' holding ~2 per
+screen - and that was the emptiness this generator was written to remove. It was
+not real. `resolveDensity` takes no biome argument and `creatureDensityField` is
+purely redistributive, so the multiplier decides only WHERE creatures land
+within a world. See `the Meadow trap was never real`.
 """
 
 from __future__ import annotations
@@ -46,25 +49,67 @@ def _tiers():
     return ", ".join(f"{k} {v}" for k, v in want.items())
 
 
-@case("the Meadow trap: 'normal' really is ~2 per screen")
+@case("the Meadow trap was never real")
 def _meadow():
-    ps = wg.per_screen("normal", ["Meadow"])
-    assert ps < wg.EMPTY_BELOW_PER_SCREEN, ps
-    return (f"normal x Meadow(0.5) = {ps:.1f}/screen - under the "
-            f"{wg.EMPTY_BELOW_PER_SCREEN} floor, i.e. empty")
+    """This asserted the module's founding claim. The claim was false.
+
+    It said `normal` in Meadow is ~2 creatures per screen, because Meadow's
+    `creature_density` of 0.5 halves the tier - and that halving is what the
+    whole module was built to compensate for.
+
+    something2 settled it structurally on 2026-08-27: `resolveDensity(tier,
+    width, height)` has no biome parameter, so a total cannot depend on the
+    multiplier, and `creatureDensityField` normalises to mean 1.0 so a
+    single-biome world's uniform weight cancels outright.
+
+    `normal` in Meadow is 4.1 per screen, like `normal` anywhere.
+    """
+    ps = wg.per_screen("normal", ["Meadow"], 128, 128)
+    assert ps > wg.EMPTY_BELOW_PER_SCREEN, ps
+    # The biome must make no difference at all - that is the whole correction.
+    for biomes in (["Meadow"], ["Mire"], ["Abyssal Rift"], []):
+        assert abs(wg.per_screen("normal", biomes, 128, 128) - ps) < 0.01, biomes
+    return (f"normal = {ps:.1f}/screen in Meadow, Mire and the Abyssal Rift "
+            f"alike - the 0.5 multiplier redistributes, it does not scale")
 
 
-@case("solving for a target beats naming a tier")
+@case("a tier is chosen for the target, and the biome plays no part")
 def _solve():
-    # The same target through a thin biome and a thick one must not produce
-    # the same tier - that is the entire fix.
-    thin = wg.choose_density(6.0, ["Meadow"])
-    thick = wg.choose_density(6.0, ["Mire"])
-    assert thin != thick, f"both chose {thin}"
-    assert wg.per_screen(thin, ["Meadow"]) >= wg.EMPTY_BELOW_PER_SCREEN
-    assert wg.per_screen(thick, ["Mire"]) >= wg.EMPTY_BELOW_PER_SCREEN
-    return (f"Meadow -> {thin} ({wg.per_screen(thin, ['Meadow']):.1f}/screen), "
-            f"Mire -> {thick} ({wg.per_screen(thick, ['Mire']):.1f}/screen)")
+    # This used to assert the OPPOSITE: that a thin biome and a thick one must
+    # choose different tiers. They must now choose the same one, because
+    # nothing about the biome changes how many creatures a world holds.
+    assert wg.choose_density(6.0, ["Meadow"]) == wg.choose_density(6.0, ["Mire"])
+
+    # What survives is real: the tiers are coarse, so asking for a felt number
+    # and being handed the nearest still beats naming one and hoping.
+    assert wg.choose_density(2.0) == "sparse"
+    assert wg.choose_density(4.1) == "normal"
+    assert wg.choose_density(8.1) == "dense"
+    assert wg.choose_density(14.0) == "horde"
+    assert wg.choose_density(20.0) == "swarm"
+    return "5 tiers, nearest wins, biome ignored"
+
+
+@case("a target between two tiers is not silently missed")
+def _coarse_gap():
+    """6.0 sits almost exactly between `normal` (4.1) and `dense` (8.1).
+
+    Before the multiplier was removed this was hidden: compensation happened to
+    push thin biomes up a tier, so the achieved number looked close for the
+    wrong reason. Now the shortfall is real and must be said out loud.
+    """
+    rep = wg.report(wg.plan_region("Gap", world_count=4, target_per_screen=6.0),
+                    target_per_screen=6.0)
+    assert rep["ok"], rep["problems"]
+    assert rep["caveats"], "a 32% shortfall went unmentioned"
+    assert "6.0" in rep["caveats"][0] and "coarse" in rep["caveats"][0]
+
+    # And a target that IS a tier says nothing.
+    on_tier = wg.report(wg.plan_region("OnTier", world_count=4,
+                                       target_per_screen=8.1),
+                        target_per_screen=8.1)
+    assert not on_tier["caveats"], on_tier["caveats"]
+    return f"asked 6.0, got {rep['totals']['mean_per_screen']}, and said so"
 
 
 @case("a generated region has no empty worlds")
@@ -267,34 +312,37 @@ def _variety_repair():
             f"{rep['totals']['creature_types']} kinds and no repetition")
 
 
-@case("the report never asserts two creature counts as both true")
-def _caveat():
-    """Found 2026-08-27 by something2 asking why the entry world went `horde`.
+@case("per_screen and creatures describe the same world")
+def _consistent():
+    """They did not, for two days, and both were reported side by side.
 
-    `creatures` mirrors their resolveDensity - tier x area, no biome weighting.
-    `per_screen` applies the multiplier. Every world's reported count implies a
-    per-screen figure that disagrees with its reported one, by exactly its own
-    multiplier. Both cannot be true.
+    `creatures` mirrored resolveDensity - tier x area. `per_screen` multiplied
+    by the biome. The entry world claimed 1016 creatures over 16384 tiles AND
+    7.0 per screen, which implies 510. Off by exactly Meadow's 0.5, and every
+    other world off by exactly its own multiplier.
 
-    Which is authoritative needs a read of their resolveDensity, so the report
-    states BOTH and says so, rather than picking one. The caveat lives outside
-    `problems` because `ok` gates their validator and a labelling question is
-    not a defect in the spec.
+    `per_screen` is now DERIVED from the resolved count, so they cannot drift
+    apart again - and a world clamped at MAX_WORLD_CREATURES reports the
+    density it will actually have rather than the one its tier asked for.
     """
     rep = wg.report(wg.plan_region("C", world_count=8, target_per_screen=6.0))
-    assert rep["ok"] and not rep["problems"], rep["problems"]
-    assert rep["caveats"], "the disagreement is not surfaced anywhere"
-    assert "resolveDensity" in rep["caveats"][0]
-
-    t = rep["totals"]
-    assert t["weighted_creatures"] != t["creatures"], t
     for row in rep["worlds"]:
-        assert "weighted_creatures" in row, row["key"]
         implied = row["creatures"] * wg.TILES_PER_SCREEN / max(row["area"], 1)
-        # The gap IS the multiplier - that is what makes it one bug, not eight.
-        assert abs(implied * row["biome_multiplier"] - row["per_screen"]) < 0.2, row
-    return (f"{t['creatures']} vs {t['weighted_creatures']}, stated as an open "
-            f"question rather than resolved by guess")
+        assert abs(implied - row["per_screen"]) < 0.05, row
+    assert "weighted_creatures" not in rep["totals"], (
+        "the placeholder for the unresolved reading outlived the question")
+
+    # The clamp is the case the tier alone cannot describe.
+    clamped = wg.report({"worlds": [{
+        "key": "w", "name": "w", "biomes": ["Mire"], "density": "swarm",
+        "width": 512, "height": 512, "is_entry": True,
+        "allowed_creature_types": ["Slime"]}], "links": []})
+    row = clamped["worlds"][0]
+    assert row["creatures"] == wg.MAX_WORLD_CREATURES, row
+    assert abs(row["per_screen"]
+               - wg.MAX_WORLD_CREATURES * wg.TILES_PER_SCREEN / row["area"]) < 0.05
+    return (f"every world self-consistent; a clamped 512x512 reports "
+            f"{row['per_screen']}/screen, not swarm's 20.0")
 
 
 @case("the five original biomes carry their P4 lines")
@@ -591,8 +639,14 @@ def _clamp():
         "key": "w", "name": "w", "biomes": ["Mire"], "density": "swarm",
         "width": 224, "height": 224, "is_entry": True,
         "allowed_creature_types": ["Slime"]}], "links": []})
-    assert any("socket cost" in p for p in crowded["problems"])
-    return f"swarm 224x224 -> {r['scatter']} scatter, flagged crowded"
+    # Matched the CROWDED message before. With the multiplier gone this world
+    # is 20.0/screen rather than 40.0, under the crowded floor - but the socket
+    # cost is real either way, and that is the check that should have been
+    # asserted all along.
+    assert any("KiB/s down a single socket" in p
+               for p in crowded["problems"]), crowded["problems"]
+    return (f"swarm 224x224 -> {r['scatter']} scatter, "
+            f"{wg.socket_kib_s(wg.per_screen('swarm', None, 224, 224), 32):.0f} KiB/s flagged")
 
 
 def main() -> int:

@@ -292,3 +292,82 @@ monotonic.
 Whether difficulty should RAMP with depth is a design question for the user,
 not for either generator, and is deliberately not implemented on a peer's
 say-so.
+
+## D10 - The biome multiplier does not scale anything, 2026-08-27
+
+**This supersedes the founding premise of `world_gen.py`, D1's motivation, and
+every creature-per-screen figure in this document above.**
+
+The module was built on the claim that a starter world is thin twice over: the
+default tier, times a Meadow `creature_density` of 0.5. Solving for a target
+"after the biome multiplier" was its headline feature.
+
+**No such halving happens.** something2 settled it structurally:
+
+```
+resolveDensity(tier, width, height)      <- arity 3, no biome parameter
+target = round(perThousand * area / 1000)
+```
+
+A world's total cannot depend on the multiplier, because the multiplier is not
+in scope where the total is computed. And `creatureDensityField.js` says so in
+its own header: *"PURELY REDISTRIBUTIVE ... A world's total comes from its
+density tier and MAX_WORLD_CREATURES, never from here."* The field normalises
+to mean 1.0 over interior tiles, so in a **single-biome** world a uniform
+weight cancels completely - Meadow at 0.5 alone behaves exactly like a biome at
+2.5 alone. It is a relative weight BETWEEN biomes inside one world, clamped to
+[0.15, 1.5].
+
+### What it cost
+
+Compensating for a multiplier that does not apply **over-populated the entry
+world of every region**. emerald-reach's hub came out `horde` - 1016 creatures
+on 128x128, 14 per screen against a requested 6 - while its siblings sat at
+295. That is the 3.4x outlier something2 flagged, and it is real.
+
+The contradiction was visible in this project's own report for two days:
+`creatures` (from the `resolveDensity` mirror) and `per_screen` (with the
+multiplier) described different worlds, and every world was off by exactly its
+own multiplier. Nobody noticed while both sides quoted the numbers at each
+other.
+
+### The fix
+
+- `per_screen` is derived from the RESOLVED count - `scatter / area * 225` -
+  so it cannot drift from `creatures` again, and a world clamped at
+  `MAX_WORLD_CREATURES` reports the density it will actually have.
+- `choose_density` ignores biomes. It is much less clever and much more
+  correct; the tiers are coarse, so nearest-tier-to-target still earns its
+  place.
+- `biome_multiplier` is still reported, documented as describing distribution
+  WITHIN a world and nothing else.
+- **New:** a caveat when the achieved mean misses the requested target by more
+  than 15%. The tiers are 2.0 / 4.1 / 8.1 / 14.0 / 20.0 per screen, so a target
+  of 6.0 yields 4.1 - a 32% shortfall that was previously masked, because the
+  bogus compensation happened to push thin biomes up a tier.
+
+### The retraction of a retraction
+
+something2 had observed that density runs backwards - entry dense, depths
+sparse - and **withdrew it** after this project argued the tier name is not
+felt density once the multiplier applies. That compensation does not exist, so
+the original observation was correct and was withdrawn on a false premise. A
+player descending emerald-reach now walks from 1016 creatures to 147, a 7x
+fall, while level bands ramp 3-5 up to 11-15.
+
+Whether difficulty should RAMP with depth remains the user's design question,
+not this generator's, and nothing is implemented on either side's say-so. But
+it is now a question about real numbers.
+
+### The pattern, named
+
+Four bugs this week share one shape: **internally consistent, arithmetically
+checkable, describing a mechanism nobody had read.** The creature counter, the
+`depth` field, the spiral-vs-index bands, and now the multiplier itself.
+
+The fifth version is worse and worth naming separately: a *correct measurement
+withdrawn* because a plausible story was offered for why it did not matter. A
+retraction deserves the same standard of proof as the claim it withdraws.
+
+`level_band` is still assumed on both sides and unread. It is the obvious
+candidate to be next.

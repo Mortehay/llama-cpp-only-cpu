@@ -109,7 +109,7 @@ def _write_region(name: str, params: dict, plan_kwargs: dict, note: str) -> dict
     map_path, png_path, gen_path = _paths(name)
 
     region = world_gen.plan_region(name, **plan_kwargs)
-    rep = world_gen.report(region)
+    rep = world_gen.report(region, plan_kwargs.get("target_per_screen"))
 
     os.makedirs(WORLDS_DIR, exist_ok=True)
     with open(map_path, "w", encoding="utf-8") as fh:
@@ -391,8 +391,9 @@ def list_worlds(authorization: str | None = Header(None)):
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 region = json.load(fh)
-            rep = world_gen.report(region)
-            # `editable` is what a UI needs to know before offering an edit
+            # Params first, because the report needs the TARGET to say whether
+            # the region actually hit it - and the target only exists in the
+            # sidecar. `editable` is what a UI needs before offering an edit
             # form: a region generated before the sidecar existed can only be
             # replaced, not patched.
             gen_path = os.path.join(WORLDS_DIR, f"{name}.gen.json")
@@ -403,6 +404,9 @@ def list_worlds(authorization: str | None = Header(None)):
                         params = json.load(gh)
                 except Exception:
                     params = None
+
+            rep = world_gen.report(
+                region, (params or {}).get("target_per_screen"))
             items.append({
                 "name": name,
                 "region": region.get("name"),

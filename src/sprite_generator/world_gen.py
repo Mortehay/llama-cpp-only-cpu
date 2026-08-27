@@ -8,25 +8,43 @@ it is the ONE thing this service can hand something2 **synchronously**, inside
 the blocking POST their provider system is limited to. Tiles and sheets cannot;
 this can.
 
-THE PROBLEM THIS EXISTS TO FIX
+THE PROBLEM THIS EXISTS TO FIX, AND THE HALF OF IT THAT WAS NEVER REAL
 
 something2's own numbers, read out of their repo on 2026-08-26:
 
   * `DENSITY_TIERS` is per 1000 tiles, and one screen is ~225 tiles, so
     creatures-per-screen is `perThousand * 0.225`.
-  * `biomes.creature_density` multiplies that per biome, and **Meadow is 0.5**.
   * Their `world_density` migration says 'normal' on a 64x64 map is "~12
     scattered creatures", and their own comment notes every checked-in spec
     uses only sparse/normal/dense - the top tiers are "theoretical".
 
-So the starter world is thin twice over: the default tier, times a biome that
-halves it. Writing `density: 'normal'` on every world and hoping is exactly how
-a 128x128 world ends up reading as empty space.
+**The founding claim of this module was wrong.** It said the starter world was
+thin TWICE over - the default tier, times a Meadow biome that halves it - and
+that solving for a target "after the biome multiplier" was the fix. Corrected
+2026-08-27, on structural evidence from something2:
 
-This module therefore does not let a caller pick a tier by name and hope. It
-takes a TARGET creatures-per-screen and solves for the tier that lands closest
-**after** the biome multiplier, per world. The report says what each world will
-actually feel like, before it is ever seeded.
+  `resolveDensity(tier, width, height)` takes three arguments. No biome
+  parameter, so a world's total cannot depend on `creature_density`.
+
+  `creatureDensityField` is purely redistributive and normalises to mean 1.0
+  over interior tiles, so in a single-biome world the multiplier CANCELS. It
+  is a relative weight between biomes inside one world, and nothing else.
+
+So the Meadow trap did not exist: `normal` in Meadow is 4.1 creatures per
+screen, exactly like `normal` anywhere. Worse, compensating for it made the
+entry world of every region over-populated - a 128x128 Meadow world came out
+`horde`, 1016 creatures, 14 per screen against a requested 6.
+
+What survives is the smaller, true version: the tiers are coarse (2.0 / 4.1 /
+8.1 / 14.0 / 20.0 per screen), so asking for a felt number and being handed the
+nearest tier still beats naming one and hoping. It just does not vary by biome,
+because nothing does. The report says what each world will actually feel like
+before it is seeded, which is the part that was always the point.
+
+The wrong version is kept above rather than deleted. It was believed for two
+days by two systems, and it is exactly the shape of error worth recognising
+again: internally consistent, arithmetically checkable, describing a mechanism
+nobody had read.
 
 Numbers here mirror something2's; they are not invented. Where a number was not
 visible in their source it is left unmodelled and said so rather than guessed -
@@ -71,9 +89,6 @@ MAX_WORLD_CREATURES = 5000
 # every estimate below is a floor, never an overstatement.
 PACKS_NOT_MODELLED = True
 
-# seeds/data/biomes.js. `creature_density` multiplies the tier; `color` is
-# their own biome colour, which is what makes the preview honest rather than a
-# palette this project invented.
 # The live `biomes` table, all 32 rows, read from something2's DB 2026-08-27
 # via something2-54. Colour, creature_density, path_tile and flora_types are
 # theirs; `depth` is the only column this module adds - see SURFACE below.
@@ -516,18 +531,51 @@ def check_units(world: dict) -> list:
 def biome_multiplier(biomes) -> float:
     """Mean `creature_density` across a world's biomes.
 
-    The mean, because their biome_cell bands terrain across the world and a
-    creature may land in any of them. A world that mixes Meadow (0.5) with
-    Mire (2.0) averages 1.25 and is not well described by either.
+    IT DOES NOT SCALE ANYTHING. Reported because it describes how creatures are
+    distributed WITHIN a world, and for nothing else - see `per_screen` below
+    for the two days that cost.
     """
     known = [BIOMES[b]["creature_density"] for b in biomes if b in BIOMES]
     return sum(known) / len(known) if known else 1.0
 
 
-def per_screen(tier: str, biomes) -> float:
-    """Creatures on one screen, after the biome multiplier. The felt number."""
-    rate = DENSITY_TIERS.get(tier, 0.0)
-    return rate * (TILES_PER_SCREEN / 1000.0) * biome_multiplier(biomes)
+def per_screen(tier: str, biomes=None, width: int = 0, height: int = 0) -> float:
+    """Creatures on one screen. The felt number.
+
+    THE BIOME MULTIPLIER IS NOT IN HERE, and removing it on 2026-08-27 was the
+    correction this module most needed.
+
+    Two structural facts from something2, neither of which was checked when
+    this was written:
+
+      `resolveDensity(tier, width, height)` takes THREE arguments. There is no
+      biome parameter, so a world's total cannot depend on the multiplier - it
+      is not in scope where the total is computed.
+
+      `creatureDensityField` is purely redistributive and normalises to mean
+      1.0 over interior tiles, so in a SINGLE-BIOME world a uniform weight
+      divides out completely. Meadow at 0.5 alone behaves exactly like a biome
+      at 2.5 alone. It is a relative weight BETWEEN biomes inside one world,
+      clamped to [0.15, 1.5], and nothing more.
+
+    So the average over a world is just its population over its area, whatever
+    its biomes. Derived from the RESOLVED count rather than the tier, which
+    also makes a world clamped at MAX_WORLD_CREATURES report the density it
+    will actually have instead of the one its tier asked for.
+
+    What this cost: `choose_density` was compensating for a multiplier that
+    does not apply, so the entry world of every region was over-populated - a
+    128x128 Meadow world came out at `horde`, 1016 creatures, 14/screen against
+    a requested 6. And the "Meadow trap" this module was written to fix, a
+    starter world at ~2 creatures per screen, WAS NEVER REAL. `normal` in
+    Meadow is 4.1 per screen, like `normal` anywhere else.
+    """
+    area = int(width) * int(height)
+    if area <= 0:
+        # No world to measure - fall back to the tier's own rate, which is what
+        # a caller asking without dimensions can possibly mean.
+        return DENSITY_TIERS.get(tier, 0.0) * (TILES_PER_SCREEN / 1000.0)
+    return resolve_density(tier, width, height)["scatter"] * TILES_PER_SCREEN / area
 
 
 def resolve_density(tier: str, width: int, height: int) -> dict:
@@ -539,22 +587,29 @@ def resolve_density(tier: str, width: int, height: int) -> dict:
             "area": area}
 
 
-def choose_density(target_per_screen: float, biomes) -> str:
-    """The tier landing closest to `target_per_screen` for THESE biomes.
+def choose_density(target_per_screen: float, biomes=None) -> str:
+    """The tier landing closest to `target_per_screen`.
 
-    This is the whole point of the module. Naming a tier and hoping is what
-    leaves a Meadow world at half the creatures its author expected; solving
-    for the felt number instead means a thin biome is compensated with a
-    heavier tier automatically.
+    `biomes` is accepted and IGNORED. It used to multiply the target by the
+    biome density, which was the module's headline feature - "a thin biome is
+    compensated with a heavier tier automatically" - and it was compensating
+    for something that does not happen. See `per_screen`.
+
+    The correction makes this function much less clever and much more correct.
+    It still earns its place: the tiers are coarse (9, 18, 36, 62, 89 per
+    thousand, i.e. 2.0 / 4.1 / 8.1 / 14.0 / 20.0 per screen), so asking for a
+    felt number and being given the nearest tier still beats naming one and
+    hoping. It simply no longer varies by biome, because nothing does.
+
+    The parameter is kept rather than removed so a stored spec or an older
+    caller does not break on a signature change; it is documented as ignored
+    rather than quietly accepted.
     """
-    mult = biome_multiplier(biomes)
-    if mult <= 0:
-        return "normal"
     best, best_err = "normal", float("inf")
     for name in DENSITY_ORDER:
         if name == "dead":
             continue
-        err = abs(DENSITY_TIERS[name] * (TILES_PER_SCREEN / 1000.0) * mult
+        err = abs(DENSITY_TIERS[name] * (TILES_PER_SCREEN / 1000.0)
                   - target_per_screen)
         if err < best_err:
             best, best_err = name, err
@@ -886,12 +941,18 @@ def _title(region: str, i: int) -> str:
 
 # --- the report: does this world read as empty? ---------------------------
 
-def report(spec: dict) -> dict:
+def report(spec: dict, target_per_screen: float | None = None) -> dict:
     """Per-world verdicts, plus every structural check worth failing on.
 
     Written as a report rather than an exception because a spec with one thin
     world is still seedable, and the useful thing is to say WHICH world and by
     how much - not to refuse the whole region.
+
+    `target_per_screen` is what the caller ASKED for, if known. Passing it is
+    what lets the report say "you asked for 6.0 and the tiers can only give you
+    4.1" - see the caveat below. It is a parameter rather than a spec key
+    because something2's WORLD_KEYS rejects keys it does not know, and a spec
+    is not the place to record what someone wanted.
     """
     worlds = spec.get("worlds", [])
     keys = {w["key"] for w in worlds}
@@ -900,8 +961,8 @@ def report(spec: dict) -> dict:
     for w in worlds:
         biomes = w.get("biomes", [])
         tier = w.get("density", "normal")
-        ps = per_screen(tier, biomes)
         res = resolve_density(tier, w.get("width", 0), w.get("height", 0))
+        ps = per_screen(tier, biomes, w.get("width", 0), w.get("height", 0))
         flora = flora_types(biomes)
 
         # THE CHECK THAT WAS MISSING, and the reason a region could report
@@ -922,7 +983,7 @@ def report(spec: dict) -> dict:
                 # Zero under either reading of the multiplier, but the key must
                 # be present: a row that omits it makes every consumer branch
                 # on whether this world was empty.
-                "weighted_creatures": 0,
+
                 "area": res["area"],
                 "biome_multiplier": round(biome_multiplier(biomes), 2),
                 "flora": flora, "creature_types": types, "variety": 0,
@@ -942,8 +1003,8 @@ def report(spec: dict) -> dict:
             verdict = "EMPTY"
             problems.append(
                 f"{w['key']}: {ps:.1f} creatures/screen - reads as empty space. "
-                f"{tier} x biome {biome_multiplier(biomes):.2f}. "
-                f"Raise the tier or drop a low-density biome.")
+                f"{tier} over {res['area']} tiles. "
+                f"Raise the tier - the biome does not change this.")
         elif ps > CROWDED_ABOVE_PER_SCREEN:
             verdict = "CROWDED"
             problems.append(
@@ -1009,25 +1070,11 @@ def report(spec: dict) -> dict:
             # THESE TWO NUMBERS DISAGREE, AND IT IS NOT KNOWN WHICH IS RIGHT.
             #
             # `creatures` mirrors their `resolveDensity`: tier x area, with no
-            # biome weighting. `per_screen` applies the multiplier, because
-            # that is the felt number and the whole reason `choose_density`
-            # solves for a tier at all.
-            #
-            # Both cannot describe the same world. Measured on emerald-reach's
-            # entry world: 1016 creatures over 16384 tiles is 14.0 per screen,
-            # while `per_screen` reports 7.0 - off by exactly Meadow's 0.5, and
-            # every other world is off by exactly its own multiplier.
-            #
-            # So either the multiplier weights the world TOTAL, and `creatures`
-            # is overstated for every biome under 1.0; or it only weights local
-            # placement, and `creatures` is a pre-weighting budget that should
-            # not be called a creature count. `weighted_creatures` is what the
-            # total would be under the first reading. Reported alongside rather
-            # than instead, because something2 already consumes `creatures` and
-            # guessing at which is authoritative is how the last three bugs of
-            # this shape happened. See `caveats` below.
-            "weighted_creatures": round(res["scatter"]
-                                        * biome_multiplier(biomes)),
+            # biome weighting - which is CORRECT, confirmed 2026-08-27 from
+            # `resolveDensity`'s arity: it has no biome parameter, so a total
+            # cannot depend on one. `per_screen` is derived from this same
+            # count rather than from the tier, so the two can no longer
+            # disagree the way they did for two days.
             "biome_multiplier": round(biome_multiplier(biomes), 2),
             "flora": flora, "creature_types": types,
             "variety": len(types), "leaders": leaders,
@@ -1057,23 +1104,38 @@ def report(spec: dict) -> dict:
 
     per = [r["per_screen"] for r in rows] or [0]
 
-    # Open questions about what the numbers MEAN, kept apart from `problems`
-    # on purpose: `ok` gates something2's validator, and a caveat is not a
-    # defect in the spec. Putting it in `problems` would fail every region over
-    # a question about labelling.
+    # Kept for things the report cannot settle from here, and deliberately NOT
+    # in `problems`: `ok` gates something2's validator, and a question about
+    # what a number means is not a defect in the spec.
+    #
+    # It held the creatures-vs-per_screen contradiction until 2026-08-27, when
+    # something2 read `resolveDensity` and settled it. Kept empty rather than
+    # removed - the next such question should have somewhere to go that does
+    # not fail a region.
     caveats = []
     raw = sum(r["creatures"] for r in rows)
-    weighted = sum(r["weighted_creatures"] for r in rows)
-    if rows and raw != weighted:
-        caveats.append(
-            f"`creatures` ({raw}) mirrors resolveDensity - tier x area, no "
-            f"biome weighting. `per_screen` applies the multiplier. They "
-            f"cannot both be right: the entry world's count implies "
-            f"{rows[0]['creatures'] * TILES_PER_SCREEN / max(rows[0]['area'], 1):.1f} "
-            f"per screen against a reported {rows[0]['per_screen']}. If the "
-            f"multiplier weights the world total, this region holds "
-            f"{weighted}, not {raw}. UNRESOLVED - needs a read of "
-            f"resolveDensity in services/, not a guess.")
+
+    # THE TIERS ARE COARSE AND THE GAP IS SILENT WITHOUT THIS.
+    #
+    # 2.0, 4.1, 8.1, 14.0, 20.0 per screen. A target of 6.0 sits almost exactly
+    # between `normal` and `dense`, and the nearest is `normal` at 4.1 - a 32%
+    # shortfall the caller never asked for and could not see. Before the
+    # multiplier was removed this was hidden: the compensation happened to push
+    # thin biomes up a tier, so the number looked close for the wrong reason.
+    if target_per_screen and per:
+        got = sum(per) / len(per)
+        if abs(got - target_per_screen) > 0.15 * max(target_per_screen, 0.1):
+            nearer = min((t for t in DENSITY_ORDER if t != "dead"),
+                         key=lambda t: abs(DENSITY_TIERS[t]
+                                           * (TILES_PER_SCREEN / 1000.0)
+                                           - target_per_screen))
+            caveats.append(
+                f"asked for {target_per_screen:.1f} creatures/screen, this "
+                f"region averages {got:.1f}. The tiers are coarse - "
+                + ", ".join(f"{t} {DENSITY_TIERS[t] * TILES_PER_SCREEN / 1000:.1f}"
+                            for t in DENSITY_ORDER if t != "dead")
+                + f" - and {nearer} is the closest one to your target. Ask for "
+                  f"a number nearer a tier if the gap matters.")
 
     return {
         "worlds": rows,
@@ -1083,7 +1145,7 @@ def report(spec: dict) -> dict:
         "totals": {
             "worlds": len(worlds),
             "creatures": raw,
-            "weighted_creatures": weighted,
+
             "mean_per_screen": round(sum(per) / len(per), 1),
             "min_per_screen": round(min(per), 1),
             "max_per_screen": round(max(per), 1),
