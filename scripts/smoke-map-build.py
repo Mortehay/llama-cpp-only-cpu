@@ -438,6 +438,72 @@ def _shore_reachable():
     return f"0 shore when all walkable, {wet} when water is not; port follows"
 
 
+# What `create_map` adds to the payload AFTER validation. The server computes
+# these; a caller cannot supply them, so `map_tasks` reading them with a default
+# is correct and not the bug below. Listed explicitly rather than pattern-
+# matched, because a check that cries at correct code gets silenced in a week.
+SERVER_COMPUTED = {"kind", "ratio", "tile_w", "tile_h",
+                   "picture_w", "picture_h"}
+
+# The props-job spec is built by `_queue_props_job` and read by
+# `resolve_map_props` - same module either side, no model in between, so there
+# is nothing that could drop them.
+PROPS_JOB_INTERNAL = {"map_job", "wants"}
+
+
+@case("no spec field is read with a default that no model declares")
+def _no_dropped_fields():
+    """The static form of D16, which is the half that finds the NEXT one.
+
+    `Terrain` had no `walkable` field. Pydantic drops what it does not declare,
+    `map_tasks` supplied `t.get("walkable", True)`, and every map said the sea
+    was walkable. The behavioural test next to this one - send the flag, assert
+    it survives - is worth having but would never have found it, because nobody
+    suspected the field.
+
+    This is the general shape instead: for the (model, reader) pair, every key
+    the reader takes with a default must be declared on the model. A peer found
+    a second instance elsewhere in the service this way, where the failure
+    message told callers to pass a flag that could not work.
+
+    Deliberately scoped to keys read off the SPEC rather than every `.get` in
+    the file. Sweeping all of them flags correct code - `{**spec.model_dump(),
+    "ratio": ratio}` augments the dump with server-computed values on purpose -
+    and a noisy check gets turned off.
+    """
+    import re
+
+    import maps
+
+    src = open("/app/map_tasks.py", encoding="utf-8").read()
+    quoted = r"""['"]([a-z_]+)['"]\s*,"""
+    reads = set(re.findall(r"spec\.get\(\s*" + quoted, src))
+    reads |= set(re.findall(r"t\.get\(\s*" + quoted, src))
+    reads |= set(re.findall(r"s\.get\(\s*" + quoted, src))
+
+    # A check over an empty set is not a passing check - see ADR 0008 D12.
+    assert reads, ("found no defaulted spec reads in map_tasks - either the "
+                   "pairing this asserts has moved, or the pattern stopped "
+                   "matching. Either way this is not passing, it is blind.")
+
+    declared = (set(maps.MapSpec.model_fields) | set(maps.Terrain.model_fields)
+                | set(maps.Scatter.model_fields))
+    allowed = declared | SERVER_COMPUTED | PROPS_JOB_INTERNAL
+
+    dropped = sorted(reads - allowed)
+    assert not dropped, (
+        f"map_tasks defaults {dropped} off the spec, and no model declares "
+        f"them. Pydantic drops undeclared fields silently, so a caller sending "
+        f"one gets the default instead and nothing reports it - this is how "
+        f"every tilemap came to say the sea was walkable (ADR 0008 D16). "
+        f"Either add the field to the model, or add it to SERVER_COMPUTED if "
+        f"the server computes it.")
+
+    assert "walkable" in reads, ("the read that motivated this check is gone; "
+                                 "if that is deliberate, update this case")
+    return f"{len(reads)} defaulted spec reads, all declared"
+
+
 def main() -> int:
     failed = 0
     for name, fn in CASES:
