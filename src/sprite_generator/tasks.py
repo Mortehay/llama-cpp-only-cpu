@@ -3028,6 +3028,21 @@ def train_lora_job(self, run_id: str, job_id: str | None = None):
     ]
     if cfg.get("trigger"):
         cmd += ["--trigger", cfg["trigger"]]
+    # What the images ARE, in words. Omitted for older queued runs, which then
+    # get the trainer's own default rather than a KeyError mid-flight.
+    if cfg.get("caption"):
+        cmd += ["--caption", cfg["caption"]]
+    # Image preparation. These changed defaults in the trainer (pad not crop,
+    # nearest not lanczos for pixel art), so passing them explicitly keeps the
+    # run record honest about what it did - see the `meta` block train-lora.py
+    # writes beside the adapter.
+    for key, flag in (("fit", "--fit"), ("resample", "--resample")):
+        if cfg.get(key):
+            cmd += [flag, str(cfg[key])]
+    for key, flag in (("noise_offset", "--noise-offset"),
+                      ("min_snr", "--min-snr"), ("warmup", "--warmup")):
+        if cfg.get(key) is not None:
+            cmd += [flag, str(cfg[key])]
     # The manifest the API froze at submit time. Without it the trainer globs
     # the images directory and picks up files from deleted and rejected
     # references - a different dataset from the one the user was shown.

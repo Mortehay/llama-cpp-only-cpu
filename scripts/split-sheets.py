@@ -257,6 +257,64 @@ def crop_cell(img: Image.Image, box, pad: int = 2) -> Image.Image:
                                      min(w, x1 + pad), min(h, y1 + pad)))
 
 
+# A component this small next to the cell's main subject, AND touching the crop
+# edge, is a piece of the NEIGHBOURING cell rather than part of this one.
+EDGE_SLIVER_MAX_RATIO = 0.12
+
+
+def drop_edge_slivers(cell: Image.Image) -> tuple[Image.Image, int]:
+    """Erase fragments of the neighbouring subject that the crop rectangle caught.
+
+    WHY A RECTANGLE IS NOT ENOUGH
+
+    `find_cells` returns a bounding BOX per subject, and subjects on a sheet
+    are not box-shaped. A wizard's staff leans up and to the left, so it hangs
+    over the corner of the box belonging to the character beside him, and the
+    crop takes it. The cell is single-subject by component analysis and still
+    has a stray sliver of somebody else in the corner.
+
+    Found on 9 of 103 recovered character cells - all ~0.1% of the frame, all a
+    neighbour's staff tip. Cheap to remove here and annoying to remove later.
+
+    BOTH CONDITIONS ARE REQUIRED, and the second is what makes this safe:
+
+      * SMALL relative to the main subject - so a genuine companion survives.
+        Several cells in that set are a dwarf WITH a wolf standing beside him,
+        two large components, both wanted.
+      * TOUCHING THE CROP EDGE - so a subject's own detached parts survive. A
+        floating spark or a dropped accessory sits inside the cell; a piece of
+        the neighbour is necessarily clipped by the boundary it came across.
+
+    Returns the cleaned cell and how many fragments were erased.
+    """
+    a = np.asarray(cell.convert("RGBA")).copy()
+    opaque = a[..., 3] >= 128
+    if not opaque.any():
+        return cell, 0
+
+    labels, n = ndimage.label(opaque, structure=np.ones((3, 3)))
+    if n < 2:
+        return cell, 0
+
+    sizes = ndimage.sum(opaque, labels, range(1, n + 1))
+    largest = float(sizes.max())
+    h, w = opaque.shape
+
+    removed = 0
+    for i, size in enumerate(sizes, start=1):
+        if size >= largest * EDGE_SLIVER_MAX_RATIO:
+            continue
+        blob = labels == i
+        touches = (blob[0].any() or blob[-1].any()
+                   or blob[:, 0].any() or blob[:, -1].any())
+        if not touches:
+            continue                      # the subject's own, keep it
+        a[..., 3][blob] = 0
+        removed += 1
+
+    return (Image.fromarray(a), removed) if removed else (cell, 0)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--kind", default="tile", help="tile, core or sprite")
@@ -268,6 +326,28 @@ def main():
                    help="only process this many source images")
     p.add_argument("--sample", type=int, default=0,
                    help="write only this many cells, for eyeballing")
+    p.add_argument("--min-side", type=int, default=0,
+                   help="skip cells whose short side is below this. 0 keeps "
+                        "the old behaviour of writing every cell. Set it to "
+                        "measure.MIN_TRAIN_SIDE (160) when the output is going "
+                        "to a TRAINING set: the tile side learned that a 63px "
+                        "median cell upscaled to 1024 is mush, and mush with a "
+                        "filename looks exactly like data")
+    p.add_argument("--drop-edge-slivers", action="store_true",
+                   help="erase fragments of the NEIGHBOURING subject that the "
+                        "crop rectangle caught. A leaning staff overhangs the "
+                        "box of the character beside it, so a cell can be "
+                        "single-subject and still carry a sliver of someone "
+                        "else. Off by default; it edits pixels")
+    p.add_argument("--max-aspect", type=float, default=0.0,
+                   help="skip cells more elongated than this (long/short). 0 "
+                        "keeps every cell, subject to the 3.0 the segmenter "
+                        "already applies. 2.0 is the useful value on character "
+                        "sheets: it drops the TITLE BANNER, which is a "
+                        "perfectly good component and reads as a subject. "
+                        "Measured on the recovered set - the four banners sit "
+                        "at 2.83-2.97 and the most elongated real character at "
+                        "1.43, so anything in that gap works")
     p.add_argument("--register", action="store_true",
                    help="write cells AND record them as references, retiring "
                         "the sheets they came from")
@@ -290,7 +370,7 @@ def main():
     if a.write or a.sample:
         os.makedirs(a.out, exist_ok=True)
 
-    singles = sheets = written = 0
+    singles = sheets = written = too_small = too_long = slivers = 0
     hist = {}
     for f in files:
         try:
@@ -317,6 +397,16 @@ def main():
             if a.sample and written >= a.sample:
                 break
             cell = crop_cell(img, box)
+            cw, ch = cell.size
+            if a.min_side and min(cw, ch) < a.min_side:
+                too_small += 1
+                continue
+            if a.max_aspect and max(cw, ch) / max(min(cw, ch), 1) > a.max_aspect:
+                too_long += 1
+                continue
+            if a.drop_edge_slivers:
+                cell, gone = drop_edge_slivers(cell)
+                slivers += gone
             if cell_is_junk(cell):
                 continue
             cell.save(os.path.join(a.out, f"cell_{a.kind}_{stem[4:]}_{i:03d}.png"))
@@ -332,6 +422,17 @@ def main():
         print(f"    {k:4}: {hist[k]}")
     if a.write or a.sample:
         print(f"  wrote {written} cell(s) to {a.out}")
+        # Say what was dropped. A count of what was written, on its own, reads
+        # as "this is everything" - and the whole tile-side lesson was that the
+        # cells nobody looked at were the problem.
+        if too_small:
+            print(f"  skipped {too_small} cell(s) under {a.min_side}px")
+        if too_long:
+            print(f"  skipped {too_long} cell(s) longer than "
+                  f"{a.max_aspect}:1 (usually a title banner)")
+        if slivers:
+            print(f"  erased {slivers} edge sliver(s) belonging to the "
+                  f"neighbouring subject")
     return 0
 
 

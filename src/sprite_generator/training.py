@@ -112,21 +112,26 @@ class TrainRequest(BaseModel):
         return ",".join(f"ref_{k}_*.png" for k in self.kinds)
 
 
-def untrained_refs(kinds) -> list[tuple[str, str]]:
-    """(id, file_path) for trainable references no SUCCESSFUL run has consumed.
+def untrained_refs(kinds) -> list[tuple[str, str, str | None]]:
+    """(id, file_path, label) for trainable refs no SUCCESSFUL run has consumed.
 
     The join back to `training_runs` and the `status = 'done'` test are not
     incidental. Rows land in training_run_refs at SUBMIT time, before the run
     has proven anything, so a run that failed - or whose queue was purged -
     would otherwise remove its images from every future dataset permanently,
     having taught the adapter nothing.
+
+    `label` is selected because the trainer can finally use it. It could always
+    have: `caption_for` has taken a label since it was written, and nothing
+    ever passed one, so every caption fell back to the FILENAME - a 12-hex
+    storage hash. See the note in scripts/train-lora.py.
     """
     kinds = list(kinds)
     if not kinds:
         return []
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT ra.id, ra.file_path FROM reference_assets ra "
+            "SELECT ra.id, ra.file_path, ra.label FROM reference_assets ra "
             "WHERE ra.deleted = false AND ra.trainable = true "
             "  AND ra.kind = ANY(%s) "
             "  AND NOT EXISTS ("
@@ -134,20 +139,47 @@ def untrained_refs(kinds) -> list[tuple[str, str]]:
             "     JOIN training_runs tr ON tr.id = trr.run_id "
             "     WHERE trr.reference_id = ra.id AND tr.status = 'done') "
             "ORDER BY ra.created_at", (kinds,))
-        return [(str(r[0]), r[1]) for r in cur.fetchall()]
+        return [(str(r[0]), r[1], r[2]) for r in cur.fetchall()]
 
 
-def all_trainable_refs(kinds) -> list[tuple[str, str]]:
-    """(id, file_path) for every trainable reference of these kinds."""
+def all_trainable_refs(kinds) -> list[tuple[str, str, str | None]]:
+    """(id, file_path, label) for every trainable reference of these kinds."""
     kinds = list(kinds)
     if not kinds:
         return []
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, file_path FROM reference_assets "
+            "SELECT id, file_path, label FROM reference_assets "
             "WHERE deleted = false AND trainable = true AND kind = ANY(%s) "
             "ORDER BY created_at", (kinds,))
-        return [(str(r[0]), r[1]) for r in cur.fetchall()]
+        return [(str(r[0]), r[1], r[2]) for r in cur.fetchall()]
+
+
+# What each reference kind actually IS, in words the text encoder can use.
+#
+# Every caption used to end in the reference's filename - a 12-hex storage hash
+# - and the fixed body was "pixel art sprite" regardless of kind. That was
+# false for `core`, which is painted concept art, and for `map`. A caption that
+# describes something the image does not show teaches the trigger that word.
+CAPTION_BODY = {
+    "sprite": "pixel art sprite",
+    "core": "character concept art, single subject",
+    "tile": "isometric ground tile",
+    "map": "world map",
+}
+
+
+def caption_body(kinds) -> str:
+    """The caption body for a run over these kinds.
+
+    A mixed run gets the generic phrase rather than one kind's words applied to
+    the other's images. That is not a fix for mixing - see the note the response
+    carries - it just avoids compounding it with a wrong caption.
+    """
+    chosen = {CAPTION_BODY.get(k) for k in kinds}
+    if len(chosen) == 1:
+        return chosen.pop()
+    return "game art"
 
 
 def existing_adapter(name: str) -> str | None:
@@ -263,14 +295,21 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
     os.makedirs(manifest_dir, exist_ok=True)
     manifest = os.path.join(manifest_dir, f".{run_id}-files.txt")
     with open(manifest, "w") as f:
-        f.write("\n".join(p for _, p in refs))
+        # `path` or `path<TAB>label`. The label is what the caption is built
+        # from; without it the trainer falls back to a generic body, which is
+        # still better than the filename hash it used to append. Tabs and
+        # newlines are stripped so one odd label cannot shift a column and
+        # silently attach itself to the next image.
+        for _, path, label in refs:
+            clean = " ".join((label or "").split())
+            f.write(f"{path}\t{clean}\n" if clean else f"{path}\n")
 
     config = {"name": body.name, "steps": body.steps, "rank": body.rank,
               "lr": body.lr, "resolution": body.resolution,
               "pattern": body.pattern(), "kinds": body.kinds,
               "files": manifest, "trigger": body.trigger,
               "mode": mode, "resume_from": resume_from,
-              "min_images": floor}
+              "min_images": floor, "caption": caption_body(body.kinds)}
 
     import json
     with _db() as conn, conn.cursor() as cur:
@@ -289,7 +328,7 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
             cur,
             "INSERT INTO training_run_refs (run_id, reference_id) VALUES %s "
             "ON CONFLICT DO NOTHING",
-            [(str(run_id), rid) for rid, _ in refs])
+            [(str(run_id), rid) for rid, _, _ in refs])
 
     # Imported here, not at module scope: tasks.py pulls in torch, and the web
     # process must never do that.
@@ -302,10 +341,28 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
                     (json.dumps({"celery_task_id": async_result.id}),
                      str(run_id)))
 
-    # Say it rather than prevent it: mixing characters and ground tiles into one
-    # adapter binds a single trigger to both, and the model cannot tell which
-    # you meant. It is a legitimate thing to try; it is not a good default.
-    mixed = "tile" in body.kinds and len(set(body.kinds) - {"tile"}) > 0
+    # Say it rather than prevent it: one adapter over two kinds binds a single
+    # trigger to both, and the model cannot tell which you meant. Both of these
+    # are legitimate things to try; neither is a good default.
+    #
+    # `sprite` + `core` is the DEFAULT, and it is the same mistake as mixing in
+    # tiles - it just looks harmless because both kinds are characters. They
+    # are not the same thing: `core` is painted concept art at high resolution
+    # (325 of 334 references measure over 4k colours with no pixel grid) and
+    # `sprite` is meant to be finished pixel art. A trigger taught both means
+    # "sometimes painterly, sometimes pixels", which is exactly the incoherence
+    # the first two adapters showed.
+    notes = []
+    if "tile" in body.kinds and set(body.kinds) - {"tile"}:
+        notes.append("Training tiles together with characters - one trigger "
+                     "will mean both, which usually reads as characters with "
+                     "terrain texture in them.")
+    if {"sprite", "core"} <= set(body.kinds):
+        notes.append("Training 'sprite' and 'core' into one adapter. Those are "
+                     "different art: core references are painted concept art, "
+                     "sprite references are finished pixel art. One trigger "
+                     "over both learns an average of the two.")
+    mixed = bool(notes)
 
     return {"run_id": str(run_id), "status": "queued",
             "dataset_size": usable, "steps": body.steps,
@@ -313,10 +370,8 @@ def start_training(body: TrainRequest, authorization: str | None = Header(None))
             "resuming": bool(resume_from),
             "trigger": body.trigger or f"<{body.name}-style>",
             "mixed_kinds": mixed,
-            "note": ("Training tiles together with characters - one trigger "
-                     "will mean both, which usually reads as characters with "
-                     "terrain texture in them. Two adapters give sharper "
-                     "results." if mixed else None)}
+            "note": (" ".join(notes) + " Separate adapters give sharper "
+                     "results.") if notes else None}
 
 
 @router.get("/api/training")

@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -237,3 +237,76 @@ smoke-sheet:
 rebuild-app:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache $(SERVICE_NAME)
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d $(SERVICE_NAME)
+
+# --------------------------------------------------------------------------
+# Training data audit
+# --------------------------------------------------------------------------
+#
+# Run these BEFORE queueing a training run, not after wondering why the adapter
+# is wrong. See .ai/decisions/0009-character-training-dataset.md - the first
+# pass found 146 of 149 sprite references and 128 of 334 core references could
+# not teach anything, and nothing in the pipeline said so. The three sprite
+# files it did pass turned out to be a tree, a plinth and an architectural
+# fragment, so for CHARACTERS the number is 0 of 149; the audit reports subject
+# COUNT and framing, and cannot tell you what the subject is.
+
+# Report only. Writes the per-image verdict and reason to .ai/specs/.
+audit-refs:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/audit-character-refs.py \
+		--out /app/images/reference-audit.md \
+		--json /app/images/reference-audit.json
+
+# Same verdicts as contact sheets - green keep, amber review, red reject.
+# The markdown answers "why was this one excluded"; this answers "what IS this
+# dataset", which is the question that found the problem.
+audit-sheets: audit-refs
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/audit-contact-sheets.py \
+		--json /app/images/reference-audit.json --out /app/images/audit
+
+# Writes trainable=false + trainable_why, so the UI can explain each absence.
+audit-refs-apply:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/audit-character-refs.py --apply
+
+# Turn a painted-on transparency checker back into real alpha. Originals are
+# never touched; run split-sheets.py on the output afterwards.
+key-checkerboard:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/key-checkerboard.py --out /app/images/recovered/keyed --write
+
+# The trainer's GPU-free half. No CUDA, no weights - runs in seconds.
+test-train-prep:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-train-prep.py
+
+# Split the keyed sheets into single-character cells big enough to train on.
+# --min-side keeps the 63px mush out; --max-aspect drops the title banners,
+# which are perfectly good components and read as subjects.
+recover-cells:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/split-sheets.py --images /app/images/recovered/keyed \
+		--kind sprite --out /app/images/recovered/cells --write \
+		--min-side 160 --max-aspect 2.0 --drop-edge-slivers
+
+# Cell cleanup, tested. `drop_edge_slivers` edits pixels in training images, so
+# it gets a suite that was itself checked by mutation - see the module note.
+test-split-sheets:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-split-sheets.py
+
+# `--apply` is the only WRITING part of the audit and it had never run once.
+# This builds a throwaway database from production's schema, exercises it there,
+# and drops it. Production is read-only throughout. Needs postgresql-client.
+test-apply-verdicts:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-apply-verdicts.py

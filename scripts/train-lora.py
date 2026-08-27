@@ -36,9 +36,39 @@ size. It does NOT fix geometry: if the camera angle is wrong, this will
 faithfully reproduce the wrong angle. Measure a ground tile and set the camera
 first - see `measure.py`.
 
+WHAT CHANGED AFTER THE FIRST TWO ADAPTERS FAILED, 2026-08-27
+
+Both adapters produced a lattice of framed cells instead of a subject. The
+dataset explained most of it - see `scripts/audit-character-refs.py`, which
+found 125 of 149 sprite references were contact sheets - but auditing the data
+turned up four things wrong on THIS side of the line as well. All four are
+invisible in the loss curve, which is why they survived a run that "worked":
+
+  * CAPTIONS WERE THE FILENAME HASH. `caption_for` appended the file stem, and
+    every reference is stored as `ref_sprite_<12 hex>.png`, so each caption
+    ended '..., 004228080a22'. Not a weak caption - a harmful one: a unique
+    random token per image is a handle for memorising that image, and it
+    dilutes the trigger meant to carry the style.
+  * EVERY IMAGE WAS CENTRE-CROPPED TO A SQUARE. Only past 3:1 was anything
+    refused, so an ordinary 512x1024 full-body reference trained as a torso.
+    The default is now to pad.
+  * PIXEL ART WAS RESAMPLED WITH LANCZOS. A 64px sprite enlarged to 1024 with a
+    smooth filter is a blur, and the blur is what gets learned - the same
+    mechanism `curate-training-set.py` documented on the tile side. NEAREST is
+    now chosen automatically for hard-edged art.
+  * SDXL'S SIZE CONDITIONING WAS A CONSTANT. Every sample claimed to be a
+    native-resolution uncropped image, whatever it actually was.
+
+Also added, none of them exotic and all of them standard for this kind of run:
+noise offset (SDXL cannot otherwise produce the flat dark and light fields
+pixel art is made of), min-SNR loss weighting, a warmup-then-cosine LR schedule
+where there was no schedule at all, and shuffled sampling without replacement
+in place of `random.randrange` per step.
+
 Usage:
     python train-lora.py --name something2 --data /app/images --out /models/loras
     python train-lora.py --name x --steps 1200 --rank 32 --resolution 768
+    python train-lora.py --name x --caption "isometric pixel art character"
 """
 
 import argparse
@@ -72,6 +102,12 @@ CACHE_DIR = os.environ.get("HF_HUB_CACHE", "/models")
 # larger batch or a higher rank; if either ever OOMs, the ladder down is
 # batch -> rank 32/16 -> 1024/768.
 DEFAULT_RESOLUTION = 1024
+
+# At or below this many distinct colours, treat the image as hard-edged art and
+# enlarge it with NEAREST. 512 is comfortably above any palette-locked sprite
+# (the reference set's pixel art sits at 16-32 colours) and far below a render
+# or a JPEG board, which measure in the tens of thousands.
+PIXEL_ART_MAX_COLORS = 512
 
 
 def load_component(cls, subfolder: str, dtype, prefer_fp16: bool = True):
@@ -128,28 +164,241 @@ def find_images(data_dir: str, patterns: tuple[str, ...]) -> list[str]:
             if os.path.isfile(p) and not os.path.basename(p).startswith("thumb_")]
 
 
-def caption_for(path: str, trigger: str, label: str | None = None) -> str:
-    """Templated caption with a trigger token.
+# What every caption says when the manifest carries no label of its own.
+# Overridable with --caption so a run over painted concept art does not claim
+# to be pixel art.
+DEFAULT_CAPTION = "pixel art sprite"
 
-    Style LoRAs do not need descriptive captions - they need the trigger bound
-    to the look. A generic body plus the filename keeps the binding tight
-    without inventing content that is not in the image.
+# Words that are storage naming rather than description. Dropped token by token
+# rather than as fixed prefixes, because prefix matching kept losing:
+# `ref_map_*` was missing from the original list, and the cells `split-sheets.py`
+# writes are named `cell_sprite_sprite_<hash>_000`, which no prefix in a list
+# like that will ever strip cleanly.
+_STORAGE_WORDS = {"ref", "cell", "core", "sprite", "tile", "map", "sheet",
+                  "thumb", "img", "image"}
+
+
+def caption_for(path: str, trigger: str, label: str | None = None,
+                body: str = DEFAULT_CAPTION) -> str:
+    """Caption with the trigger token, and NOTHING the model cannot use.
+
+    This used to append the filename stem, which sounded harmless and was not.
+    Every reference is stored as `ref_sprite_<12 hex>.png`, so after the prefix
+    strip the "description" was the hash:
+
+        '<something2-style> pixel art sprite, 004228080a22'
+
+    That is not a weak caption, it is an actively harmful one. Each image got a
+    unique random token, so the text encoder had a per-image handle to hang that
+    image's specifics on - which is exactly the memorisation a style LoRA is
+    trying to avoid, and it dilutes the trigger that is supposed to carry the
+    style. `ref_map_*` was not even in the strip list, so those captions read
+    'ref map 112233445566'.
+
+    A LABEL is used as given - a person typed it. A FILENAME is filtered token
+    by token, and only what survives becomes caption text. Filtering per token
+    rather than by prefix is what makes this hold up: the cells `split-sheets.py`
+    writes are `cell_sprite_sprite_<hash>_000`, which defeats any fixed prefix
+    list, and the first version of this fix let all 103 of them through with
+    their hash intact.
     """
-    stem = label or os.path.splitext(os.path.basename(path))[0]
-    stem = stem.replace("_", " ").replace("-", " ")
-    # Strip our own storage prefixes so "ref sprite a1b2c3" does not become
-    # part of what the trigger means.
-    for junk in ("ref sprite ", "ref core ", "ref tile ", "core ", "sheet "):
-        if stem.startswith(junk):
-            stem = stem[len(junk):]
-    return f"{trigger} pixel art sprite, {stem}".strip().rstrip(",")
+    if label and label.strip():
+        return f"{trigger} {body}, {label.strip()}".strip().rstrip(",")
+
+    stem = os.path.splitext(os.path.basename(path))[0]
+    kept = []
+    for tok in stem.replace("_", " ").replace("-", " ").split():
+        low = tok.lower()
+        if low in _STORAGE_WORDS or low.isdigit():
+            continue
+        # A hex blob is storage naming, not a description.
+        #
+        # The DIGIT is what makes this safe. "pure hex" alone would also match
+        # words a person might genuinely type - face, beef, dead, cafe - and
+        # eat a real one. Requiring a digit keeps those, and still catches
+        # every storage stem, which is random hex and effectively never
+        # all-letters.
+        if (len(low) >= 3 and all(c in "0123456789abcdef" for c in low)
+                and any(c.isdigit() for c in low)):
+            continue
+        kept.append(tok)
+
+    if not kept:
+        return f"{trigger} {body}".strip()
+    return f"{trigger} {body}, {' '.join(kept)}".strip().rstrip(",")
+
+
+# ---------------------------------------------------------------------------
+# Image preparation
+# ---------------------------------------------------------------------------
+
+def has_pixel_grid(img, max_scale: int = 16) -> int:
+    """Screen pixels per art pixel, or 1 when there is no grid to find.
+
+    Decides the resampling filter. Same method as `measure.pixel_scale`, kept
+    local because /app/scripts cannot import the /app package.
+    """
+    import numpy as np
+    a = np.asarray(img.convert("RGBA"))
+    both = np.concatenate([a[..., :3].astype(np.int16),
+                           a[..., 3:4].astype(np.int16)], axis=2)
+    xs = np.nonzero(np.any(both[:, 1:, :] != both[:, :-1, :], axis=(0, 2)))[0] + 1
+    ys = np.nonzero(np.any(both[1:, :, :] != both[:-1, :, :], axis=(1, 2)))[0] + 1
+    coords = np.concatenate([xs, ys])
+    if coords.size == 0:
+        return 1
+    for s in range(max_scale, 1, -1):
+        if float(np.mean(coords % s == 0)) >= 0.98:
+            return s
+    return 1
+
+
+def edge_softness(img) -> float | None:
+    """Fraction of colour changes inside the subject that are RAMPS, not steps.
+
+    The signal that says "hard-edged art" when colour count cannot.
+
+    Colour count was the original test, and it is wrong for exactly the dataset
+    that matters most here. The recovered Mesgard cells - the one consistent
+    pixel-art character set in the whole reference pool - carry 4k to 27k
+    distinct colours, because the style shades heavily. By palette size they
+    look like renders. They are not: their edges STEP.
+
+    Measured on this repo's art, and it separates cleanly:
+
+        palette-locked pixel art (<=512 colours)   median 0.01
+        the recovered HD pixel cells              median 0.38, p90 0.45
+        painted concept art                       p10 0.52, median 0.70
+
+    Returns None when there is too little inside the subject to judge, so the
+    caller can fall back rather than treat "unknown" as "hard".
+    """
+    import numpy as np
+
+    a = np.asarray(img.convert("RGBA"))
+    opaque = a[..., 3] >= 128
+    rgb = a[..., :3].astype(np.int16)
+    d = np.abs(np.diff(rgb, axis=1)).sum(axis=2)
+    # Inside the silhouette only. The step from subject to background is hard
+    # in every image and would drown the thing being measured.
+    inside = opaque[:, 1:] & opaque[:, :-1]
+    d = d[inside]
+    changed = d > 0
+    if changed.sum() < 64:
+        return None
+    return float(((d > 0) & (d < 24)).sum() / changed.sum())
+
+
+# Above this fraction of soft transitions the art is painted, not stepped. Sits
+# in the gap between the recovered cells' p90 (0.45) and painted art's p10
+# (0.52) - see `edge_softness`.
+MAX_PIXEL_ART_SOFTNESS = 0.5
+
+
+def prepare_image(img, resolution: int, fit: str = "pad",
+                  resample: str = "auto", background=(128, 128, 128)):
+    """Square, resolution-sized RGB, plus the SDXL conditioning that describes it.
+
+    Returns `(image, original_size, crop_offset, filter_name)`. The size and
+    crop are not bookkeeping - SDXL is conditioned on them, and the previous
+    code passed constants that were not true of the image beside them. The
+    filter name is returned so a run can SAY how it resampled: getting that
+    wrong is invisible in the loss and obvious in the output.
+
+    THREE THINGS THIS FIXES
+
+    1. PAD, NOT CROP. The old path centre-cropped to a square and only refused
+       past 3:1, so a 512x1024 character - a perfectly ordinary full-body
+       reference - had its head and feet cut off and trained as a torso. Of the
+       483 references measured here the median aspect is 1.45 for sprites, so
+       this was not an edge case, it was most of them. Padding keeps the whole
+       subject; the padding itself is a flat border, which is the one thing
+       these images already have plenty of.
+
+    2. NEAREST FOR PIXEL ART. `Image.LANCZOS` is right for a photograph and
+       destructive for a sprite: a 64px sprite blown up to 1024 with LANCZOS is
+       a blur, and blur is then what the adapter learns. That is the same
+       mechanism `curate-training-set.py` documented on the tile side, where a
+       63px median cell upscaled 16x produced "mush", and the adapter learned
+       the only sharp thing in the set. NEAREST at the same scale keeps every
+       edge hard. 'auto' picks NEAREST when the source has a real pixel grid or
+       a small palette AND is being enlarged, LANCZOS otherwise.
+
+    3. HONEST SIZE CONDITIONING. SDXL takes original size and crop offset so it
+       can learn that a cropped, low-resolution training image is not what
+       'good' looks like. Passing (resolution, resolution, 0, 0) for every
+       image tells it every one was a native-resolution uncropped shot. That
+       makes the conditioning useless at best; at inference, asking for
+       1024x1024 uncropped then means nothing in particular.
+    """
+    from PIL import Image as _Image
+
+    img = img.convert("RGBA")
+    original = img.size
+
+    # Composite onto flat grey rather than black: a transparent sprite on black
+    # teaches a black background, the exact artefact this pipeline spends a
+    # whole stage removing.
+    bg = _Image.new("RGBA", img.size, tuple(background) + (255,))
+    flat = _Image.alpha_composite(bg, img).convert("RGB")
+
+    w, h = flat.size
+    crop = (0, 0)
+    if fit == "crop" and w != h:
+        side = min(w, h)
+        left, top = (w - side) // 2, (h - side) // 2
+        flat = flat.crop((left, top, left + side, top + side))
+        crop = (left, top)
+        w = h = side
+    elif fit == "pad" and w != h:
+        side = max(w, h)
+        canvas = _Image.new("RGB", (side, side), tuple(background))
+        off = ((side - w) // 2, (side - h) // 2)
+        canvas.paste(flat, off)
+        flat = canvas
+        # Negative offsets: the source sits INSIDE a larger frame, which is the
+        # honest description of padding, and the opposite of a crop.
+        crop = (-off[0], -off[1])
+        w = h = side
+
+    if resample == "nearest":
+        filt, name = _Image.NEAREST, "nearest"
+    elif resample == "lanczos":
+        filt, name = _Image.LANCZOS, "lanczos"
+    else:
+        # Three signals, any one of which is enough, in decreasing strength:
+        #
+        #   1. a clean pixel grid  - the art was exported at an integer upscale
+        #   2. a small palette     - drawn at 1:1 and palette-locked
+        #   3. hard edges          - drawn at 1:1 with heavy shading, so neither
+        #                            of the above fires, but it still steps
+        #
+        # Signal 3 was added after signal 2 alone routed all 103 recovered
+        # Mesgard cells to LANCZOS. They hold 4k-27k colours and have no grid,
+        # so by the first two tests they look like renders - and blurring them
+        # would have defeated the whole point of this change on the one dataset
+        # it was made for.
+        #
+        # `getcolors` returns None above its cap, which reads as "too many".
+        softness = edge_softness(img)
+        pixelish = (has_pixel_grid(img) > 1
+                    or flat.getcolors(PIXEL_ART_MAX_COLORS) is not None
+                    or (softness is not None
+                        and softness < MAX_PIXEL_ART_SOFTNESS))
+        if pixelish and resolution > w:
+            filt, name = _Image.NEAREST, "nearest"
+        else:
+            filt, name = _Image.LANCZOS, "lanczos"
+
+    return flat.resize((resolution, resolution), filt), original, crop, name
 
 
 # ---------------------------------------------------------------------------
 # Stage 1: cache latents and embeddings
 # ---------------------------------------------------------------------------
 
-def cache_inputs(paths, captions, resolution, cache_path, dtype):
+def cache_inputs(paths, captions, resolution, cache_path, dtype,
+                 fit="pad", resample="auto"):
     """Encode once, on the GPU, then free every encoder."""
     import torch
     from diffusers import AutoencoderKL
@@ -165,30 +414,24 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
     vae.to(device).eval()
     vae.requires_grad_(False)
 
-    latents = []
+    latents, time_ids = [], []
+    filters = []
     for i, p in enumerate(paths):
-        img = Image.open(p).convert("RGBA")
-        # Composite onto neutral grey rather than black: a transparent sprite on
-        # black teaches the model a black background, which is exactly the
-        # artefact this pipeline spends a whole stage removing.
-        bg = Image.new("RGBA", img.size, (128, 128, 128, 255))
-        img = Image.alpha_composite(bg, img).convert("RGB")
+        img = Image.open(p)
+        prepared, original, crop, filt = prepare_image(
+            img, resolution, fit=fit, resample=resample)
+        filters.append(filt)
 
-        # CENTRE-CROP to square, then scale. A bare
-        # `resize((resolution, resolution))` squashes: a 1024x2048 reference
-        # board arrives at the model with every figure at half width, and the
-        # LoRA faithfully learns to draw squashed figures. Real references are
-        # rarely square - of 106 uploaded here, 97 were between 0.5:1 and 2:1
-        # and none were exactly 1:1.
-        w, h = img.size
-        if w != h:
-            side = min(w, h)
-            left, top = (w - side) // 2, (h - side) // 2
-            img = img.crop((left, top, left + side, top + side))
-        img = img.resize((resolution, resolution), Image.LANCZOS)
+        # SDXL's micro-conditioning, per image and TRUE of this image:
+        # original height/width, crop top/left, target height/width. The old
+        # code sent (resolution, resolution, 0, 0, resolution, resolution) for
+        # every sample, which claimed each one was already native size and
+        # uncropped.
+        time_ids.append([original[1], original[0], crop[1], crop[0],
+                         resolution, resolution])
 
         import numpy as np
-        arr = np.asarray(img).astype("float32") / 127.5 - 1.0
+        arr = np.asarray(prepared).astype("float32") / 127.5 - 1.0
         t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device)
         with torch.no_grad():
             # VAE stays fp32: SDXL's VAE produces NaNs in fp16, a known issue
@@ -198,6 +441,13 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
         latents.append(lat.squeeze(0).to(torch.float32).cpu())
         if (i + 1) % 5 == 0 or i + 1 == len(paths):
             logger.info("  encoded %d/%d images", i + 1, len(paths))
+
+    # Say which filter each image got. Resampling pixel art with a smooth
+    # filter is invisible in the loss curve and ruinous in the output, so the
+    # split between the two belongs in the log where it can be checked.
+    n_near = filters.count("nearest")
+    logger.info("  resampled %d nearest / %d lanczos (fit=%s)",
+                n_near, len(filters) - n_near, fit)
 
     del vae
     torch.cuda.empty_cache()
@@ -232,7 +482,8 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
 
     import torch as _t
     _t.save({"latents": latents, "embeds": embeds, "pooled": pooled,
-             "captions": captions, "resolution": resolution}, cache_path)
+             "captions": captions, "resolution": resolution,
+             "time_ids": time_ids}, cache_path)
     logger.info("  cached to %s", cache_path)
     return cache_path
 
@@ -242,7 +493,7 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype):
 # ---------------------------------------------------------------------------
 
 def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
-          resume_from=None):
+          resume_from=None, noise_offset=0.0, min_snr=0.0, warmup=0):
     import torch
     import torch.nn.functional as F
     from diffusers import DDPMScheduler, UNet2DConditionModel
@@ -257,6 +508,11 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
     latents, embeds, pooled = blob["latents"], blob["embeds"], blob["pooled"]
     resolution = blob["resolution"]
     n = len(latents)
+    # Per-image micro-conditioning written by stage 1. Falls back to the old
+    # constant so a cache from a previous version still loads rather than
+    # dying on a KeyError halfway through a queued run.
+    all_time_ids = blob.get("time_ids") or [
+        [resolution, resolution, 0, 0, resolution, resolution]] * n
     logger.info("Stage 2/2: training %d steps on %d images", steps, n)
 
     unet = load_component(UNet2DConditionModel, "unet", dtype)
@@ -322,24 +578,66 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
         opt = torch.optim.AdamW(params, lr=lr, weight_decay=1e-2)
         logger.info("  optimiser: AdamW (bitsandbytes unavailable)")
 
+    # Warmup then cosine decay. There was no schedule at all: a constant 1e-4
+    # from step 1. That costs most on the two runs this project actually does -
+    # the first steps of a fresh adapter, where a full-size step into randomly
+    # initialised LoRA weights is noise, and every INCREMENTAL run, where a
+    # constant large LR on a handful of new images drags a trained adapter
+    # toward whatever arrived most recently.
+    warmup = min(max(warmup, 0), max(steps - 1, 0))
+
+    def lr_at(step: int) -> float:
+        if warmup and step <= warmup:
+            return lr * step / warmup
+        progress = (step - warmup) / max(steps - warmup, 1)
+        return lr * 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
     sched = DDPMScheduler.from_pretrained(BASE, subfolder="scheduler",
                                           cache_dir=CACHE_DIR)
 
-    # SDXL's extra conditioning: original size, crop offset, target size. The
-    # images are pre-resized square, so all three agree.
-    add_time = torch.tensor([[resolution, resolution, 0, 0, resolution, resolution]],
-                            device=device, dtype=dtype)
+    # Per-image micro-conditioning, on the device once rather than per step.
+    time_ids = torch.tensor(all_time_ids, device=device, dtype=dtype)
+
+    # Min-SNR needs the schedule's signal-to-noise ratio at every timestep.
+    alphas = sched.alphas_cumprod.to(device)
+    snr_all = alphas / (1.0 - alphas)
+
+    # Sample WITHOUT replacement, reshuffling each pass. The old loop drew
+    # `random.randrange(n)` per step, so with 191 images and 1000 steps a few
+    # images were never seen at all and others were seen a dozen times - a
+    # silent, seed-dependent reweighting of the dataset. An epoch costs nothing
+    # and removes the variance.
+    order: list[int] = []
 
     unet.train()
     t0 = time.time()
     running = 0.0
     for step in range(1, steps + 1):
-        idx = [random.randrange(n) for _ in range(batch_size)]
+        for g in opt.param_groups:
+            g["lr"] = lr_at(step)
+
+        idx = []
+        while len(idx) < batch_size:
+            if not order:
+                order = list(range(n))
+                random.shuffle(order)
+            idx.append(order.pop())
         lat = torch.stack([latents[i] for i in idx]).to(device, dtype=dtype)
         emb = torch.stack([embeds[i] for i in idx]).to(device, dtype=dtype)
         pol = torch.stack([pooled[i] for i in idx]).to(device, dtype=dtype)
+        tid = time_ids[idx]
 
         noise = torch.randn_like(lat)
+        if noise_offset:
+            # SDXL cannot produce a very dark or very light FLAT field, because
+            # its schedule never quite reaches zero SNR - the model always sees
+            # a little of the image's mean and never has to predict it. That is
+            # a footnote for photographs and a real problem for pixel art,
+            # which is mostly flat fields with pure black outlines. Offsetting
+            # the noise per channel forces the model to learn the mean.
+            noise = noise + noise_offset * torch.randn(
+                (lat.shape[0], lat.shape[1], 1, 1),
+                device=lat.device, dtype=lat.dtype)
         t = torch.randint(0, sched.config.num_train_timesteps,
                           (lat.shape[0],), device=device).long()
         noisy = sched.add_noise(lat, noise, t)
@@ -347,15 +645,35 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
         pred = unet(
             noisy, t,
             encoder_hidden_states=emb,
-            added_cond_kwargs={"text_embeds": pol,
-                               "time_ids": add_time.repeat(lat.shape[0], 1)},
+            added_cond_kwargs={"text_embeds": pol, "time_ids": tid},
         ).sample
 
         # SDXL base predicts epsilon. Reading the target from the scheduler
         # rather than assuming it keeps this correct if the base ever changes.
         target = (noise if sched.config.prediction_type == "epsilon"
                   else sched.get_velocity(lat, noise, t))
-        loss = F.mse_loss(pred.float(), target.float(), reduction="mean")
+
+        if min_snr:
+            # A flat MSE over uniformly sampled timesteps is not a balanced
+            # objective. Under epsilon-prediction the barely-noised steps are
+            # the hard ones - the noise to predict is a small part of what the
+            # model is looking at - so they carry the largest loss and dominate
+            # the gradient, pulling against the noisier steps. Min-SNR-gamma
+            # clamps their weight to gamma/SNR, which converges faster and more
+            # evenly. gamma=5 is the published default.
+            snr = snr_all[t]
+            w = torch.clamp(snr, max=min_snr)
+            # The divisor differs by objective: epsilon-prediction divides by
+            # SNR, v-prediction by SNR+1. Reading it from the scheduler for the
+            # same reason `target` above does - so this stays correct if the
+            # base checkpoint ever changes.
+            w = w / (snr if sched.config.prediction_type == "epsilon"
+                     else snr + 1)
+            per = F.mse_loss(pred.float(), target.float(),
+                             reduction="none").mean(dim=(1, 2, 3))
+            loss = (per * w.float()).mean()
+        else:
+            loss = F.mse_loss(pred.float(), target.float(), reduction="mean")
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(params, 1.0)
@@ -420,6 +738,31 @@ def main():
     p.add_argument("--min-images", type=int, default=8,
                    help="refuse to start below this; a LoRA trained on three "
                         "images memorises them")
+    p.add_argument("--caption", default=DEFAULT_CAPTION,
+                   help="the body of every caption, after the trigger. Set it "
+                        "to what the dataset IS - a run over painted concept "
+                        "art captioned 'pixel art sprite' is teaching the "
+                        "trigger a word the images do not show")
+    p.add_argument("--fit", choices=["pad", "crop"], default="pad",
+                   help="pad (default) keeps the whole subject and letterboxes "
+                        "it; crop is the old behaviour and cuts the head and "
+                        "feet off anything taller than it is wide")
+    p.add_argument("--resample", choices=["auto", "nearest", "lanczos"],
+                   default="auto",
+                   help="auto uses NEAREST for hard-edged art being enlarged "
+                        "and LANCZOS otherwise. LANCZOS on a 64px sprite blown "
+                        "up to 1024 is a blur, and blur is what gets learned")
+    p.add_argument("--noise-offset", type=float, default=0.05,
+                   help="forces the model to learn flat dark and flat light "
+                        "fields, which SDXL otherwise cannot produce. 0 to "
+                        "disable")
+    p.add_argument("--min-snr", type=float, default=5.0,
+                   help="min-SNR-gamma loss weighting, so the low-noise steps "
+                        "that carry style detail are not drowned by the "
+                        "high-noise ones. 0 to disable")
+    p.add_argument("--warmup", type=int, default=None,
+                   help="linear LR warmup steps before the cosine decay; "
+                        "defaults to 5%% of --steps")
     a = p.parse_args()
 
     import torch
@@ -435,11 +778,26 @@ def main():
     # the judge rejected. So the UI promised one dataset and the trainer used
     # another, with no error either side. The manifest makes the counted set
     # and the trained set the same set by construction.
+    labels: dict[str, str] = {}
     if a.files:
+        # `path` or `path<TAB>label`. The tab form is optional so an existing
+        # manifest still reads correctly; when a label IS present it becomes
+        # the caption, which is the only way this script can be told what an
+        # image actually shows.
+        paths = []
         with open(a.files) as f:
-            paths = [ln.strip() for ln in f if ln.strip()]
+            for ln in f:
+                ln = ln.rstrip("\n")
+                if not ln.strip():
+                    continue
+                path, _, label = ln.partition("\t")
+                path = path.strip()
+                paths.append(path)
+                if label.strip():
+                    labels[path] = label.strip()
         paths = [p for p in paths if os.path.isfile(p)]
-        logger.info("dataset from manifest %s: %d image(s)", a.files, len(paths))
+        logger.info("dataset from manifest %s: %d image(s), %d labelled",
+                    a.files, len(paths), len(labels))
     else:
         paths = find_images(a.data, tuple(s.strip() for s in a.pattern.split(",")))
         logger.info("dataset from glob %r: %d image(s)", a.pattern, len(paths))
@@ -451,25 +809,36 @@ def main():
                  f"not.")
 
     trigger = a.trigger or f"<{a.name}-style>"
-    captions = [caption_for(p, trigger) for p in paths]
+    captions = [caption_for(p, trigger, labels.get(p), a.caption) for p in paths]
     logger.info("%d images, trigger %r", len(paths), trigger)
     logger.info("example caption: %s", captions[0])
 
     os.makedirs(a.out, exist_ok=True)
     cache_path = os.path.join(a.out, f".{a.name}-cache.pt")
+    warmup = a.warmup if a.warmup is not None else max(1, a.steps // 20)
 
     try:
-        cache_inputs(paths, captions, a.resolution, cache_path, dtype)
+        cache_inputs(paths, captions, a.resolution, cache_path, dtype,
+                     fit=a.fit, resample=a.resample)
         out = train(cache_path, a.out, a.name, a.steps, a.rank, a.lr,
-                    a.batch_size, dtype, a.seed, resume_from=a.resume)
+                    a.batch_size, dtype, a.seed, resume_from=a.resume,
+                    noise_offset=a.noise_offset, min_snr=a.min_snr,
+                    warmup=warmup)
     finally:
         # The cache is tens of MB per image and worthless once training ends.
         if os.path.exists(cache_path):
             os.remove(cache_path)
 
+    # Everything that changes what the adapter learned, recorded beside it.
+    # An adapter whose preparation settings are unknown cannot be compared with
+    # another one, and comparing them is the whole point of a second run.
     meta = {"name": a.name, "base": BASE, "trigger": trigger,
             "steps": a.steps, "rank": a.rank, "lr": a.lr,
             "resolution": a.resolution, "images": len(paths),
+            "caption": a.caption, "fit": a.fit, "resample": a.resample,
+            "noise_offset": a.noise_offset, "min_snr": a.min_snr,
+            "warmup": warmup, "seed": a.seed, "batch_size": a.batch_size,
+            "resumed_from": a.resume, "labelled_images": len(labels),
             "weights": out}
     with open(os.path.join(a.out, f"{a.name}.json"), "w") as f:
         json.dump(meta, f, indent=2)
