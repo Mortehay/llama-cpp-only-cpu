@@ -844,10 +844,77 @@ Every spec key `map_tasks` reads was checked against `MapSpec`, `Terrain` and
 are written by `_queue_props_job` and read by `resolve_map_props`, the same
 module either side with no model in between, so there is nothing to drop them.
 
-One instance existed. It is fixed. Recorded as a negative result rather than
-left unsaid, because "we looked and found nothing" and "we did not look" are
-the same silence otherwise - which is the zero-denominator rule from D12
-applied to an audit instead of a check.
+One instance existed in the map path. It is fixed. Recorded as a negative
+result rather than left unsaid, because "we looked and found nothing" and "we
+did not look" are the same silence otherwise - which is the zero-denominator
+rule from D12 applied to an audit instead of a check.
+
+**The audit is now a test**, which is the part that was missing. A peer pointed
+out that a one-off grep finds today's instance and a standing check finds the
+next one, and they were right: the behavioural test - send the flag, assert it
+survives - would never have found `walkable`, because nobody suspected the
+field. `smoke-map-build.py` now asserts statically that every key `map_tasks`
+reads with a default is declared on a model, with explicit exemption lists for
+server-computed values and same-module internals. Sweeping every `.get` instead
+would flag correct code, and a check that cries at correct code gets silenced.
+
+**And there was a second instance elsewhere in the service**, found
+independently by that peer sweeping in the opposite direction:
+`tasks.py` reads `spec.get("concept_check", True)` and `JobSpec` never declared
+it. Worse than this one in a specific way - the refusal message told callers to
+"pass `concept_check=false` to build anyway", so a caller followed the
+instruction, got the identical refusal, and concluded the service could not
+build their sprite. The documented override never worked once. Mine produced a
+wrong world silently; theirs produced a dead end that announced itself as a
+door.
+
+### The enabling condition, and a decision nobody has made
+
+Verified: **no `model_config` or `class Config` exists anywhere in the package,
+and zero models set `extra`.** Every pydantic model here therefore uses the
+default policy and silently discards undeclared fields. That is the single
+condition both bugs needed.
+
+`extra="forbid"` would turn each of them into a 422 at the boundary, which is
+the correct behaviour: a caller sending `walkable` or `concept_check` to a model
+that does not know the field would be told so, instead of being handed a
+default.
+
+**It is also a breaking change**, and not a small one. Any caller currently
+sending a field we ignore starts getting rejected - something2 included, and we
+cannot enumerate what they send.
+
+**But `ignore` vs `forbid` is a false binary**, and the third position is the
+one worth putting in front of a person. A `mode="before"` model validator that
+logs the unknown keys and returns the data unchanged is **behaviourally
+identical to today** - nothing rejected, nothing broken - and the drop stops
+being silent:
+
+```python
+extra = set(data) - set(cls.model_fields)
+if extra:
+    logger.warning("%s ignoring unknown field(s): %s", cls.__name__, ...)
+```
+
+Both bugs were invisible for exactly one reason: **nothing anywhere recorded
+that the caller had spoken.** `concept_check` would have appeared in the log
+the first time someone followed the error message telling them to send it;
+`walkable` the first time something2 sent one.
+
+So the question is not "break callers or stay blind". It is "break callers, or
+see it and decide later". Neither is taken here - a shared base model touching
+every model in the package is a change to make deliberately, and the user may
+reasonably prefer `forbid` at the boundary now that the shape is known. Named
+and left, the same treatment D13 gives density variation.
+
+### A note on how both were found
+
+They were found in opposite directions and neither route reaches the other's
+instance: one by sweeping the service and triaging 42 candidates down to one,
+the other by chasing a single missing `port` on a single map. **Sweeping finds
+what is structurally possible; chasing finds what is actually broken.** It took
+both, and that is an argument for the standing check rather than against it -
+the sweep is the half that can be automated.
 
 ## D13 - Density is uniform across a region, and that is a decision to make
 
