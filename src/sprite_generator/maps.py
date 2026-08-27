@@ -384,6 +384,129 @@ def _props_state(job_status: str | None) -> str:
             "done": "partial"}.get(job_status or "", job_status or "lost")
 
 
+# A colour this close to neutral in Lab is a SINK. Measured on a real
+# reference: declaring a grey `stone` took water from 58% to 2.4% without the
+# water colour changing at all, because grey sits near the middle of Lab and is
+# the nearest match for everything desaturated.
+NEUTRAL_CHROMA = 12.0
+
+
+@router.get("/api/maps/palette/{reference_id}")
+def palette_from_reference(reference_id: str, terrains: int = 4,
+                           size: int = 64,
+                           authorization: str | None = Header(None)):
+    """Terrain colours read OFF a map reference, with what each would capture.
+
+    THE FIX FOR A HAZARD THAT WAS ONLY EVER DOCUMENTED. `contract.md` has said
+    since it was written that seeding the declared palette from the reference
+    art is `measure_map`'s real job, and nothing used it. Two failures were
+    then measured on real references, both silent:
+
+      A declared colour that is not in the art costs the terrain. A muted-blue
+      sea quantised against a navy `#2850c8` gave 2.4% water; against its own
+      colour, 49%.
+
+      A near-neutral terrain swallows the map. Dropping a grey `stone` took
+      that same reference from 2.4% to 58% water WITHOUT touching the water
+      colour.
+
+    `validate_terrains` cannot see either - it checks the declared colours are
+    far APART, which says nothing about whether any of them is in the painting.
+    The build reports coverage afterwards, which is the right place for the
+    last word but the wrong place for the first: by then the GPU is spent.
+
+    So this answers the question BEFORE anything is built - here are colours
+    that are actually in your reference, and here is the share of the map each
+    would take.
+    """
+    auth.require(authorization, "read")
+
+    if not 2 <= terrains <= MAX_TERRAINS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"terrains must be 2..{MAX_TERRAINS}")
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT file_path, label FROM reference_assets "
+                    "WHERE id = %s::uuid AND deleted = false", (reference_id,))
+        row = cur.fetchone()
+
+    if not row or not row["file_path"] or not os.path.exists(row["file_path"]):
+        raise HTTPException(status_code=404,
+                            detail=f"no reference {reference_id}")
+
+    import numpy as np
+    from PIL import Image
+
+    import measure
+    import pixelate
+
+    img = Image.open(row["file_path"]).convert("RGB")
+    pal = pixelate.extract_palette(img.convert("RGBA"), terrains)
+
+    # Named generically. A colour cannot tell you it is water, and inventing
+    # "ocean" for a blue would be a guess a caller then has to undo.
+    suggested = [{"name": f"terrain_{i + 1}",
+                  "color": "#%02x%02x%02x" % tuple(int(c) for c in entry)}
+                 for i, entry in enumerate(pal)]
+
+    # The share each would actually take, measured by quantising the reference
+    # against exactly these colours - the same call the build makes.
+    grid = map_geometry.quantize(img, suggested, (size, size))
+    cover = map_geometry.coverage(grid, suggested)
+
+    lab = pixelate.srgb_to_lab(pal.reshape(-1, 3)).reshape(-1, 3)
+    chroma = np.sqrt(lab[:, 1] ** 2 + lab[:, 2] ** 2)
+
+    out, warnings = [], []
+    for i, t in enumerate(suggested):
+        got = cover.get(t["name"], 0.0)
+        neutral = bool(chroma[i] < NEUTRAL_CHROMA)
+        out.append({**t, "coverage": round(got, 4),
+                    "near_neutral": neutral,
+                    "chroma": round(float(chroma[i]), 1)})
+        if neutral:
+            warnings.append(
+                f"{t['color']} is near-neutral (chroma {chroma[i]:.0f}). It "
+                f"sits close to the middle of Lab and will be the nearest "
+                f"match for anything desaturated - expect it to take more of "
+                f"the map than it looks like it should. Here it takes "
+                f"{got:.0%}.")
+
+    sep = map_geometry.separation(map_geometry.palette_array(suggested))
+    if sep < measure.TERRAIN_MIN_LAB_SEPARATION:
+        warnings.append(
+            f"the two closest colours are {sep:.1f} apart in Lab, under the "
+            f"{measure.TERRAIN_MIN_LAB_SEPARATION} a map needs - ask for fewer "
+            f"terrains, or this set will be rejected")
+
+    # `extract_palette` caps at the number of distinct colours in the art, so
+    # asking for eight terrains from a three-colour painting quietly returns
+    # three. Found by a test whose own premise was wrong: it expected the
+    # surplus to come back poorly separated, and instead the surplus simply
+    # does not come back. Silent either way, and worth a sentence - a caller
+    # who asked for eight is building a form with eight rows.
+    if len(out) < terrains:
+        warnings.append(
+            f"asked for {terrains} terrains, this reference only supports "
+            f"{len(out)} - it does not contain more distinct colours than "
+            f"that. The suggestions below are all of them.")
+
+    return {
+        "reference": {"id": reference_id, "label": row["label"]},
+        "asked_for": terrains,
+        "terrains": out,
+        "separation": round(sep, 1),
+        "warnings": warnings,
+        # Said explicitly because the numbers are the whole point: these are
+        # what the reference WOULD quantise to, not a preview of a generated
+        # map. A map painted from a prompt may land elsewhere.
+        "note": f"coverage measured by quantising this reference at "
+                f"{size}x{size} against exactly these colours",
+    }
+
+
 def resolve_name(name: str) -> dict | None:
     """The newest FINISHED map with this name, or None.
 

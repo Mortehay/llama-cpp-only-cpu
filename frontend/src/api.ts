@@ -618,6 +618,16 @@ export const api = {
     region_llm?: boolean
     road_tile?: string | null
   }) => request<NewMap>('/api/maps', { method: 'POST', body: JSON.stringify(body) }),
+  // Terrain colours read off a reference, with the share each would capture.
+  // Guessing a colour by eye loses the terrain silently: a muted-blue sea
+  // declared against a navy #2850c8 measured 2.4% water on a real reference.
+  mapPalette: (referenceId: string, terrains: number) =>
+    request<{
+      asked_for: number
+      terrains: { name: string; color: string; coverage: number; near_neutral: boolean }[]
+      separation: number
+      warnings: string[]
+    }>(`/api/maps/palette/${referenceId}?terrains=${terrains}`),
   maps: () => request<{ items: MapSummary[]; total: number }>('/api/maps'),
   mapData: (jobId: string) =>
     request<Record<string, unknown>>(`/api/maps/${jobId}`),

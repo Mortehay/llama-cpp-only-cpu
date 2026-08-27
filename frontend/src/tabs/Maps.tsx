@@ -34,6 +34,9 @@ export default function Maps() {
   const [tileW, setTileW] = useState(64)
   const [profile, setProfile] = useState('')
   const [terrains, setTerrains] = useState<Terrain[]>(STARTER)
+  const [sampling, setSampling] = useState(false)
+  const [paletteNote, setPaletteNote] = useState<string | null>(null)
+  const [paletteWarnings, setPaletteWarnings] = useState<string[]>([])
   const [regionCount, setRegionCount] = useState(6)
   const [theme, setTheme] = useState('')
   const [roadTile, setRoadTile] = useState('')
@@ -66,6 +69,41 @@ export default function Maps() {
     }
   }
   usePoll(() => void refresh(), 3000, polling)
+
+  /**
+   * Replace the declared colours with ones measured off the chosen reference.
+   *
+   * NAMES AND PROMPTS ARE KEPT. The colour is the thing that has to match the
+   * art; what a terrain is called and how its tile is generated are the
+   * author's, and overwriting those would make this button destructive rather
+   * than helpful.
+   */
+  async function sampleReference() {
+    setSampling(true)
+    setPaletteNote(null)
+    setPaletteWarnings([])
+    try {
+      const out = await api.mapPalette(paintingFrom, terrains.length)
+      setTerrains((prev) =>
+        out.terrains.map((s, i) => ({
+          ...(prev[i] ?? { name: s.name, prompt: null }),
+          color: s.color,
+        })),
+      )
+      setPaletteNote(
+        `Measured from the reference: ` +
+          out.terrains
+            .map((t, i) => `${terrains[i]?.name ?? t.name} ${t.color} ${Math.round(t.coverage * 100)}%`)
+            .join(' · ') +
+          ` — closest pair ${out.separation} apart in Lab.`,
+      )
+      setPaletteWarnings(out.warnings)
+    } catch (e) {
+      setPaletteWarnings([e instanceof Error ? e.message : String(e)])
+    } finally {
+      setSampling(false)
+    }
+  }
 
   function patch(i: number, field: keyof Terrain, value: string) {
     setTerrains((prev) =>
@@ -197,6 +235,32 @@ export default function Maps() {
             </span>
           </div>
         </div>
+
+        {/* Reading the colours off the reference rather than picking them by
+            eye. A colour that is not in the art costs you that terrain
+            silently: a muted-blue sea declared against a navy #2850c8 measured
+            2.4% water on a real reference, and 49% against its own colour. */}
+        {paintingFrom && (
+          <div className="row tight" style={{ marginTop: 10 }}>
+            <button
+              className="btn ghost sm"
+              disabled={sampling}
+              onClick={() => void sampleReference()}
+            >
+              {sampling ? 'Reading…' : `Use this reference's colours (${terrains.length})`}
+            </button>
+            <span className="muted" style={{ alignSelf: 'center' }}>
+              Replaces the colours below with ones actually in the art, and says
+              what share of the map each would take.
+            </span>
+          </div>
+        )}
+        {paletteNote && <div className="note">{paletteNote}</div>}
+        {paletteWarnings.map((w, i) => (
+          <div className="note err" key={i}>
+            {w}
+          </div>
+        ))}
 
         <div className="row tight" style={{ marginTop: 12 }}>
           <div style={{ flex: '1 1 130px' }}>

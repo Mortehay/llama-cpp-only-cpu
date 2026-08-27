@@ -402,10 +402,21 @@ named in the tilemap's `warnings` and in the worker log. This is the same
 failure `validate_terrains` was written for - "a map silently missing a terrain
 gives no hint which one it lost" - closed at the other end.
 
-The real fix is the one `measure_map()` was built for and nothing yet uses:
-**seed the declared palette from the reference art**. Contract.md already says
-that is its job. Until then, a caller picking colours by eye will lose a
-terrain and not be told which.
+**Fixed 2026-08-27.** `GET /api/maps/palette/{reference_id}` reads the
+colours off a reference and reports the share each would capture, and the Maps
+tab has a button that fills them in. This is what `measure_map()` was built for
+and what contract.md always said its job was.
+
+It reports rather than decides: near-neutral suggestions are flagged as sinks
+with their chroma, and a reference that cannot supply as many terrains as were
+asked for says so - `extract_palette` caps at the distinct colours in the art,
+so eight asked of a three-colour painting quietly returned three. That last one
+was found by a test whose own premise was wrong, which expected the surplus to
+come back badly separated rather than not at all.
+
+The coverage numbers are what the REFERENCE quantises to, not a preview of a
+generated map. A map painted from a prompt may land elsewhere, and the build's
+own warnings remain the last word.
 
 ## The card filled up, and the first diagnosis was wrong, 2026-08-27
 
