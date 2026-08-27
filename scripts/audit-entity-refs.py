@@ -836,11 +836,19 @@ def main():
         # property of the current naming rather than a guarantee, so a finding
         # that hits more than one row is counted and reported rather than
         # trusted.
+        #
+        # `right(file_path, n) = tail` AND NOT `LIKE '%' || tail`, which is what
+        # this first shipped as. In SQL `LIKE`, an underscore is a
+        # single-character wildcard - and every filename here is
+        # `ref_core_<hex>.png`, so the pattern also matched `refXcoreY<hex>.png`
+        # and anything else of that shape. Against this data it was harmless by
+        # luck rather than by design, and a wrong-row update would have been
+        # silent. `right()` is a byte comparison with no pattern semantics.
         for f in findings:
             path = os.path.join(a.dir, f["file"])
-            suffix = "%/" + f["file"]
+            tail = "/" + f["file"]
             audit = {k: v for k, v in f.items() if k != "file"}
-            where = ("WHERE (file_path = %s OR file_path LIKE %s) "
+            where = ("WHERE (file_path = %s OR right(file_path, %s) = %s) "
                      "AND deleted = false")
             if f.get("blocking"):
                 cur.execute(
@@ -848,7 +856,7 @@ def main():
                     "trainable_why = %s, "
                     "metrics = metrics || jsonb_build_object('entity_audit', %s::jsonb) "
                     + where,
-                    ("; ".join(f["blocking"]), json.dumps(audit), path, suffix))
+                    ("; ".join(f["blocking"]), json.dumps(audit), path, len(tail), tail))
                 marked += cur.rowcount
             else:
                 # NOT an exclusion. REVIEW findings are recorded so the UI can
@@ -859,7 +867,7 @@ def main():
                     "UPDATE reference_assets SET "
                     "metrics = metrics || jsonb_build_object('entity_audit', %s::jsonb) "
                     + where,
-                    (json.dumps(audit), path, suffix))
+                    (json.dumps(audit), path, len(tail), tail))
             if cur.rowcount == 0:
                 missed += 1
             elif cur.rowcount > 1:

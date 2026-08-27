@@ -550,6 +550,21 @@ database whose schema was `pg_dump`ed from production and seeded with
 production-format paths: 3 of 3 rows matched and flipped correctly, and the 37
 findings with no row were named rather than swallowed.
 
+**Then the fix itself had a bug, found by the other session.** The suffix match
+first shipped as `file_path LIKE '%/' || name`. In SQL `LIKE`, an underscore is
+a single-character wildcard — and every filename here is `ref_core_<hex>.png`.
+So the pattern also matched `refXcoreY<hex>.png` and anything else of that
+shape. Harmless against this data by luck rather than design, and a wrong-row
+update would have been silent. Now `right(file_path, n) = '/' || name`: a byte
+comparison with no pattern semantics.
+
+Verified with a decoy rather than by reasoning. A scratch database was seeded
+with both `/app/images/ref_core_039fd1bc0d72.png` and
+`/app/images/refXcoreY039fd1bc0d72.png`; `--apply` flipped the first and left
+the second untouched, one row not two. And the check was shown to *discriminate*
+— run against the same two rows, the old predicate matches **2** and the new one
+matches **1**, so the decoy is genuinely reachable by the code that shipped.
+
 ---
 
 ## 6. What was measured and then thrown away
