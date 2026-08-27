@@ -95,36 +95,68 @@ CACHE_DIR = os.environ.get("HF_HUB_CACHE", "/models")
 #
 # TWO NUMBERS, TWO METRICS, ONE RUN - and I had them as old-versus-new
 #
-# Measured on this 3060, rank 32, batch 1, gradient checkpointing on, by
-# `torch.cuda.max_memory_allocated` at the end of the run:
-#     768 px  -> 5.38 GiB peak (45% of the card)
-#    1024 px  -> 5.61 GiB peak (47%)
+# Every completed run logs `torch.cuda.max_memory_allocated`, and those lines
+# survive in the worker's log, which is why they can be quoted here:
 #
-# A separate report of the mapstyle2 run - 1024 px, rank 32, 114 images, 1000
-# steps, AdamW8bit, 46.4M trainable parameters - put the peak at 6741 MiB
-# (6.58 GiB), and this comment used to say the figures above "PREDATE THE
-# CURRENT TRAINER AND ARE LOW".
+#     something2         2026-08-26 10:26   5.61 GiB
+#     something2-terrain 2026-08-26 10:57   5.61 GiB
+#     something2-terrain 2026-08-26 17:47   5.30 GiB
+#     mapstyle           2026-08-27 16:59   5.60 GiB
+#     mapstyle2          2026-08-27 18:10   5.60 GiB
 #
-# They do not, and the worker's own log for that exact run says so: `Peak VRAM
-# 5.60/12.00 GiB`. 5.60 against 5.61 is the same measurement. The 6741 MiB came
-# from sampling the DEVICE from outside every 10s, which counts the CUDA
-# context, cuBLAS and cuDNN workspaces and allocator fragmentation on top of
-# the tensors. The ~1.1 GiB between them is that overhead, not drift.
+# A device-level sampler run against the `mapstyle` training - 1024 px, rank
+# 32, 114 images, 1000 steps, AdamW8bit, 46.4M trainable parameters - read
+# 6741 MiB (6.58 GiB). This comment used to say the 5.x figures "PREDATE THE
+# CURRENT TRAINER AND ARE LOW", and that treating 5.61 as headroom would be
+# "wrong in the dangerous direction".
+#
+# Wrong twice. The 5.x figures are ordinary production output, not stale. And
+# `mapstyle` - the very run that was sampled - logged 5.60 GiB. Same run, two
+# metrics: `max_memory_allocated` counts tensors, a device sampler also counts
+# the CUDA context, cuBLAS and cuDNN workspaces and allocator fragmentation.
+# The ~1.1 GiB between them is that overhead, not drift.
+#
+# (An earlier version of this note pinned the pairing to `mapstyle2`, matching
+# on CONFIGURATION - resolution, rank, image count, parameter count. Every run
+# above shares that configuration, so it identifies nothing. The run id and the
+# clock are what identify a run.)
 #
 # Which one to use depends on the question. For "will this fit", the device
-# figure - about 6.6 GiB here - is the one that has to clear 12 GiB. For "did a
-# change make the model heavier", the allocator figure is the comparable one,
-# and it is what the log prints. Comparing across the two is how a run looks
-# like a 1 GiB regression when nothing moved.
+# figure is the one that has to clear what is free. For "did a change make the
+# model heavier", the allocator figure is comparable across runs, and it is
+# what the log prints. Comparing across the two is how a run looks like a
+# 1 GiB regression when nothing moved.
+#
+# THE CARD IS NOT ALWAYS 12 GiB FREE, and the shortage is timed, not permanent.
+# llama.cpp shares this GPU and holds ~3.6 GB while a model is resident, which
+# leaves ~8.4 GB. It was reported here as permanent - "idle for hours, still
+# held, --sleep-idle-seconds does not release it" - and that part does not hold
+# up. The engine logged `entering sleeping state` at 14:10:49 UTC and the
+# device read 392 MiB used / 11724 MiB free at 18:53, four and a half hours
+# later. Sleep does release it.
+#
+# The timing is what makes it dangerous, and it is worse than a fixed 8.4 GB
+# budget would be. Sleep fires about two minutes after the last request, so the
+# card is short exactly when something has just used the LLM. A map build names
+# its regions with an LLM call IMMEDIATELY before painting, so that path meets
+# the shortage every time, well inside the idle window - which is how it hit
+# three identical OOMs allocating 7.71 GB with a 512 MB VAE decode on top.
+#
+# Training is usually clear of it, and a 6.58 GiB device peak fits in 8.4 GB
+# anyway. But do not read "47% of the card" as headroom: that percentage is
+# computed against the full 12 GiB and does not know what else is loaded. The
+# `device budget:` line logged at the start of each run does - it reads free
+# memory at that moment - and it is the one to check.
 #
 # The staging holds, and was watched from outside: the device fell to 732 MiB
 # between stages as the VAE and text encoders unloaded, then climbed to 6.7 GB
 # for the UNet.
 #
 # Native resolution costs 0.23 GiB and avoids training the model at a scale it
-# was not trained for, so it is the default. There is room above this for a
-# larger batch or a higher rank; if either ever OOMs, the ladder down is
-# batch -> rank 32/16 -> 1024/768.
+# was not trained for, so it is the default. Do NOT read the gap to 12 GiB
+# as room for a larger batch or a higher rank - the real gap is to what
+# the `device budget:` line reports. If either ever OOMs, the ladder down
+# is batch -> rank 32/16 -> 1024/768.
 DEFAULT_RESOLUTION = 1024
 
 # At or below this many distinct colours, treat the image as hard-edged art and
@@ -707,6 +739,17 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
     params = [p for p in unet.parameters() if p.requires_grad]
     trainable = sum(p.numel() for p in params)
     logger.info("  %d trainable parameters (%.1f M)", trainable, trainable / 1e6)
+
+    # What the card actually has, not what it has on paper. llama.cpp shares
+    # this GPU and holds ~3.6 GB while a model is resident, releasing it about
+    # two minutes after the last request. So the budget depends on what ran
+    # just before this - which is not a fact a comment can keep current, and is
+    # why it is read here instead of asserted. The peak line at the end reports
+    # a percentage of the FULL card and knows about none of it.
+    if torch.cuda.is_available():
+        free, total = (x / 1024 ** 3 for x in torch.cuda.mem_get_info())
+        logger.info("  device budget: %.2f GiB free of %.2f GiB (%.2f GiB held "
+                    "by other processes)", free, total, total - free)
 
     # LoRA params are cast to fp32: bf16 optimiser states on a rank-32 adapter
     # lose enough precision to visibly stall the loss.
