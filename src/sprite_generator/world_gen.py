@@ -919,6 +919,10 @@ def report(spec: dict) -> dict:
             rows.append({
                 "key": w["key"], "name": w.get("name"), "biomes": biomes,
                 "density": tier, "per_screen": 0.0, "creatures": 0,
+                # Zero under either reading of the multiplier, but the key must
+                # be present: a row that omits it makes every consumer branch
+                # on whether this world was empty.
+                "weighted_creatures": 0,
                 "area": res["area"],
                 "biome_multiplier": round(biome_multiplier(biomes), 2),
                 "flora": flora, "creature_types": types, "variety": 0,
@@ -1002,6 +1006,28 @@ def report(spec: dict) -> dict:
             "key": w["key"], "name": w.get("name"), "biomes": biomes,
             "density": tier, "per_screen": round(ps, 1),
             "creatures": res["scatter"], "area": res["area"],
+            # THESE TWO NUMBERS DISAGREE, AND IT IS NOT KNOWN WHICH IS RIGHT.
+            #
+            # `creatures` mirrors their `resolveDensity`: tier x area, with no
+            # biome weighting. `per_screen` applies the multiplier, because
+            # that is the felt number and the whole reason `choose_density`
+            # solves for a tier at all.
+            #
+            # Both cannot describe the same world. Measured on emerald-reach's
+            # entry world: 1016 creatures over 16384 tiles is 14.0 per screen,
+            # while `per_screen` reports 7.0 - off by exactly Meadow's 0.5, and
+            # every other world is off by exactly its own multiplier.
+            #
+            # So either the multiplier weights the world TOTAL, and `creatures`
+            # is overstated for every biome under 1.0; or it only weights local
+            # placement, and `creatures` is a pre-weighting budget that should
+            # not be called a creature count. `weighted_creatures` is what the
+            # total would be under the first reading. Reported alongside rather
+            # than instead, because something2 already consumes `creatures` and
+            # guessing at which is authoritative is how the last three bugs of
+            # this shape happened. See `caveats` below.
+            "weighted_creatures": round(res["scatter"]
+                                        * biome_multiplier(biomes)),
             "biome_multiplier": round(biome_multiplier(biomes), 2),
             "flora": flora, "creature_types": types,
             "variety": len(types), "leaders": leaders,
@@ -1030,13 +1056,34 @@ def report(spec: dict) -> dict:
         problems.append(f"{len(entries)} entry worlds - something2 expects one")
 
     per = [r["per_screen"] for r in rows] or [0]
+
+    # Open questions about what the numbers MEAN, kept apart from `problems`
+    # on purpose: `ok` gates something2's validator, and a caveat is not a
+    # defect in the spec. Putting it in `problems` would fail every region over
+    # a question about labelling.
+    caveats = []
+    raw = sum(r["creatures"] for r in rows)
+    weighted = sum(r["weighted_creatures"] for r in rows)
+    if rows and raw != weighted:
+        caveats.append(
+            f"`creatures` ({raw}) mirrors resolveDensity - tier x area, no "
+            f"biome weighting. `per_screen` applies the multiplier. They "
+            f"cannot both be right: the entry world's count implies "
+            f"{rows[0]['creatures'] * TILES_PER_SCREEN / max(rows[0]['area'], 1):.1f} "
+            f"per screen against a reported {rows[0]['per_screen']}. If the "
+            f"multiplier weights the world total, this region holds "
+            f"{weighted}, not {raw}. UNRESOLVED - needs a read of "
+            f"resolveDensity in services/, not a guess.")
+
     return {
         "worlds": rows,
         "problems": problems,
+        "caveats": caveats,
         "ok": not problems,
         "totals": {
             "worlds": len(worlds),
-            "creatures": sum(r["creatures"] for r in rows),
+            "creatures": raw,
+            "weighted_creatures": weighted,
             "mean_per_screen": round(sum(per) / len(per), 1),
             "min_per_screen": round(min(per), 1),
             "max_per_screen": round(max(per), 1),

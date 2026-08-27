@@ -267,6 +267,36 @@ def _variety_repair():
             f"{rep['totals']['creature_types']} kinds and no repetition")
 
 
+@case("the report never asserts two creature counts as both true")
+def _caveat():
+    """Found 2026-08-27 by something2 asking why the entry world went `horde`.
+
+    `creatures` mirrors their resolveDensity - tier x area, no biome weighting.
+    `per_screen` applies the multiplier. Every world's reported count implies a
+    per-screen figure that disagrees with its reported one, by exactly its own
+    multiplier. Both cannot be true.
+
+    Which is authoritative needs a read of their resolveDensity, so the report
+    states BOTH and says so, rather than picking one. The caveat lives outside
+    `problems` because `ok` gates their validator and a labelling question is
+    not a defect in the spec.
+    """
+    rep = wg.report(wg.plan_region("C", world_count=8, target_per_screen=6.0))
+    assert rep["ok"] and not rep["problems"], rep["problems"]
+    assert rep["caveats"], "the disagreement is not surfaced anywhere"
+    assert "resolveDensity" in rep["caveats"][0]
+
+    t = rep["totals"]
+    assert t["weighted_creatures"] != t["creatures"], t
+    for row in rep["worlds"]:
+        assert "weighted_creatures" in row, row["key"]
+        implied = row["creatures"] * wg.TILES_PER_SCREEN / max(row["area"], 1)
+        # The gap IS the multiplier - that is what makes it one bug, not eight.
+        assert abs(implied * row["biome_multiplier"] - row["per_screen"]) < 0.2, row
+    return (f"{t['creatures']} vs {t['weighted_creatures']}, stated as an open "
+            f"question rather than resolved by guess")
+
+
 @case("the five original biomes carry their P4 lines")
 def _widening():
     """The widening something2 applied on 2026-08-27, mirrored here.
