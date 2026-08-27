@@ -472,9 +472,29 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    | `ref_core_08e39eb3c931` | clean | **0.00** (grid 3) | **9** |
    | `ref_core_ca0070408096` | strays are its own drips | 0.28 (grid 3) | 34 |
 
-   Both are genuine palette-locked pixel art on an exact 3x grid, and both are
-   in `ref_core` — the set this note spends most of its length criticising. The
-   criticism stands for the other 332.
+   Both are palette-locked pixel art on a 3x grid, and both are in `ref_core` —
+   the set this note spends most of its length criticising. The criticism stands
+   for the other 332.
+
+   > **These two are a floor, not the answer.** They come from measuring 20
+   > files per set plus the ones already flagged, which answers "what is this
+   > set like" and not "what is in it" — a sample used for a question it cannot
+   > answer, which is the same error class as everything else in §6. ADR 0009's
+   > session swept all 483 and found **fourteen** grid-locked files, six of them
+   > in `ref_core`. Take fourteen as the better number and this table as two
+   > confirmed examples.
+   >
+   > The 0.28 on `ca0070408096` is not noise in the measurement, it is damage in
+   > the file. Its per-factor profile is 5.15 / **0.28** / 10.32 / 11.85 — an 18x
+   > minimum at 3, so the grid is real and a lossy re-save has scuffed it. That
+   > distinction matters more than it looks: real pixel art that went through a
+   > lossy step is still real pixel art and is categorically different from art
+   > that never had a grid, and a strict edge-divisibility test fails both
+   > identically. On this file every row and column registers as an edge, so the
+   > divisibility fraction degenerates to 1/s — 0.503, 0.358, 0.252, 0.198
+   > against an ideal 0.500, 0.333, 0.250, 0.200 — and no scale can clear the
+   > bar. Judge a grid by the depth of the minimum, not by whether edges land
+   > perfectly.
 
    Note what this also says about the one `sprite` survivor:
    `ref_sprite_06074972c0ad` measures 7.14 with 875 colours. It is a clean
@@ -647,6 +667,18 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+- **Answering "what is in this set" with a sample.** The two grid-locked files
+  above came from measuring 20 per set plus the already-flagged ones. That
+  answers "what is this set like"; it cannot answer "what is in it", and I used
+  it for the second. A sweep of all 483 finds fourteen. The output looked no
+  different either way, which is the property that makes this class of error
+  survive review.
+- **Measuring block error over all pixels rather than opaque ones.** A large
+  transparent margin is perfectly flat, so it dilutes the error at every factor
+  equally and flatters exactly the files that deserve it least. Measured both
+  ways on the same file at the same factor: 7.14 opaque-only against 2.85
+  all-pixel. Opaque-only is the honest mask, and ADR 0009's session adopted it
+  after the same comparison.
 - **Verifying "is this the right training data" by looking at contact sheets.**
   It is the right instrument for backdrops, pedestals, strays and sheets — it
   found or confirmed every one of those. It is the *wrong* instrument for
