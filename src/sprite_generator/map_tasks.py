@@ -107,6 +107,58 @@ def _triggered(model: str, prompt: str) -> str:
         return prompt
 
 
+def _map_pipe(model: str):
+    """The diffusion pipeline, with the VAE decoded in tiles.
+
+    MEASURED on this box, 2026-08-27: a fused SDXL pipeline allocates 7.71 GB,
+    llama.cpp holds 3.6 GB, and the card has 12. The decode then asks for 512
+    MB it cannot have. Three runs failed identically, with 55 MB reserved and
+    unallocated and `expandable_segments:True` making no difference - so this
+    is not fragmentation and no allocator setting fixes it. It does not fit.
+
+    llama.cpp does not release that 3.6 GB when it sleeps; it has been idle for
+    hours and still holds it. And a map build has ALWAYS just used it, because
+    naming the regions is an LLM call that happens immediately before this. So
+    the map path is the one path guaranteed to meet the shortage.
+
+    `_release_vram`'s figures were measured with llama.cpp asleep, which is not
+    a state a map build is ever in. Read them as a floor, not a budget.
+
+    Tiling decodes the latent in pieces. The latent is untouched, so the seed
+    and the composition are exactly what they would have been.
+    """
+    from tasks import get_sd_pipeline
+
+    pipe = get_sd_pipeline(model)
+
+    # Two traps here, both paid for.
+    #
+    # `pipe.enable_vae_tiling()` is the name in every tutorial and does not
+    # exist in diffusers 0.40; the API is `pipe.vae.enable_tiling()`.
+    #
+    # And enabling it is NOT enough. `_decode` gates on
+    #
+    #     z.shape[-1] > vae.tile_latent_min_size
+    #
+    # where `tile_latent_min_size` is `sample_size / 8` = 128 for the SDXL VAE
+    # - and a 1024x1024 image has a 128x128 latent. `128 > 128` is false, so
+    # the flag reads as on, `use_tiling` is True, and the decode still runs
+    # whole and still OOMs. That was measured, not reasoned about: the run with
+    # the flag set failed in `self.decoder(z)`, the untiled branch.
+    #
+    # So the thresholds come down far enough for the branch to fire.
+    vae = getattr(pipe, "vae", None)
+    if vae is None or not hasattr(vae, "enable_tiling"):
+        logger.warning("pipeline for %s has no tileable VAE; the decode may "
+                       "not fit alongside llama.cpp", model)
+        return pipe
+
+    vae.enable_tiling()
+    vae.tile_sample_min_size = 512
+    vae.tile_latent_min_size = 64
+    return pipe
+
+
 def _reference_path(ref_id: str) -> str | None:
     with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
         cur.execute("SELECT file_path FROM reference_assets "
@@ -129,7 +181,7 @@ def _paint(spec: dict) -> Image.Image:
             raise ValueError(f"painting_from reference {ref_id} has no file")
         return Image.open(path).convert("RGB")
 
-    from tasks import default_model, get_sd_pipeline
+    from tasks import default_model
     import torch
 
     # Generated large and shrunk by quantize(), because a diffusion model asked
@@ -140,7 +192,7 @@ def _paint(spec: dict) -> Image.Image:
                        f"{spec.get('prompt', '')}, top-down world map, flat "
                        f"regions of colour, distinct biomes, no text, no "
                        f"labels, no border, no shading, no perspective")
-    pipe = get_sd_pipeline(model)
+    pipe = _map_pipe(model)
     gen = torch.Generator(device=pipe.device).manual_seed(int(spec.get("seed", 0)))
     return pipe(prompt=brief, num_inference_steps=25, guidance_scale=7.5,
                 generator=gen).images[0].convert("RGB")
@@ -163,7 +215,7 @@ def _make_tile(terrain: dict, w: int, h: int, colors: int,
                              f"{named!r}, which does not exist")
         return tile_geometry.cut_tile(Image.open(path).convert("RGBA"), w, h)
 
-    from tasks import default_model, get_sd_pipeline
+    from tasks import default_model
     import torch
 
     model = llm_name or default_model()
@@ -171,7 +223,7 @@ def _make_tile(terrain: dict, w: int, h: int, colors: int,
                       f"{terrain.get('prompt') or terrain['name']}, seamless "
                       f"tiling ground texture, top-down view, pixel art, flat "
                       f"lighting, no shadows, no objects")
-    pipe = get_sd_pipeline(model)
+    pipe = _map_pipe(model)
     gen = torch.Generator(device=pipe.device).manual_seed(seed)
     image = pipe(prompt=full, num_inference_steps=25, guidance_scale=7.5,
                  generator=gen).images[0]
