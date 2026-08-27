@@ -815,17 +815,40 @@ def main():
             sys.exit("DB_URL unset - run inside the container")
         conn = psycopg2.connect(db)
         cur = conn.cursor()
-        marked = touched = 0
+        marked = touched = missed = ambiguous = 0
+
+        # MATCH ON THE BASENAME, NOT THE PATH THIS RUN HAPPENED TO USE.
+        #
+        # The database stores absolute container paths - `/app/images/ref_core_
+        # <hex>.png` - because that is where the API wrote them. This script is
+        # normally pointed at a relative `--dir images` from the host, so
+        # `os.path.join(a.dir, file)` builds `images/ref_core_<hex>.png`, which
+        # equals nothing.
+        #
+        # That failure was SILENT and reported as success: zero rows updated,
+        # "applied to 0 rows", exit 0. Worse, a scratch-database test cannot
+        # catch it, because the test seeds whatever paths the test invocation
+        # produces - so both sides agree and the bug survives. It was found by
+        # reading the real `file_path` column instead of the test's.
+        #
+        # A suffix match on `/<basename>` works from either side. Basenames are
+        # `ref_<kind>_<12 hex>.png` and unique by construction, but that is a
+        # property of the current naming rather than a guarantee, so a finding
+        # that hits more than one row is counted and reported rather than
+        # trusted.
         for f in findings:
             path = os.path.join(a.dir, f["file"])
+            suffix = "%/" + f["file"]
             audit = {k: v for k, v in f.items() if k != "file"}
+            where = ("WHERE (file_path = %s OR file_path LIKE %s) "
+                     "AND deleted = false")
             if f.get("blocking"):
                 cur.execute(
                     "UPDATE reference_assets SET trainable = false, "
                     "trainable_why = %s, "
                     "metrics = metrics || jsonb_build_object('entity_audit', %s::jsonb) "
-                    "WHERE file_path = %s AND deleted = false",
-                    ("; ".join(f["blocking"]), json.dumps(audit), path))
+                    + where,
+                    ("; ".join(f["blocking"]), json.dumps(audit), path, suffix))
                 marked += cur.rowcount
             else:
                 # NOT an exclusion. REVIEW findings are recorded so the UI can
@@ -835,13 +858,27 @@ def main():
                 cur.execute(
                     "UPDATE reference_assets SET "
                     "metrics = metrics || jsonb_build_object('entity_audit', %s::jsonb) "
-                    "WHERE file_path = %s AND deleted = false",
-                    (json.dumps(audit), path))
+                    + where,
+                    (json.dumps(audit), path, suffix))
+            if cur.rowcount == 0:
+                missed += 1
+            elif cur.rowcount > 1:
+                ambiguous += 1
             touched += cur.rowcount
         conn.commit()
         conn.close()
         print("\napplied to {} rows ({} marked not trainable)".format(
             touched, marked))
+        # Say what did NOT land. An audit that quietly updates nothing looks
+        # exactly like an audit that had nothing to change.
+        if missed:
+            print("  {} of {} findings matched no row - the image is on disk "
+                  "but not registered in reference_assets (or is deleted)"
+                  .format(missed, len(findings)))
+        if ambiguous:
+            print("  {} findings matched MORE THAN ONE row - two references "
+                  "share a basename; check before trusting these"
+                  .format(ambiguous))
 
     return 0
 

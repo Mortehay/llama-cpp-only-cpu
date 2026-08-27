@@ -418,6 +418,13 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    images comes through clean, two if you allow the one whose "strays" are
    really its own drips. This is the finding that matters most; everything else
    is cheaper than the retrain it prevents.
+   The live-data version of this, measured by ADR 0009's session against the
+   database rather than the filesystem, is sharper still: a default
+   `POST /api/training` today reads **435 live trainable rows** (333 core, 102
+   sprite) and **230 of them are rejected** by that audit — **all 12
+   checkerboarded sheets among them, still `deleted=false, trainable=true`**. So
+   this is not a hypothetical about a future run; it describes what the next
+   training job would consume if started now.
 2. **Train from `images/recovered/cells`, not from `ref_core`.** All 103 cells
    are clean by these rules and none is blocking — ready as they stand, with the
    edge slivers already erased at the split. This supersedes what this note
@@ -490,10 +497,18 @@ displays and what the next training run consumes. That is a decision for whoever
 owns the dataset, not a step in verifying a script. The verification below used
 a throwaway database instead.
 
-One mismatch worth knowing before running it: the DB holds **106** sprite rows
-while there are **149** `ref_sprite_*.png` files on disk, so a `--kind sprite`
-run will update fewer rows than the audit reports findings for. `core` matches
-exactly at 334.
+One mismatch worth knowing before running it: the DB holds **106** live sprite
+rows while there are **149** `ref_sprite_*.png` files on disk. Chased down by
+ADR 0009's session: **all 43 are soft-deleted rows** whose files remain on disk —
+150 sprite rows total, 106 live and 44 deleted, with zero orphans in either
+direction. `core` matches exactly at 334, which is why the gap was easy to miss.
+
+That has a consequence for **this** note too, and it is not cosmetic: this audit
+reads the **filesystem**, so its sprite figures count images the user has
+already thrown away. Over live references only, the sprite set has *no*
+survivors at all — the three that passed here (the tree on a plinth, the hollow
+fragment, the pine tree) are all deleted rows. `--apply` was never affected; it
+scopes to `deleted = false`. Only the reporting over-counts.
 
 **`--apply` has been verified, not merely written.** It would otherwise have
 shipped having never executed once. It was exercised against a throwaway
@@ -515,6 +530,25 @@ right:
 The metrics-merge case is the one worth keeping: `||` on a jsonb column is easy
 to write as an overwrite by accident, and the failure would be silent
 destruction of every measurement `measure.py` had already recorded.
+
+**And a bug that this exact test could not catch, found afterwards.** `--apply`
+matched `file_path` against `os.path.join(a.dir, file)`. The database stores
+absolute container paths (`/app/images/ref_core_<hex>.png`), while this script is
+normally pointed at a relative `--dir images` from the host — so the comparison
+was `images/...` against `/app/images/...`, which matches nothing. Zero rows
+updated, "applied to 0 rows", exit 0. A silent no-op reported as success.
+
+The scratch test could not have found it, and the reason is worth keeping: the
+test **seeds whatever paths the test invocation produces**, so both sides agreed
+and the bug was invisible from inside. It surfaced only from reading the real
+`file_path` column. A test built from your own assumptions cannot falsify them.
+
+Fixed two ways — match on the `/<basename>` suffix so either form works, and
+**report what did not land**, since an audit that quietly updates nothing looks
+identical to one that had nothing to change. Re-verified against a scratch
+database whose schema was `pg_dump`ed from production and seeded with
+production-format paths: 3 of 3 rows matched and flipped correctly, and the 37
+findings with no row were named rather than swallowed.
 
 ---
 
