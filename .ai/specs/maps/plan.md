@@ -234,13 +234,50 @@ modelled on `aece983`.
 serves `complete: false` with a visible placeholder and resolves itself once the
 entity job lands.
 
-### Slice 5 - Region graph
+### Slice 5 - Region graph - DONE
 
-CPU llama.cpp behind a GBNF grammar; validate against terrain (nothing in water,
-nothing out of bounds); rules scatter the rest.
+Shipped 2026-08-27 as `regions.py`, 25 smoke cases in `scripts/smoke-regions.py`.
 
-*Verifiable:* a town sits at a river mouth and a road reaches it. Re-rolling the
-graph changes the semantics while terrain stays put.
+**Verified on a real build with no GPU:** `port Port Haven` at (12,11) sat on
+actual shoreline with nothing relaxed, a road of 14 tiles reached it, all six
+places were on land, and no scatter prop landed on a landmark. Re-rolling the
+seed moved every place and left the terrain byte-identical.
+
+Five decisions worth keeping:
+
+- **The graph is read OFF the finished terrain, not authored before it.** This
+  reverses the pipeline in [contract.md](contract.md), and it is the decision
+  the whole slice rests on. A landmark has to sit on real ground, and which
+  ground is real is not known until the painting has been quantised. Authoring
+  first leaves only two moves afterwards - reject a good graph over one town in
+  a lake, or move it silently, at which point the graph and the terrain
+  disagree and the graph was never authoritative. Derived from the terrain, it
+  *cannot* disagree.
+- **The JSON Schema is the reliability mechanism, and it is built from the
+  map.** llama.cpp compiles `response_format: json_schema` to GBNF itself, so
+  no hand-written grammar was needed - Q5's assumption held, better than
+  expected. But the schema has to be per-map: told in prose that "ports need
+  shoreline", the 3B model named three ports on a landlocked map. Removing
+  `port` from the enum makes it unsayable. **The prompt is a hint; the schema
+  is the rule.**
+- **Constraints relax one at a time, and say which.** A port on a map with no
+  sea is still placed, and carries `relaxed: ["shoreline"]`. A graph that
+  silently ignores its own hints is worse than one that admits it could not
+  honour them.
+- **An unroutable pair is dropped, not forced.** Roads are axis-aligned L and Z
+  routes, never a pathfinder: a shortest path round a coastline is a staircase
+  that reads as a goat track. Two places with no straight dry route between
+  them are simply not connected by road, and the graph says so.
+- **A placed region becomes an ordinary pending prop**, keyed on its KIND
+  rather than its name - a library keyed on "Saltmere" is a library of one.
+  Slice 4's resolver and reaper cover them with nothing new built.
+
+**The Z route search covers the whole grid, not the span between the two
+places.** Found by a failing test: two towns on the same side of a bay have no
+dry column *between* them - the way out is to go the other way first.
+
+*Original criterion, met:* a town sits at a river mouth and a road reaches it.
+Re-rolling the graph changes the semantics while terrain stays put.
 
 ### Slice 6 - The something2 facade
 
@@ -310,3 +347,50 @@ Carried from 0007, plus two this plan introduces:
 - A failed entity job stranding a map, per `aece983`.
 - Two integration paths coexisting while D5 holds; the unread one rots unless
   `check-map.py` exercises it.
+
+## Two hazards found by building it, 2026-08-27
+
+Both are about the palette, both are silent, and both were measured on real map
+references rather than reasoned about.
+
+**A declared colour that does not match the art costs you the terrain.** A
+reference whose sea is a muted blue, quantised against a navy `#2850c8`,
+produced **2.4% water**. Against the sea's actual colour, 49%. `validate_terrains`
+cannot catch this - it checks that the declared colours are far enough APART,
+which says nothing about whether any of them is in the painting.
+
+**A near-neutral terrain is a sink.** Grey sits close to the middle of Lab
+space, so it is the nearest match for anything desaturated. Dropping a grey
+`stone` from that same reference took water from **2.4% to 58% without touching
+the water colour**. A mid-grey terrain quietly eats every washed-out region of
+the painting.
+
+Neither is knowable before the painting exists, so the build now reports
+coverage warnings at the one moment it can: a terrain under 0.5% or over 85% is
+named in the tilemap's `warnings` and in the worker log. This is the same
+failure `validate_terrains` was written for - "a map silently missing a terrain
+gives no hint which one it lost" - closed at the other end.
+
+The real fix is the one `measure_map()` was built for and nothing yet uses:
+**seed the declared palette from the reference art**. Contract.md already says
+that is its job. Until then, a caller picking colours by eye will lose a
+terrain and not be told which.
+
+## GPU contention, 2026-08-27
+
+Plan Q5 assumed **CPU** llama.cpp. The deployed preset is
+`--n-gpu-layers 99`, so the region graph and the prop generator now share a
+12 GB card. Observed directly: after a map build called llama.cpp and then
+queued prop generation, one prop failed with `CUDA driver error: device not
+ready`, a retry failed with a `CUDACachingAllocator` internal assert, and
+`nvidia-smi` showed **11957 / 12288 MiB used with an empty queue**. Restarting
+the worker freed it to 213 MiB.
+
+`--sleep-idle-seconds 120` means llama.cpp does release the card, but a map
+build calls it and queues prop generation inside that window. Either move the
+text model to CPU as Q5 assumed, or accept that the first props after a graph
+may need the retry below.
+
+`POST /api/maps/{id}/resolve` exists because of this: it retries only the
+missing art, at a different seed each attempt, without repainting terrain that
+was never wrong.

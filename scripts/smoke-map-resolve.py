@@ -407,6 +407,99 @@ def _picture_replaced():
     return f"{len(before)} -> {len(after)} bytes"
 
 
+# --- a terrain that was declared and did not arrive -----------------------
+
+
+@case("a terrain that quantised to nothing is named")
+def _warn_absent():
+    # Measured on a real reference: a map whose sea is a muted blue, quantised
+    # against a navy #2850c8, produced 2.4% water. The map builds and looks
+    # plausible and is missing its ocean.
+    w = mt._coverage_warnings({"grass": 0.6, "water": 0.0, "stone": 0.4},
+                              [{"name": "grass", "color": "#4a7c3f"},
+                               {"name": "water", "color": "#2850c8"},
+                               {"name": "stone", "color": "#6e6e73"}])
+    assert len(w) == 1 and "water" in w[0], w
+    return "said at the only moment it is knowable"
+
+
+@case("a terrain that swallowed the map is named")
+def _warn_sink():
+    # The other half, and the more surprising one: dropping a grey `stone` from
+    # that same reference took water from 2.4% to 58% without touching the
+    # water colour. Near-neutral colours sit in the middle of Lab and are the
+    # nearest match for anything desaturated.
+    w = mt._coverage_warnings({"grass": 0.05, "water": 0.02, "stone": 0.93},
+                              [{"name": "grass", "color": "#4a7c3f"},
+                               {"name": "water", "color": "#2850c8"},
+                               {"name": "stone", "color": "#6e6e73"}])
+    assert any("93%" in x and "stone" in x for x in w), w
+    return "the sink is reported, not just its victims"
+
+
+@case("a balanced map is not nagged")
+def _warn_quiet():
+    w = mt._coverage_warnings({"grass": 0.43, "water": 0.35, "stone": 0.22},
+                              [{"name": "grass", "color": "#4a7c3f"},
+                               {"name": "water", "color": "#5b83a1"},
+                               {"name": "stone", "color": "#c9b58a"}])
+    assert w == [], w
+    return "no warning when nothing is wrong"
+
+
+@case("a two-terrain map may legitimately be mostly one thing")
+def _warn_two_terrains():
+    # An island of grass in a sea is 90% water by design. Warning about it
+    # would train a caller to ignore the warnings that matter.
+    w = mt._coverage_warnings({"water": 0.9, "grass": 0.1},
+                              [{"name": "water", "color": "#2850c8"},
+                               {"name": "grass", "color": "#4a7c3f"}])
+    assert w == [], w
+    return "quiet, because that is what an island looks like"
+
+
+# --- the region graph on the map -----------------------------------------
+
+
+@case("a placed region becomes a prop keyed on its kind")
+def _landmark_props():
+    graph = {"regions": [{"name": "Port Haven", "kind": "port", "x": 4, "y": 6},
+                         {"name": "Ashford", "kind": "town", "x": 9, "y": 2}]}
+    lm = mt._landmarks(graph)
+    # Keyed on the KIND, so every later map with a port reuses this art. The
+    # NAME still travels, so a consumer can label it.
+    assert [e["want"] for e in lm] == ["port", "town"], lm
+    assert [e["region"] for e in lm] == ["Port Haven", "Ashford"], lm
+    assert all(e["layer"] == "props" for e in lm)
+    return "one library entry per kind, not one per place"
+
+
+@case("no map means no landmarks, not a crash")
+def _landmarks_none():
+    assert mt._landmarks(None) == []
+    assert mt._landmarks({}) == []
+    return "a map with no graph is a perfectly good map"
+
+
+@case("scatter never drops a tree on a town")
+def _scatter_avoids_landmarks():
+    # `scatter` cannot know about landmarks, so `_populate` subtracts them. A
+    # tree drawn on top of a town reads as an art bug rather than a generation
+    # one - the same reason scatter avoids roads.
+    with Images():
+        grid = np.zeros((12, 12), dtype=int)
+        terrains = [{"name": "grass", "walkable": True}]
+        graph = {"regions": [{"name": "Ashford", "kind": "town", "x": 5, "y": 5}]}
+        spec = {"seed": 3, "scatter": [
+            {"layer": "props", "terrain": ["grass"], "want": "oak tree",
+             "density": 1.0, "spacing": 1}]}
+        entities, _, _ = mt._populate(spec, grid, None, terrains, 32, 16,
+                                      graph=graph)
+        at = [e for e in entities if (e["x"], e["y"]) == (5, 5)]
+        assert len(at) == 1 and at[0].get("region") == "Ashford", at
+    return "density 1.0 covered every tile, and the town still stands alone"
+
+
 # --- what a caller is told while the map is provisional -------------------
 
 

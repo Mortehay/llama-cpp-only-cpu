@@ -61,6 +61,7 @@ from PIL import Image, ImageDraw
 
 import map_geometry
 import pixelate
+import regions
 import tile_geometry
 from job_runner import job_update, now
 from tasks import celery_app
@@ -309,7 +310,65 @@ def _dress(entities, tile_w: int, tile_h: int):
     return objects, pending
 
 
-def _populate(spec: dict, grid, roads_grid, terrains, tile_w: int, tile_h: int):
+def _coverage_warnings(coverage: dict, terrains) -> list:
+    """Terrains that were declared and did not survive quantisation.
+
+    `validate_terrains` exists because "a map silently missing a terrain gives
+    no hint which one it lost". It can only check that the declared colours are
+    far enough APART, which is not the same thing - a terrain can be perfectly
+    separable and still capture nothing, or capture everything.
+
+    Two ways that happens, both measured on real references:
+
+      The declared colour does not match the art. A map whose sea is a muted
+      blue, quantised against a navy `#2850c8`, produced 2.4% water. Against
+      the sea's actual colour, 49%.
+
+      A NEAR-NEUTRAL terrain is a sink. Grey sits close to the middle of Lab
+      space, so it is the nearest match for anything desaturated. Dropping a
+      grey `stone` from that same map took water from 2.4% to 58% WITHOUT
+      touching the water colour.
+
+    Neither is detectable before the painting exists, and both are silent: the
+    map builds, looks plausible, and is missing a third of what was asked for.
+    This is the one moment it is knowable, so it is said here.
+    """
+    out = []
+    for t in terrains:
+        got = coverage.get(t["name"], 0.0)
+        if got < 0.005:
+            out.append(
+                f"terrain {t['name']!r} ({t['color']}) covers {got:.1%} of this "
+                f"map - the painting has nothing that colour, or a more "
+                f"neutral terrain captured it")
+        elif got > 0.85 and len(terrains) > 2:
+            out.append(
+                f"terrain {t['name']!r} ({t['color']}) covers {got:.0%} of this "
+                f"map - if that is not what you wanted, it is probably the "
+                f"closest match in Lab to everything muddy in the painting")
+    return out
+
+
+def _landmarks(graph: dict | None) -> list:
+    """A placed region becomes a prop, so the graph is VISIBLE on the picture.
+
+    `want` is the KIND rather than the place's name, deliberately. A library
+    keyed on "Saltmere" is a library of one; keyed on "port" it is reused by
+    every map that ever has a port. The name still travels, on the entity, so
+    a consumer can label it.
+
+    They are ordinary pending props, which means Slice 4's resolver fills them
+    in and Slice 4's reaper covers them. Nothing new had to be built for this.
+    """
+    if not graph:
+        return []
+    return [{"asset": None, "want": r["kind"], "x": r["x"], "y": r["y"],
+             "layer": "props", "status": "pending",
+             "region": r["name"]} for r in graph.get("regions", [])]
+
+
+def _populate(spec: dict, grid, roads_grid, terrains, tile_w: int, tile_h: int,
+              graph: dict | None = None):
     """Layers 3 and 4: scatter, then resolve each placement to art.
 
     Library first (ADR 0007 D6). A rule naming an `asset` costs no GPU; one
@@ -317,21 +376,30 @@ def _populate(spec: dict, grid, roads_grid, terrains, tile_w: int, tile_h: int):
     and `status: pending`, so the map is usable now and improves later rather
     than being withheld until every prop exists.
     """
+    landmarks = _landmarks(graph)
     rules = spec.get("scatter") or []
-    if not rules:
+    if not rules and not landmarks:
         return [], [], []
 
-    by_name = {t["name"]: i for i, t in enumerate(terrains)}
-    resolved = [{**r, "terrain": [by_name[n] for n in r["terrain"]
-                                  if n in by_name]} for r in rules]
+    placements = []
+    if rules:
+        by_name = {t["name"]: i for i, t in enumerate(terrains)}
+        resolved = [{**r, "terrain": [by_name[n] for n in r["terrain"]
+                                      if n in by_name]} for r in rules]
+        placements = map_geometry.scatter(grid, resolved,
+                                          seed=int(spec.get("seed", 0)),
+                                          roads=roads_grid)
 
-    placements = map_geometry.scatter(grid, resolved,
-                                      seed=int(spec.get("seed", 0)),
-                                      roads=roads_grid)
+    # A tree drawn on top of a town reads as an art bug rather than as a
+    # generation one, which is the failure `scatter` avoids roads for. Scatter
+    # cannot know about landmarks, so they are subtracted here.
+    taken = {(m["x"], m["y"]) for m in landmarks}
+    placements = [p for p in placements if (p["x"], p["y"]) not in taken]
 
-    entities = [{"asset": p.get("asset"), "want": p.get("want"),
-                 "x": p["x"], "y": p["y"], "layer": p["layer"],
-                 "status": "pending"} for p in placements]
+    entities = landmarks + [
+        {"asset": p.get("asset"), "want": p.get("want"),
+         "x": p["x"], "y": p["y"], "layer": p["layer"],
+         "status": "pending"} for p in placements]
 
     objects, pending = _dress(entities, tile_w, tile_h)
     return entities, objects, pending
@@ -358,6 +426,9 @@ def build_map_job(self, job_id: str):
         job_update(job_id, progress_pct=25, progress_msg="quantising to terrain")
         grid = map_geometry.quantize(painting, terrains, (size, size))
         coverage = map_geometry.coverage(grid, terrains)
+        warnings = _coverage_warnings(coverage, terrains)
+        for warning in warnings:
+            logger.warning("map %s: %s", job_id, warning)
 
         tiles = []
         for i, t in enumerate(terrains):
@@ -373,16 +444,31 @@ def build_map_job(self, job_id: str):
             tile.save(_tile_path(job_id, i))
             tiles.append(tile)
 
+        # The region graph, if asked for. Built here - AFTER quantisation and
+        # before anything is drawn - because a landmark has to sit on real
+        # ground, and which ground is real is not known until now.
+        graph, road_segments = None, [[tuple(p) for p in seg]
+                                      for seg in spec.get("roads") or []]
+        if spec.get("regions"):
+            job_update(job_id, progress_pct=68,
+                       progress_msg=f"naming {spec['regions']} place(s)")
+            graph = regions.build(
+                grid, terrains, count=int(spec["regions"]),
+                theme=spec.get("theme") or spec.get("prompt"),
+                seed=int(spec.get("seed", 0)),
+                use_llm=bool(spec.get("region_llm", True)))
+            road_segments = [[tuple(p) for p in seg]
+                             for seg in regions.segments(graph["roads"])]
+            logger.info("map %s graph: %s", job_id, graph["note"])
+
         # Layer 2. Refused rather than drawn wrong if a road would cross
         # terrain nobody can walk on - a road across a lake is not a road.
         roads_grid, road_tiles = None, None
-        if spec.get("roads"):
+        if road_segments and spec.get("road_tile"):
             job_update(job_id, progress_pct=70, progress_msg="laying roads")
             walkable = [t.get("walkable", True) for t in terrains]
             roads_grid = map_geometry.road_layer(
-                grid.shape,
-                [[tuple(p) for p in seg] for seg in spec["roads"]],
-                walkable=walkable, terrain=grid)
+                grid.shape, road_segments, walkable=walkable, terrain=grid)
             road_tiles = [_make_tile({"name": "road", "tile": spec["road_tile"]},
                                      tile_w, tile_h, int(spec.get("colors", 16)),
                                      int(spec.get("seed", 0)), None)]
@@ -391,7 +477,7 @@ def build_map_job(self, job_id: str):
         # Layers 3 and 4.
         job_update(job_id, progress_pct=72, progress_msg="placing entities")
         entities, objects, pending = _populate(
-            spec, grid, roads_grid, terrains, tile_w, tile_h)
+            spec, grid, roads_grid, terrains, tile_w, tile_h, graph=graph)
 
         job_update(job_id, progress_pct=75, progress_msg="compositing")
         picture = map_geometry.composite(grid, tiles, roads=roads_grid,
@@ -438,6 +524,15 @@ def build_map_job(self, job_id: str):
             # authored layer each came from, so they can still be filtered or
             # re-authored separately.
             "entities": entities,
+            # What the places on this map ARE. Read off the terrain above, so
+            # every coordinate in here is a tile that exists and is walkable.
+            # `dropped` is the honest half: everything proposed that this
+            # terrain could not accommodate, and why.
+            "region_graph": graph,
+            # Terrains that were declared and did not survive quantisation, or
+            # swallowed everything. The map is fine; what was asked for is not
+            # what arrived, and this is the only moment that is knowable.
+            "warnings": warnings,
             "picture_url": f"/api/jobs/{job_id}/sheet",
         }
         # Queued BEFORE the tilemap is written, so `props_job` is in the very

@@ -610,10 +610,23 @@ export const api = {
     colors?: number
     seed?: number
     llm_name?: string | null
+    // The region graph. `regions: 0` is a map of bare ground, which is a
+    // perfectly good map; anything above it names places and routes roads
+    // between them on the FINISHED terrain.
+    regions?: number
+    theme?: string | null
+    region_llm?: boolean
+    road_tile?: string | null
   }) => request<NewMap>('/api/maps', { method: 'POST', body: JSON.stringify(body) }),
   maps: () => request<{ items: MapSummary[]; total: number }>('/api/maps'),
   mapData: (jobId: string) =>
     request<Record<string, unknown>>(`/api/maps/${jobId}`),
+  // Retry only the missing art. The terrain and every placement stay exactly
+  // where they are - rebuilding the map to recover one prop would repaint
+  // ground that was never wrong.
+  resolveMap: (jobId: string) =>
+    request<{ props_job: string; retrying: string[]; attempt: number }>(
+      `/api/maps/${jobId}/resolve`, { method: 'POST' }),
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),
 

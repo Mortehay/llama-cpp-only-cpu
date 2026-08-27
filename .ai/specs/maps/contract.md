@@ -17,14 +17,23 @@ Vocabulary is load-bearing here. `biome painting`, `tilemap`, `region graph`,
 ## The pipeline
 
 ```
-region graph      biome painting     tilemap          placements       picture
----------------   ----------------   --------------   --------------   ----------
-CPU llama.cpp     map LoRA, low-res  quantize the     library lookup   composite
-~2 KB JSON        palette-locked     painting to      + rule scatter   tiles +
-regions, roads,   one colour per     terrain ids      + queued jobs    entities
-landmarks         terrain            via measure.py   for the gaps
-                                     palette match
+biome painting     tilemap          region graph     placements       picture
+----------------   --------------   --------------   --------------   ----------
+map LoRA, low-res  quantize the     llama.cpp names  library lookup   composite
+palette-locked     painting to      places; they     + rule scatter   tiles +
+one colour per     terrain ids      are PLACED on    + queued jobs    entities
+terrain            via measure.py   the finished     for the gaps
+                   palette match    ground
 ```
+
+> **The region graph moved.** It used to be drawn first, driving the painting.
+> That ordering cannot work: a landmark has to sit on real ground, and which
+> ground is real is not known until the painting has been quantised. Authoring
+> first leaves only two options afterwards - reject a good graph over one town
+> in a lake, or move it silently, at which point the graph and the terrain
+> disagree and the graph was never authoritative. Reading it OFF the finished
+> terrain makes disagreement impossible, and is what lets the graph be re-rolled
+> while the ground stays put. See `regions.py`.
 
 The **biome painting is data, not art**. It is the layout in visual form, and it
 is what makes the picture and the ground incapable of disagreeing. Nothing shows

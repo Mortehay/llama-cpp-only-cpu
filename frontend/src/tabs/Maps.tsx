@@ -34,6 +34,9 @@ export default function Maps() {
   const [tileW, setTileW] = useState(64)
   const [profile, setProfile] = useState('')
   const [terrains, setTerrains] = useState<Terrain[]>(STARTER)
+  const [regionCount, setRegionCount] = useState(6)
+  const [theme, setTheme] = useState('')
+  const [roadTile, setRoadTile] = useState('')
 
   const [jobId, setJobId] = useState<string | null>(null)
   const [job, setJob] = useState<Job | null>(null)
@@ -90,6 +93,9 @@ export default function Maps() {
         painting_from: paintingFrom || null,
         tile_w: tileW,
         style_profile: profile || null,
+        regions: regionCount,
+        theme: theme.trim() || null,
+        road_tile: roadTile || null,
       })
       setJobId(res.job_id)
       setInfo(
@@ -191,6 +197,52 @@ export default function Maps() {
             </span>
           </div>
         </div>
+
+        <div className="row tight" style={{ marginTop: 12 }}>
+          <div style={{ flex: '1 1 130px' }}>
+            <label htmlFor="m-regions">Named places</label>
+            <input
+              id="m-regions"
+              type="number"
+              min={0}
+              max={24}
+              value={regionCount}
+              onChange={(e) => setRegionCount(Number(e.target.value))}
+            />
+            <span className="muted">0 for bare ground.</span>
+          </div>
+          <div style={{ flex: '2 1 260px' }}>
+            <label htmlFor="m-theme">What sort of world</label>
+            <input
+              id="m-theme"
+              value={theme}
+              disabled={regionCount === 0}
+              placeholder="a windswept northern island of fishers and old stone"
+              onChange={(e) => setTheme(e.target.value)}
+            />
+          </div>
+          <div style={{ flex: '1 1 190px' }}>
+            <label htmlFor="m-roadtile">Road tile</label>
+            <select
+              id="m-roadtile"
+              value={roadTile}
+              onChange={(e) => setRoadTile(e.target.value)}
+            >
+              <option value="">no roads drawn</option>
+              {tiles.data?.items.map((a) => (
+                <option key={a.id} value={(a.url ?? '').split('/').pop()}>
+                  {a.title.slice(0, 28)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <p className="muted" style={{ marginTop: 6 }}>
+          Places are found on the <strong>finished</strong> terrain, not planned
+          before it — so a port lands on real shoreline and a road only runs where
+          it can actually be walked. Without a road tile they are still routed and
+          reported, just not drawn.
+        </p>
       </div>
 
       <div className="card">
@@ -320,11 +372,26 @@ export default function Maps() {
 function MapCard({ map, onRefresh }: { map: MapSummary; onRefresh: () => void }) {
   const pic = useAuthedObjectUrl(map.picture_url)
   const props = map.props
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
 
   // Only a working resolver will change on its own, so only that is polled.
   // Polling a `partial` or `failed` map would ask forever for an answer that
   // has already arrived.
   usePoll(onRefresh, 4000, props != null && !props.final)
+
+  async function retry() {
+    setRetrying(true)
+    setRetryError(null)
+    try {
+      await api.resolveMap(map.job_id)
+      onRefresh()
+    } catch (e) {
+      setRetryError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRetrying(false)
+    }
+  }
 
   return (
     <div className="thumb">
@@ -343,6 +410,16 @@ function MapCard({ map, onRefresh }: { map: MapSummary; onRefresh: () => void })
           {map.terrains.join(', ')}
         </div>
         {props && <PropsLine props={props} />}
+        {/* Offered only when the art is stuck AND retrying is the actual fix.
+            The first real run lost a prop to a transient CUDA error; without
+            this the only way back was rebuilding the whole map, repainting
+            terrain that was never wrong. */}
+        {props?.final && (
+          <button className="btn ghost sm" disabled={retrying} onClick={() => void retry()}>
+            {retrying ? 'Queueing…' : 'Try the missing art again'}
+          </button>
+        )}
+        {retryError && <div className="note err">{retryError}</div>}
         {map.map_url && (
           <div className="why muted">
             <code>{map.map_url}</code>

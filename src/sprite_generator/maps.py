@@ -120,6 +120,18 @@ class MapSpec(BaseModel):
     # drawn - see map_geometry.LAYERS for why those are not the same thing.
     scatter: list[Scatter] = Field(default_factory=list)
 
+    # The region graph. Named places and the roads between them, read OFF the
+    # finished terrain rather than authored before it - see `regions.py` for
+    # why that ordering is the only one that can work. Zero means a map of
+    # ground with nothing on it, which is a perfectly good map.
+    regions: int = Field(0, ge=0, le=24,
+                         description="how many places to name on this map")
+    theme: str | None = Field(
+        None, description="what sort of world this is, for naming places")
+    # The LLM names the places and picks their kinds. Everything downstream
+    # runs identically without it, so this turns off the naming, not the graph.
+    region_llm: bool = Field(True, description="let llama.cpp name the places")
+
     tile_w: int = Field(64, ge=8, le=256)
     style_profile: str | None = None
     colors: int = Field(16, ge=2, le=64)
@@ -181,6 +193,13 @@ def create_map(spec: MapSpec, authorization: str | None = Header(None)):
         raise HTTPException(
             status_code=400,
             detail="roads were given but no road_tile to draw them with")
+
+    if spec.regions and spec.roads:
+        raise HTTPException(
+            status_code=400,
+            detail="give either explicit `roads` or `regions` to lay them out, "
+                   "not both - the region graph routes its own roads and would "
+                   "have to either ignore yours or fight them")
 
     # Validated here rather than in the worker: a diagonal or out-of-bounds
     # segment is a caller mistake, and finding it after the terrain has been
@@ -260,6 +279,15 @@ def create_map(spec: MapSpec, authorization: str | None = Header(None)):
         "projection": ("measured from your reference tiles" if measured else
                        f"ASSUMED {ratio}:1 - upload a ground tile to the "
                        f"reference-tile tab to measure it instead"),
+        # Said up front rather than discovered in the tilemap. A caller who
+        # asked for six named places and gets a map with no roads on it should
+        # know at submit time that it was the missing road tile, not the graph.
+        "regions": (None if not spec.regions else {
+            "count": spec.regions,
+            "named_by": "llama.cpp" if spec.region_llm else "rules",
+            "roads": ("routed and drawn" if spec.road_tile else
+                      "routed, but NOT drawn - give a road_tile to see them"),
+        }),
         "poll": f"/api/jobs/{job_id}",
         "map": f"/api/maps/{job_id}",
     }
@@ -354,6 +382,76 @@ def _props_state(job_status: str | None) -> str:
     """
     return {"queued": "working", "running": "working",
             "done": "partial"}.get(job_status or "", job_status or "lost")
+
+
+@router.post("/api/maps/{job_id}/resolve", status_code=202)
+def resolve_props(job_id: str, authorization: str | None = Header(None)):
+    """Try the missing art again, without rebuilding the map.
+
+    Observed in production on the first real run: one prop failed with a
+    transient `CUDA driver error: device not ready`. The other four resolved,
+    the map correctly stayed `complete: false` and named the one still open -
+    and the only way out was to rebuild the whole map, repainting terrain and
+    re-cutting tiles that were perfectly good, because of one blip.
+
+    So retrying is its own action. It queues a fresh resolver over whatever is
+    still pending, reusing the placements exactly as they are, which is the
+    same reason `_rerender_map` re-draws rather than re-scatters: nothing on
+    the map should move because a windmill was retried.
+    """
+    auth.require(authorization, "generate")
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT status, atlas_path, spec FROM jobs "
+                    "WHERE id = %s::uuid AND kind = 'map'", (job_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="no such map")
+        # Two resolvers over one map would race on the same picture and the
+        # same tilemap, and the loser's write would silently win.
+        cur.execute("SELECT id FROM jobs WHERE kind = 'map_props' "
+                    "AND spec->>'map_job' = %s "
+                    "AND status IN ('queued', 'running')", (job_id,))
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="a resolver is already working on this map")
+
+        cur.execute("SELECT count(*) AS n FROM jobs WHERE kind = 'map_props' "
+                    "AND spec->>'map_job' = %s", (job_id,))
+        attempt = int((cur.fetchone() or {}).get("n") or 0)
+
+    if not row["atlas_path"] or not os.path.exists(row["atlas_path"]):
+        raise HTTPException(
+            status_code=409,
+            detail=f"map is {row['status']}, so there is nothing to resolve yet")
+
+    with open(row["atlas_path"], "r", encoding="utf-8") as fh:
+        tilemap = json.load(fh)
+
+    pending = tilemap.get("pending") or []
+    if not pending:
+        raise HTTPException(status_code=409,
+                            detail="this map has no missing art")
+
+    # Imported here, not at module scope: `map_tasks` pulls in torch through
+    # `tasks`, and the API process should not pay for that to serve a GET.
+    import map_tasks
+
+    # A DIFFERENT seed each attempt. Retrying a transient CUDA error with the
+    # same seed would work; retrying a prop that came back as an uncuttable
+    # opaque block would reproduce it exactly, forever. Offsetting by the
+    # attempt number keeps every run deterministic and none of them identical.
+    spec = {**(row["spec"] or {}),
+            "seed": int((row["spec"] or {}).get("seed", 0)) + attempt}
+
+    props_id = map_tasks._queue_props_job(job_id, spec, pending)
+    tilemap["props_job"] = props_id
+    map_tasks._write_tilemap(row["atlas_path"], tilemap)
+
+    return {"props_job": props_id, "retrying": pending, "attempt": attempt + 1,
+            "poll": f"/api/maps/{job_id}"}
 
 
 @router.get("/api/maps")
