@@ -800,9 +800,29 @@ in the setup was independent of the belief under test.
 So: **a check counts only when its provenance is independent of what it is
 checking** — and a passing result never tells you whether it was. That is why
 `test-audit-mirrors-cutout.py` executes `remove_background`'s real source rather
-than re-stating its rule, and why its docstring carries the mutation result. Two
-other sessions hit this same shape on the same day, so treat it as structural
-rather than as anyone being careless.
+than re-stating its rule, and why its docstring carries the mutation result.
+
+**And provenance is only half of it.** A check needs two independent properties,
+and neither implies the other:
+
+| property | what it buys | how you test it |
+|---|---|---|
+| **provenance independence** | the check cannot agree with the bug | inspect where the fixture came from |
+| **geometric capability** | the check can reach the bug | mutate the code and watch it go red |
+
+Both failure modes shipped here on the same day. The hand-transcribed oracle
+above had capability and lacked provenance — it could reach the bug and agreed
+with it. ADR 0009's session shipped a fixture of filled squares that had
+provenance and lacked capability: independently written, and structurally unable
+to reproduce a defect whose precondition is *narrow gutters*, because filled
+items need wide gutters to stay under a coverage ceiling. Rings reproduced it
+immediately.
+
+**Both produce green, and green is silent about which one is missing.** Mutation
+tests capability and says nothing about provenance; reading the fixture's origin
+tests provenance and says nothing about capability. There is no single check for
+both — which is probably why three sessions on this codebase shipped one of each
+in a single day. Treat it as structural, not as anyone being careless.
 
 - **Mirroring the WRONG function.** `key_background` here exists to predict
   what `tasks.remove_background` will do to an image — that is the audit's
