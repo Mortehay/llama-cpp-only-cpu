@@ -279,7 +279,38 @@ dry column *between* them - the way out is to go the other way first.
 *Original criterion, met:* a town sits at a river mouth and a road reaches it.
 Re-rolling the graph changes the semantics while terrain stays put.
 
-### Slice 6 - The something2 facade
+### Slice 6 - The something2 facade - DONE
+
+Shipped 2026-08-27: `maps.resolve_name`, `GET /api/maps/by-name/{name}`, the
+`map:` branch in the A1111 facade, `scripts/smoke-map-facade.py` (12 cases) and
+`scripts/verify-map-facade.py` for the cross-machine check.
+
+Four decisions worth keeping:
+
+- **The name travels in the PROMPT, as `map:<name>`.** The contract promises
+  zero laptop-side code, and something2's connector substitutes into a fixed
+  body shape - the prompt is the only field guaranteed to carry an arbitrary
+  string. This is NOT the prompt-keying Q6 rejects: that was matching whatever
+  text a caller sent against whatever maps happened to exist. An explicit
+  prefix is unambiguous, cannot be hit by accident, and fails loudly.
+  `override_settings.map` is accepted too - the same two-channel shape `cutout`
+  and `lora_scale` already use, and for the same reason.
+- **It never generates.** A cache miss is a 404 in milliseconds. A facade that
+  falls through to the model looks identical on a hit and destroys the caller
+  on a miss: a map build is minutes to hours inside a request with a 240s
+  budget. The smoke case asserts *nothing was queued*, not merely that the
+  status was 404 - those are different claims and only one of them is the one
+  that matters.
+- **Only `done` rows whose files are still on disk resolve.** Right name, wrong
+  state is the dangerous near-miss - it would have something2 seed a world from
+  a file that is about to be overwritten.
+- **`info` carries `complete` and `pending`.** A consumer caching `images[0]`
+  needs to know whether the picture still has magenta placeholders on it. It is
+  the one thing this response can say that a generated image never has to.
+
+**Not verified from another machine yet.** `verify-map-facade.py` checks 401
+without a bearer over real HTTP and passes; the authed half needs a scoped key,
+which is the user's to issue rather than this session's to mint.
 
 Sync cache-reader keyed by map name. Picture over the existing AI connector.
 

@@ -196,9 +196,21 @@ it.
 
 ## The something2 facade
 
-something2 is sync-only: one POST, one response, no polling
-([something2-provider/contract.md](../something2-provider/contract.md)). A map
-build is minutes to hours, so **maps are authored here and collected there**.
+> **The justification here was stale and is corrected.** This said "something2
+> is sync-only: one POST, one response, no polling", citing
+> [something2-provider/contract.md](../something2-provider/contract.md) - a
+> document whose own opening paragraph **retracts exactly that claim**. It was
+> read from something2's published docs, their owner corrected it on
+> 2026-08-23, and this page went on citing the corrected document for the
+> withdrawn version. A description trusted in place of the thing it describes,
+> which is the failure ADR 0008 D12 names.
+
+**Maps are authored here and collected there**, and the reason is the build
+time rather than any limitation of something2's. A map build is minutes to
+hours; nothing makes that synchronous, and something2 *can* poll. What settles
+it is that they already have a working flow for exactly this shape - their
+admin lists, previews, downloads and seeds a world spec by name - so the
+cheapest correct thing is to serve maps the same way.
 
 The facade is a cache reader. It returns an already-built map immediately and
 never triggers a build inside the request.
@@ -207,7 +219,7 @@ never triggers a build inside the request.
 |---|---|
 | Crosses today | The **map picture**, through the existing AI connector (`images[0]`). Zero laptop-side code |
 | Served, unread | The **tilemap + placements** at `GET /api/maps/{id}`, until something2 gains a client |
-| Never | Generation on demand. That needs their SOMET-334 |
+| Possible, not built | Generation on demand. They can poll, so the job API shape would work; the reason not to is that a caller waiting on a two-hour map is a worse experience than one collecting a map that already exists |
 
 **The facade is keyed by map name** ([plan.md](plan.md) Q6). Maps are authored
 here and named; prompt-keying is fragile and id-keying means copying UUIDs into

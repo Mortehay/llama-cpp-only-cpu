@@ -384,6 +384,65 @@ def _props_state(job_status: str | None) -> str:
             "done": "partial"}.get(job_status or "", job_status or "lost")
 
 
+def resolve_name(name: str) -> dict | None:
+    """The newest FINISHED map with this name, or None.
+
+    The whole facade rests on this. Names are not unique - rebuilding a map
+    makes a second job with the same name, which is the point: something2 asks
+    for "overworld" and should get the current one without anyone editing a
+    UUID into an admin form.
+
+    Only `done` rows, and only ones whose tilemap is still on disk. A half-built
+    map with the right name is not the map, and serving it would mean something2
+    seeding a world from a file that is about to be overwritten.
+    """
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            "SELECT id, sheet_path, atlas_path, spec, finished_at "
+            "FROM jobs "
+            "WHERE kind = 'map' AND deleted = false AND status = 'done' "
+            "  AND lower(spec->>'name') = lower(%s) "
+            "ORDER BY COALESCE(finished_at, updated_at) DESC LIMIT 1",
+            (name.strip(),))
+        row = cur.fetchone()
+
+    if not row or not row["atlas_path"] or not os.path.exists(row["atlas_path"]):
+        return None
+    return dict(row)
+
+
+@router.get("/api/maps/by-name/{name}")
+def get_map_by_name(name: str, authorization: str | None = Header(None)):
+    """A finished map, by the name it was authored under.
+
+    THE FACADE. something2 knows map names, not job ids, and asking it to carry
+    a UUID from this machine's database into its own admin form is a design
+    that leaks - the same objection `plan.md` Q6 raises against prompt-keying.
+
+    A cache READER: it never triggers a build. A map that does not exist yet is
+    a 404 telling you to build it, not a two-hour request.
+    """
+    auth.require(authorization, "read")
+
+    row = resolve_name(name)
+    if not row:
+        # 404 rather than 409, and the distinction is deliberate: `/api/maps/{id}`
+        # returns 409 because that job exists and is unfinished. Here there is
+        # no finished map of this name at all, which a caller cannot fix by
+        # waiting.
+        raise HTTPException(
+            status_code=404,
+            detail=f"no finished map named {name!r}. Build one in the Maps tab, "
+                   f"or GET /api/maps to see what exists.")
+
+    with open(row["atlas_path"], "r", encoding="utf-8") as fh:
+        tilemap = json.load(fh)
+
+    tilemap["job_id"] = str(row["id"])
+    return _with_props_status(tilemap)
+
+
 @router.post("/api/maps/{job_id}/resolve", status_code=202)
 def resolve_props(job_id: str, authorization: str | None = Header(None)):
     """Try the missing art again, without rebuilding the map.

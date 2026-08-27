@@ -221,10 +221,119 @@ def sd_models(authorization: str | None = Header(default=None)):
     return out
 
 
+# How a caller asks for a map that already exists rather than a new image.
+#
+# THE NAME TRAVELS IN THE PROMPT, and that is not the same thing as keying the
+# facade on the prompt. `plan.md` Q6 rejects prompt-KEYING - matching whatever
+# text a caller happens to send against whatever maps happen to exist - because
+# it is fuzzy and breaks when either side rewords. An explicit `map:` prefix is
+# the opposite: unambiguous, impossible to hit by accident, and it fails loudly
+# rather than silently returning the wrong map.
+#
+# It has to be the prompt because the contract promises ZERO laptop-side code.
+# something2's connector substitutes into a fixed body shape, so the prompt is
+# the only field guaranteed to carry an arbitrary string. `override_settings`
+# is accepted too, for callers that can reach it - the same two-channel shape
+# `cutout` and `lora_scale` already use, and for the same reason.
+MAP_PREFIX = "map:"
+
+
+def _map_request(req: "Txt2ImgRequest") -> str | None:
+    """The map name this request is asking for, or None for a normal generate."""
+    explicit = req.override_settings.get("map")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    prompt = (req.prompt or "").strip()
+    if prompt.lower().startswith(MAP_PREFIX):
+        return prompt[len(MAP_PREFIX):].strip() or None
+    return None
+
+
+def _serve_map(name: str, req: "Txt2ImgRequest", started: float) -> dict:
+    """An already-built map picture, in the A1111 response shape.
+
+    A CACHE READ. It never queues anything: a map build is minutes to hours and
+    no HTTP timeout survives that, so a name that has not been built is a 404
+    telling the caller to build it - not a request that hangs and then fails.
+
+    `info` carries the map's real identity and its provisional state, because a
+    consumer that caches `images[0]` needs to know whether the picture still has
+    magenta placeholders on it. That is the one thing this response can say that
+    a generated image never has to.
+    """
+    import maps
+
+    row = maps.resolve_name(name)
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no finished map named {name!r}. Maps are authored on this "
+                   f"service and collected here - build it first, then ask "
+                   f"again. GET /api/maps lists what exists.")
+
+    picture = row.get("sheet_path")
+    if not picture or not os.path.exists(picture):
+        raise HTTPException(
+            status_code=409,
+            detail=f"map {name!r} is finished but its picture is missing from "
+                   f"disk; rebuild it")
+
+    with open(picture, "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+
+    complete, pending = True, []
+    try:
+        with open(row["atlas_path"], "r", encoding="utf-8") as fh:
+            tilemap = json.load(fh)
+        complete = bool(tilemap.get("complete", True))
+        pending = tilemap.get("pending") or []
+    except Exception as e:
+        # The picture is the artefact and it is already read. Failing the whole
+        # request because the sidecar would not parse would withhold something
+        # that is fine.
+        logger.warning("map %s: could not read tilemap for status: %s", name, e)
+
+    elapsed_ms = (time.time() - started) * 1000
+    logger.info("txt2img served MAP %r from cache in %.0fms (%d b64 chars, "
+                "complete=%s)", name, elapsed_ms, len(encoded), complete)
+
+    return {
+        "images": [encoded],
+        "parameters": req.model_dump(),
+        "info": json.dumps({
+            "map": name,
+            "job_id": str(row["id"]),
+            "cached": True,
+            # NOT a generation. A caller measuring model performance off this
+            # would be measuring a file read.
+            "generated": False,
+            # `false` means the picture still carries placeholder art. A
+            # consumer that caches this as final keeps a magenta cross forever.
+            "complete": complete,
+            "pending": pending,
+            "tilemap_url": f"/api/maps/by-name/{name}",
+            "duration_ms": round(elapsed_ms),
+        }),
+    }
+
+
 @router.post("/sdapi/v1/txt2img")
 def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None)):
-    """Blocking text2img. Returns base64 PNG at `images[0]`, as A1111 does."""
+    """Blocking text2img. Returns base64 PNG at `images[0]`, as A1111 does.
+
+    Also the MAP FACADE: a prompt of `map:<name>` returns an already-built map
+    picture from disk rather than generating anything. See `_map_request`.
+    """
     _require_auth(authorization)
+    started = time.time()
+
+    # THE MAP FACADE. A map that already exists is served from disk instead of
+    # being generated - see `_map_request` for why the name travels in the
+    # prompt.
+    wanted_map = _map_request(req)
+    if wanted_map:
+        return _serve_map(wanted_map, req, started)
 
     model = req.override_settings.get("sd_model_checkpoint") or KNOWN_MODELS[0]
 
