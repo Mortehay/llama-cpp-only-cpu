@@ -113,6 +113,26 @@ class SheetBuilder:
         palette = pixelate.extract_palette(source, self.n_colors,
                                            self.alpha_threshold)
 
+        # That anchoring is an asymmetry - a palette measured on ONE artifact
+        # and applied to others - so it was checked against the failure the map
+        # path hit, where a DECLARED terrain colour sat 77.7 Lab from the
+        # painted water, further away than a mid-grey, and quantisation handed
+        # the entire sea to stone. The declared colour captured 0.0% and the
+        # only symptom was a coverage warning that read like a nag.
+        #
+        # Measured across every sheet in images/: no entry is displaced that
+        # way. Every entry that captures pixels sits at mean 0.0 Lab from them,
+        # because `extract_palette` median-cuts the art itself rather than
+        # naming colours - a derived palette cannot be far from the pixels it
+        # came from. Sixteen entries across six sheets do capture 0.0%, but
+        # they are near-duplicates crowded out by a neighbour 0.4-1.9 Lab away
+        # (one sheet asks for 256 entries and has seven near-identical dark
+        # maroons), which wastes palette slots and displaces nothing.
+        #
+        # So the hazard is real but lives where colours are DECLARED, and
+        # nothing in this pipeline declares one. If a caller ever passes a
+        # hand-written palette to `pixelate`, this check is the one to redo.
+
         # One scale for the whole character, for the same reason
         # pixelate_sheet computes one: a per-cell fit makes the sprite pulse.
         scale = None
