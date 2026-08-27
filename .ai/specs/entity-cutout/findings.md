@@ -571,20 +571,58 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    abstract. It is 23 files, it is listed in `images/_audit/grid483.txt`, and
    the work to make them usable is one pass of an existing function.
 
-   > **THE REPAIR HAS NOW BEEN RUN, AND IT YIELDS SIX FILES, NOT 21.**
-   > `scripts/recover-grid-refs.py` keys every candidate with the real
-   > `remove_background` lifted out of `tasks.py`, cuts pedestals with
-   > `strip_ground_patch(require_legs=True)` where that helps, and **re-measures
-   > the repaired file**:
+   > **THE REPAIR HAS NOW BEEN RUN, AND IT YIELDS ELEVEN FILES, NOT 21.**
+   > `scripts/recover-grid-refs.py` runs four stages against every candidate and
+   > **re-measures the repaired file** after each:
+   >
+   > | stage | what it does | gate |
+   > |---|---|---|
+   > | `key` | `remove_background`, lifted out of `tasks.py` by source text | always |
+   > | `pedestal` | `strip_ground_patch(require_legs=True)` | the guard |
+   > | `isolate` | `_isolate_largest_sprite` | **a by-eye verdict** |
+   > | `recentre` | move the subject's box to the middle | only defect left |
+   >
+   > Any stage that does not reduce the finding count is rolled back — a file
+   > amputated for no gain is worse than one left alone — and the stage list is
+   > printed per file, so `key + isolate(848px) + recentre` says exactly what
+   > was done.
    >
    > ```
-   >   rejected by eye             3
-   >   clean already               1
-   >   clean after repair          5
-   >   repaired, still not clean  17
-   >   not repairable by keying   13
-   >   TOTAL USABLE                6
+   >   by eye, reject:              4
+   >   by eye, drop-strays:         3
+   >   by eye, keep-strays:         2
+   >   clean already                1
+   >   clean after repair          10
+   >   repaired, still not clean   12
+   >   not repairable by keying    13
+   >   TOTAL USABLE                11
    > ```
+   >
+   > **The first pass yielded six.** The other five came from two stages added
+   > after looking at what the six had left behind, and both needed a human to
+   > decide something no measurement can:
+   >
+   > `isolate` is `_isolate_largest_sprite`, which at generation time is
+   > unconditionally right — a generated duplicate is always a defect. On a
+   > REFERENCE it is a coin flip. Rendered with the doomed pixels in red by
+   > `scripts/show-strays.py`, the five stray-flagged files split cleanly and
+   > not by any measurable property: a **decorative diamond floating far below a
+   > rabbit** (848px) and a **detached cast shadow under a slime** (8,869px) are
+   > litter; **blood dripping from a wolf's jaws** (90px) and **fragments of a
+   > spattered creature's own ragged outline** (610px) are the art. The verdicts
+   > are in `.ai/specs/entity-cutout/entity_verdicts.txt`, one line per file with
+   > its reason, and `drop-strays` never applies without one.
+   >
+   > `recentre` needs no verdict, because it is the only defect in this audit
+   > that is a property of the FRAMING and not of the art — moving the box
+   > cannot damage what is inside it, and the canvas grows rather than crop.
+   >
+   > One file taught something the audit should learn: `ref_core_68076e9e3f53`
+   > has **ten floating ember specks and the audit reports `strays: 0`**. Every
+   > speck is under `STRAY_MIN_FRAC`, which on a 1280x1280 frame is 327px. The
+   > stray rule's size floor is relative to frame area, so **the bigger the
+   > image, the more litter it ignores** — and litter is what an adapter learns
+   > to scatter around every entity it draws.
    >
    > "21 recoverable" was a claim about the BACKDROP — how much of the frame a
    > flood fill would take — asserted three times in this note before anything
@@ -607,27 +645,45 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    > same answer, which is why it reads the data rather than fitting the two
    > files that prompted it.
    >
-   > **Three more were killed by eye at magnification and by nothing else**, and
-   > they are recorded with reasons in `.ai/specs/entity-cutout/entity_rejects.txt` so the
+   > **Four were killed by eye at magnification and by nothing else**, recorded
+   > with reasons in `.ai/specs/entity-cutout/entity_verdicts.txt` so the
    > judgement is dated and re-checkable instead of buried in prose:
    > `fefbb01e57b5` stands on a black bar; `06bb8045fba3` is a frog fused to a
-   > white ground blob; `eabdbd199746` sits on rock slabs **and has white
-   > background enclosed by its own silhouette**. That last one is not a
-   > threshold that could be tightened — `remove_background` takes
-   > border-connected pixels only, so a hole surrounded by the subject is
-   > unreachable by construction and no flood fill will ever find it.
+   > white ground blob; `36a61a6703d3` sits on a grey slab **that is part of the
+   > largest blob**, so dropping its litter leaves the base behind; and
+   > `eabdbd199746` sits on rock slabs **and has white background enclosed by
+   > its own silhouette**. That last one is not a threshold that could be
+   > tightened — `remove_background` takes border-connected pixels only, so a
+   > hole surrounded by the subject is unreachable by construction and no flood
+   > fill will ever find it.
    >
-   > The two ground-patch rejects are both wide-bodied, so their shins are never
+   > All three ground-patch rejects are wide-bodied, so their shins are never
    > narrower than their bodies and `require_legs=True` correctly declines to
    > cut. **The guard is doing its job and the pedestal still gets through** —
    > width is simply not enough information on a frog. The 128px contact sheet
-   > showed none of this; `scripts/zoom-sheet.py` at 1:1 showed all of it.
+   > showed none of this; `scripts/zoom-sheet.py` at 1:1 showed all of it, and
+   > it scales UP as well as down for the same reason.
    >
-   > The six survivors are in `images/recovered/entity/`, sheeted at
+   > `isolate_largest` is a restatement of `_isolate_largest_sprite` rather than
+   > a call to it, so `scripts/test-isolate-mirrors-tasks.py` executes the
+   > original's source and asserts the two agree pixel for pixel. Mutating it to
+   > 4-connectivity gives 14 disagreements, worst 584px — a real mutation for
+   > pixel art, where a diagonal-only join is common and severing it amputates
+   > limbs. That test exists because a restated rule is what went wrong here
+   > once already.
+   >
+   > The eleven survivors are in `images/recovered/entity/`, sheeted at
    > magnification in `images/_audit/entity_usable_zoom.png`: a spirit, a
-   > treant, a goblin, a lich, a caterpillar, a pod creature. Every one is
-   > `ref_core`, centred, transparent, with no pedestal and nothing beside it —
-   > which is exactly the target, and there are six.
+   > blood-jawed wolf, a treant, a hooded figure with ice claws, a goblin, a
+   > spattered teal creature, a lich, a caterpillar, a pod creature, a rabbit
+   > and a slime. Every one is `ref_core`, centred, transparent, with no
+   > pedestal and nothing beside it — which is exactly the target.
+   >
+   > **Eleven clears `MIN_IMAGES = 8`**, so a training run can now start on this
+   > set where it could not before. It is still short of the 20+ ADR 0006 D3
+   > asks for, and eleven images of eleven unrelated creatures is a style
+   > sample, not a character. Judge it as "can this teach a cutout silhouette",
+   > not as "can this teach an entity".
 
    **The `sprite` kind contributes zero.** All 23 are `ref_core`, which is the
    kind ADR 0009 argues should be split off as painted concept art. Crossing

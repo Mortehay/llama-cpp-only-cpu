@@ -1,16 +1,47 @@
-# Repaired files rejected BY EYE, with the reason.
+# By-eye verdicts on repaired entity references.
 #
 # Read by scripts/recover-grid-refs.py and applied after every automatic check.
-# These exist because the automatic checks passed all three: `measure` sees a
-# single centred opaque blob and cannot tell how much of that blob is the
-# entity. Each line is one file and the reason it is toxic for sprite training.
+# These exist because `measure` sees a single centred opaque blob and cannot
+# ask how much of that blob is the entity, nor whether a detached blob is
+# litter or the art. Both questions decide whether a file is usable, and
+# neither is answerable by a threshold.
 #
-# Format:  filename<TAB or spaces>reason
+# Format:   filename<spaces>verdict<spaces>reason
 #
-# Checked at magnification against images/_audit/_zoom9.png on 2026-08-27.
+# Verdicts:
+#   reject        unusable; the reason says what is wrong with it
+#   drop-strays   the detached blobs are litter - apply _isolate_largest_sprite
+#   keep-strays   the detached blobs ARE the art - the stray finding is a false
+#                 positive and is suppressed, the file is used as it stands
+#
+# drop-strays is not the default and must never become one. At generation time
+# _isolate_largest_sprite is unconditionally right, because a generated
+# duplicate is always a defect. On a REFERENCE a detached part may be the
+# subject, and the difference is only visible by looking: rendered with the
+# doomed pixels in red by scripts/show-strays.py.
+#
+# Checked at 1:1 and upscaled on 2026-08-27.
 
-ref_core_fefbb01e57b5.png  pedestal - the figure stands on a solid black bar that is not part of it. The pedestal rule missed it because the subject is small and its shins are not narrower than its body, so the require_legs precondition declines rather than cutting
+# --- rejected -------------------------------------------------------------
 
-ref_core_eabdbd199746.png  ground patch and interior background - the dragon sits on brown rock slabs that continue past it to the right, and there are white regions ENCLOSED by its silhouette. Enclosed background is invisible to remove_background by construction: the flood fill only takes border-connected pixels, so a hole surrounded by the subject can never be reached
+ref_core_fefbb01e57b5.png  reject  pedestal - the figure stands on a solid black bar that is not part of it. The pedestal rule missed it because the subject is small and its shins are not narrower than its body, so the require_legs precondition declines rather than cutting
 
-ref_core_06bb8045fba3.png  ground patch - the frog is fused to a white and grey blob under its feet. Wide-bodied, so shins are never narrower than the body and strip_ground_patch correctly declines; nothing else in the pipeline looks at it
+ref_core_eabdbd199746.png  reject  ground patch and interior background - the dragon sits on brown rock slabs that continue past it to the right, and there are white regions ENCLOSED by its silhouette. Enclosed background is invisible to remove_background by construction: the flood fill only takes border-connected pixels, so a hole surrounded by the subject can never be reached
+
+ref_core_06bb8045fba3.png  reject  ground patch - the frog is fused to a white and grey blob under its feet. Wide-bodied, so shins are never narrower than the body and strip_ground_patch correctly declines; nothing else in the pipeline looks at it
+
+ref_core_36a61a6703d3.png  reject  ground patch survives isolation - the scattered debris around it is litter, but the creature sits on a grey and black slab that is part of the LARGEST blob, so dropping the strays leaves the base behind. Rejected on the base, not on the debris
+
+# --- strays are litter, drop them -----------------------------------------
+
+ref_core_1feb2b92228f.png  drop-strays  a decorative red diamond floating far below and right of the rabbit, 848px in its own blob. The rabbit itself is a flawless cutout; the diamond also inflates the bounding box, which is why the framing metrics read oddly
+
+ref_core_abd293f203d4.png  drop-strays  detached cast shadow - an elongated smear under the slime and dashes to its left, 8869px over 10 blobs, none of it touching the subject. The slime is a clean cutout underneath
+
+ref_core_68076e9e3f53.png  drop-strays  ten floating specks around a hooded figure, 1300px, every one under STRAY_MIN_FRAC so the audit reports strays=0 and sees nothing. They are ember particles, and an adapter trained on them learns to scatter dots around every entity
+
+# --- strays are the art, keep them ----------------------------------------
+
+ref_core_22e10326d210.png  keep-strays  the 90px in three blobs are blood dripping from the wolf's jaws. It belongs to the creature's design, so the stray finding is a false positive and dropping it would edit the art
+
+ref_core_bb5113acfeba.png  keep-strays  610px in three blobs, all fragments of the creature's own ragged silhouette - a spattered dark-teal thing whose outline is deliberately broken. A judgement call, and it is recorded here rather than resolved by a threshold, because no threshold can make it

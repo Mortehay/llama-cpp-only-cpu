@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts
+.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -422,8 +422,9 @@ test-spec-fields:
 # which remove_background fixes outright. That was a claim about the BACKDROP -
 # how much a flood fill would take - and it never asked what is left standing.
 # This keys them with the real function, re-measures the REPAIRED file, and
-# yields six. Two survivors kept most of a solid backdrop and passed every
-# automatic check; three more were killed only by eye at magnification.
+# yields eleven, six of them from keying alone. Two survivors kept most of a
+# solid backdrop and passed every automatic check; four more were killed only
+# by eye at magnification. Two stages are gated on a by-eye verdict file.
 #
 # Look at the sheet it writes. Do not take the count on trust - that is the
 # mistake this target exists to stop repeating.
@@ -435,6 +436,15 @@ recover-entity-refs:
 		--out /app/images/recovered/entity \
 		--contact-sheet /app/images/_audit/recovered_entity.png \
 		--markdown /app/images/_audit/recovered_entity.md
+
+# Does the recovery's restated _isolate_largest_sprite still match the original?
+# It decides which pixels get deleted from a training reference, and a restated
+# rule is what already went wrong once here.
+test-isolate-mirrors-tasks:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-isolate-mirrors-tasks.py \
+		--data /app/images/recovered/entity
 
 # The map and world suites, as a SET.
 #
