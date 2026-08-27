@@ -252,6 +252,56 @@ for _label, _img in _probe:
     check(f"audit mirrors measure.pixel_scale: {_label}",
           audit.pixel_scale(_arr), original(_arr)["scale"])
 
+# The fusion detector, on a sheet built to trigger it.
+#
+# `count_subjects` closes the mask before labelling, which bridges the gutters
+# of a packed sheet and can report a hundred sprites as one subject. Over the
+# 483 references here it never fires on anything that would otherwise be KEPT -
+# so the bug is real, dormant, and invisible. A detector for it that has never
+# been seen to fire is the same object as the unfailable guard above, so it
+# gets a fixture that makes it fire.
+#
+# The items are RINGS, not filled squares, and that is load-bearing rather
+# than decorative. A filled grid cannot reproduce this: `foreground_mask`
+# refuses anything over 75% coverage, so filled items need wide gutters to stay
+# under it - and wide gutters are exactly what the closing does not bridge. The
+# first version of this fixture was filled squares, measured 77% foreground,
+# and came back "unverifiable" instead of fused. It agreed with the check while
+# testing nothing.
+#
+# Real sprites are outlines with hollow interiors, so their coverage is low
+# while their gutters stay narrow. Rings reproduce that; solid blocks do not.
+# 64 rings on a 64px pitch, 4px apart, in a 512px frame: the closing radius
+# there is 2, so a 4px gutter bridges and 64 components become one or two.
+_sheet = Image.new("RGBA", (512, 512), (0, 0, 0, 0))
+for _r in range(8):
+    for _c in range(8):
+        _ox, _oy = _c * 64 + 2, _r * 64 + 2
+        for _dy in range(60):
+            for _dx in range(60):
+                if 5 <= _dx < 55 and 5 <= _dy < 55:
+                    continue                      # hollow centre
+                _sheet.putpixel((_ox + _dx, _oy + _dy), (200, 60, 60, 255))
+_subjects, _conf, _ = audit.count_subjects(_sheet)
+check("packed sheet is reported as few subjects", _subjects <= 2, True)
+check("and the fusion is DECLARED rather than silent",
+      _conf.startswith("fused-from-"), True)
+
+# The negative, which is what stops the flag being noise: one figure whose
+# parts are separated by a hairline is exactly what the closing exists for, and
+# must NOT be flagged. Without this the detector could fire on everything and
+# still pass the check above.
+_fig = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+for _dy in range(120):
+    for _dx in range(60):
+        _fig.putpixel((70 + _dx, 40 + _dy), (60, 120, 200, 255))
+for _dy in range(30):                       # a limb one pixel clear of it
+    for _dx in range(20):
+        _fig.putpixel((131 + _dx, 60 + _dy), (60, 120, 200, 255))
+_s2, _c2, _ = audit.count_subjects(_fig)
+check("one figure with a detached part is NOT flagged as fused",
+      _c2.startswith("fused-from-"), False)
+
 # The one place they deliberately differ, asserted so it stays deliberate.
 # `measure` returns scale=None for a flat fill - "no honest answer" - while the
 # audit returns 1, because its callers branch on `scale == 1` and None would

@@ -509,8 +509,30 @@ def count_subjects(img: Image.Image) -> tuple[int, str, int]:
             continue
         boxes.append(bh * bw)
 
+    # Raw components, before the closing merged anything. Computed here rather
+    # than after the early return below, because TOTAL fusion exits through it:
+    # when the closing merges a whole sheet into one blob spanning the frame,
+    # that blob is over `SUBJECT_MAX_AREA_FRAC`, every box is discarded, and the
+    # function returns "unverifiable" - so the worst case of the bug was
+    # reported as "foreground could not be told from background", which is both
+    # wrong and the one explanation that sounds like nobody's fault.
+    #
+    # Found by a fixture written to make the detector fire, which then did not.
+    raw_labels, raw_n = ndimage.label(mask, structure=np.ones((3, 3)))
+    fused = 0
+    if raw_n:
+        raw_sizes = np.bincount(raw_labels.ravel())[1:]
+        # Substantial relative to the largest, so specks and anti-aliasing
+        # crumbs are not mistaken for merged subjects.
+        substantial = int((raw_sizes >= raw_sizes.max() * 0.10).sum())
+        if substantial >= 3:
+            fused = substantial
+
     if not boxes:
-        return 0, "unverifiable", 0
+        # A sheet that fused completely, versus a genuinely unsegmentable
+        # image. Both need a human; they need different humans looking for
+        # different things.
+        return (0, f"fused-from-{fused}", 0) if fused else (0, "unverifiable", 0)
 
     largest = max(boxes)
     big = sum(1 for b in boxes if b >= largest * MINOR_COMPONENT_RATIO)
@@ -525,9 +547,28 @@ def count_subjects(img: Image.Image) -> tuple[int, str, int]:
     # cropped single subject it returns nothing at all - which is the bug this
     # whole function exists to avoid re-introducing.
     cells = len(ss.find_cells(img))
-    if cells >= 2:
-        return max(cells, big), "counted", minor
-    return big, "counted", minor
+    subjects = max(cells, big) if cells >= 2 else big
+
+    # THE PRECONDITION OF THE FUSION BUG, DETECTED RATHER THAN DOCUMENTED.
+    #
+    # The closing above can bridge the gutters of a packed sheet, so a sheet
+    # reads as one or two subjects. Today that is free - it never turns a sheet
+    # into a `keep`, measured across all 139 - but it is free because these
+    # sheets happen to have wide enough gutters, which is not a property anyone
+    # chose. A denser sheet would fuse to 1 and be kept.
+    #
+    # Shrinking the closing would trade that for the opposite error on a single
+    # creature with detached limbs, which is already the weakest case here. But
+    # those were never the only two options: the RATIO of raw components to the
+    # reported count is the signature of the collapse, it is available here for
+    # one extra label pass, and it changes no verdict that is currently right.
+    #
+    # So the bug stays, and announces itself the day it fires. `fused` was
+    # computed above, before the early return that total fusion escapes
+    # through; only the "did it actually collapse the count" test is here.
+    if fused and subjects <= 2:
+        return subjects, f"fused-from-{fused}", minor
+    return subjects, "counted", minor
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +661,19 @@ def judge(path: str, kind: str, seen: list) -> dict:
     if confidence == "unverifiable":
         review.append("foreground could not be told from background, so the "
                       "subject count is unknown - look at it before trusting it")
+    if confidence.startswith("fused-from-"):
+        # The dormant bug in `count_subjects`, announcing itself. Closing the
+        # mask merged separate pieces into the reported subject, so this count
+        # is a FLOOR. It is `review` rather than `reject` because the merge is
+        # sometimes correct - a figure whose limbs are separated by a pixel is
+        # one subject - and because a wrong reject here is unrecoverable while
+        # a wrong review costs somebody thirty seconds.
+        n = confidence.split("-")[-1]
+        review.append(f"{n} separate pieces merged into {subjects} subject(s) "
+                      f"when the mask was closed, so the count is a FLOOR, not "
+                      f"a total. If this is a packed sheet it will read as one "
+                      f"or two subjects and pass tests it should fail - look "
+                      f"before trusting the number")
     if minor:
         # Reported, never rejected, and deliberately vague about WHAT the mark
         # is - because the first version of this message guessed, and guessed
@@ -712,6 +766,24 @@ def main():
         c = Counter(r["verdict"] for r in k)
         print(f"{kind:7s} n={len(k):<4d} keep={c['keep']:<4d} "
               f"review={c['review']:<4d} reject={c['reject']}")
+
+    # The RATE of the fusion flag, not just the flags.
+    #
+    # A per-image flag is only the right shape while its precondition is rare.
+    # That rarity is a property of the POPULATION, not of this code, so it can
+    # stop being true without anything here changing - and the failure is
+    # silent: the flags simply become noise and people learn to skip them.
+    # Printing the rate every run means the day it stops being rare, the run
+    # says so. Suggested by a sibling session whose equivalent flag fired on
+    # 151 of 245 images, where the honest form is a run-level line instead.
+    fused = sum(1 for r in rows if str(r.get("subject_count", "")).startswith("fused"))
+    if rows:
+        pct = 100.0 * fused / len(rows)
+        print(f"fusion flag: {fused}/{len(rows)} ({pct:.1f}%) - the mask's "
+              f"closing merged separate pieces, so those counts are floors")
+        if pct > 20:
+            print("  NOTE: this is no longer a rare case. A per-image flag at "
+                  "this rate is noise; report it per RUN instead.")
 
     if a.json:
         with open(a.json, "w") as fh:
