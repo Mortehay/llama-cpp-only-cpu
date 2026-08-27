@@ -753,6 +753,32 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+**The habit that would have caught it, and it is cheap:** *when a fix lands,
+re-run the cases you previously EXPLAINED — not just the ones that were
+failing.* An explained case is excluded from the regression set by definition,
+because nobody re-tests what is not a bug. The 138 survived the very commit that
+fixed its cause for exactly that reason.
+
+Exercised here rather than only recommended. Every verdict this note argues
+about in prose was re-measured after the keying fix, the alpha-masking fix and
+the checkerboard generalisation — all three of which changed the underlying
+measurement:
+
+| case | the explanation | still holds? |
+|---|---|---|
+| `b88ccc34e525` | flat grey backdrop, not a checkerboard | yes, `ck=False` |
+| `6f8abf25aa2b` | pedestal 5.8x is a false positive, hollow fragment | yes, 5.8 |
+| `bd7e43ed3cff` | pedestal 2.9x is real, a stone plinth | yes, 2.9 |
+| `ca0070408096` | the strays are the beast's own drips | yes, strays only |
+| `a0f76603de29` | multi-subject via a detached shadow | yes, 2 subjects |
+| `9e2539f0bbea` | pixel art, but a multi-subject turnaround | yes, 7 subjects |
+| `06074972c0ad` | the one clean sprite silhouette | yes, clean |
+| `08e39eb3c931` | the one pristine survivor | yes, clean |
+
+Eight of eight survived. A null result, recorded because the temptation is to
+skip reporting one — and because the value of the habit does not depend on it
+having found something this time.
+
 **A second pattern, and it is the one that hid longest:** *a defect of mine
 explained as a property of the problem.* The 138 "nothing visible" tiles were
 written up as an inherent limit of applying an entity rule to a texture. They
