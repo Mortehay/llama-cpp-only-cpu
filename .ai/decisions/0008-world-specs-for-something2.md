@@ -936,6 +936,58 @@ disappeared right after the restart, which reads as confirmation - but a fix
 coinciding with a symptom clearing is not evidence about the cause, and by then
 the state that could have settled it was gone.
 
+## D18 - "Why" is a separate claim from "what", 2026-08-27
+
+Three times today I produced a **correct observation with an invented
+mechanism**, and each time the sentence ran on from one to the other without a
+seam:
+
+| observation (held) | mechanism (invented, wrong) |
+|---|---|
+| the served schema really was missing `walkable` | "the process is stale" |
+| the VAE decode really did fail, three times | "llama.cpp is holding 3.6 GB" |
+| `wsl -- sh -c '...$?'` really does misreport | "it is the separator, not the quoting" |
+
+None of the three was a vague hunch. All were **plausible, specific, mechanical
+and instant** - and that is what makes them dangerous. A vague hunch gets
+checked. A crisp mechanism gets written into a commit message, where it looks
+like a citation.
+
+The actual mechanisms, when finally measured, were: unknown and still
+unreproduced; the float32 VAE decode not fitting for reasons still open; and an
+extra bash that `wsl --` inserts, whose freshly-spawned `$?` is 0 at expansion
+time and always will be.
+
+**The rule:** the evidence that establishes WHAT happened does not establish
+WHY. They are separate claims and the second needs its own evidence. Every one
+of the three above had solid evidence for the what and none at all for the why.
+
+The tell is that the why arrives instantly and feels like the natural
+continuation. When a mechanism occurs to you at the same moment as the
+observation, it was not derived from the observation - it was already in your
+head, and the observation merely failed to contradict it.
+
+### And the instruments themselves need controls
+
+Three separate instrument failures today, two mine, one a peer's, all producing
+confident readings:
+
+- `$?` read through `wsl --` reports 0 always - the intervening bash is fresh.
+  Nearly published as "`make test-maps` exits 0 while a suite fails", a
+  CI-blinding bug that does not exist.
+- A mutation that silently no-ops - appended after `sys.exit(main())`, or a
+  `sed` matching nothing - produces a green indistinguishable from the target
+  handling the failure correctly.
+- A `printf` label placed between the command and the reading **overwrites the
+  status being read**. The contaminating command is the one added to make the
+  output legible.
+
+The habit, and it costs one line: **print a control next to the measurement, in
+the same output.** `false -> 1` beside `make -> 2`. Do it whenever an exit code
+or count is load-bearing, not only when the number looks odd - odd numbers
+already get checked, and the bias runs one way. A broken instrument reporting
+0 reads as success.
+
 ### A note on how both were found
 
 They were found in opposite directions and neither route reaches the other's
