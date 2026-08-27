@@ -195,22 +195,44 @@ def served_check(fails):
     - would skip spuriously. Measured during a reload: +3s unreachable, +6s
     serving the new schema.
     """
-    url = os.environ.get("SPRITE_API", "http://sprite-generator:8001")
+    # Three environments, three right answers, and the wrong one skips rather
+    # than lying - but an honest skip where the API IS reachable is still a
+    # check that did not run. Under `docker compose run --rm` (what the
+    # Makefile does) localhost is the throwaway container, not the API, so the
+    # compose hostname is first. Under `docker exec sprite_generator` both
+    # work. From a host shell only localhost does. A peer's first version asked
+    # localhost only and skipped through its own Makefile target.
+    #
+    # Which one answered is printed, because "reachable" and "reachable at the
+    # address I expected" are different facts.
+    if os.environ.get("SPRITE_API"):
+        urls = [os.environ["SPRITE_API"]]
+    else:
+        urls = ["http://sprite-generator:8001", "http://localhost:8001"]
 
     def fetch():
         import urllib.request
-        with urllib.request.urlopen(url + "/openapi.json", timeout=10) as r:
-            return json.load(r)["components"]["schemas"]
+        last = None
+        for u in urls:
+            try:
+                with urllib.request.urlopen(u + "/openapi.json", timeout=10) as r:
+                    return json.load(r)["components"]["schemas"], u
+            except Exception as e:
+                last = e
+        raise last or RuntimeError("no candidate URLs to try")
 
+    url = " or ".join(urls)
     try:
-        schemas = fetch()
+        schemas, answered = fetch()
+        print("  answered by %s" % answered)
     except Exception as first:
         print("  unreachable at %s (%s); a reload takes ~7s, so waiting once"
               % (url, type(first).__name__))
         time.sleep(9)
         try:
-            schemas = fetch()
-            print("  reachable on retry - that was a reload, not a dead API")
+            schemas, answered = fetch()
+            print("  reachable on retry at %s - that was a reload, not a dead "
+                  "API" % answered)
         except Exception as e:
             # NOT a pass. A skip that reads like a pass is the failure this
             # whole file is about, so it says what it could not do and why.
