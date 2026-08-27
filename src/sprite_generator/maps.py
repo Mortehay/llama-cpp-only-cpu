@@ -64,6 +64,26 @@ class Terrain(BaseModel):
     # gaps are generated, which is the same trade entity placements make.
     tile: str | None = Field(
         None, description="filename of an existing tile to use instead")
+    # MISSING UNTIL 2026-08-27, and silently: pydantic drops an undeclared
+    # field, so every `walkable: false` any caller ever sent was discarded and
+    # `map_tasks` filled in its `t.get("walkable", True)` default. Every
+    # terrain in every tilemap this service has produced was walkable,
+    # INCLUDING WATER.
+    #
+    # That left three guards unable to fire, none of which could report it:
+    #
+    #   - `regions.shore_mask` is walkable-next-to-unwalkable, so it found 0
+    #     shore tiles on a map that is 20.8% sea, and `possible_kinds` then
+    #     withheld `port` from the LLM on every map ever built here;
+    #   - `map_geometry.road_layer` refuses to route across unwalkable ground,
+    #     and had nothing to refuse;
+    #   - something2 reads this field to path on. Every map told it the sea
+    #     was walkable.
+    #
+    # The default stays True because most ground is; what was wrong was having
+    # no way to say otherwise. See ADR 0008 D16.
+    walkable: bool = Field(
+        True, description="can anything stand here - false for water and cliff")
 
     @field_validator("color")
     @classmethod

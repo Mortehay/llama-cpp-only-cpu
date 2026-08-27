@@ -385,6 +385,59 @@ def _real():
     return f"{mg.separation(mg.palette_array(TERRAINS)):.1f} Lab apart at closest"
 
 
+@case("a terrain declared unwalkable stays unwalkable")
+def _walkable_survives():
+    """The field was MISSING from `Terrain` and pydantic dropped it silently.
+
+    Every `walkable: false` any caller ever sent was discarded, `map_tasks`
+    filled in its `True` default, and every map this service produced said the
+    sea could be walked on. Asserted at the seam where it was lost - the spec
+    model - because that is the only place the loss was visible.
+    """
+    import maps
+
+    t = maps.Terrain(name="water", color="#2850c8", walkable=False)
+    assert "walkable" in t.model_dump(),         "Terrain dropped `walkable` - pydantic discards undeclared fields"
+    assert t.model_dump()["walkable"] is False, "walkable=False did not survive"
+
+    assert maps.Terrain(name="grass", color="#4a7c3f").model_dump()["walkable"]         is True, "walkable should default to True - most ground is"
+    return "declared False survives the spec model; default is True"
+
+
+@case("the shore guard can actually fire")
+def _shore_reachable():
+    """A guard whose input is constant is not a guard.
+
+    `shore_mask` is walkable-next-to-unwalkable, so with every terrain walkable
+    it returns zero on ANY map and `possible_kinds` withholds `port` from every
+    map ever built. That is what happened, and nothing reported it: zero shore
+    tiles is a legitimate reading for a landlocked map.
+
+    So this asserts REACHABILITY - that the same grid gives a different answer
+    when a terrain is unwalkable. Without this, the fix above can be reverted
+    and every other case here still passes.
+    """
+    import regions
+
+    grid = np.array([[0, 0, 1, 1],
+                     [0, 0, 1, 1],
+                     [0, 0, 0, 1],
+                     [0, 0, 0, 0]])
+    land = [{"name": "grass", "walkable": True},
+            {"name": "water", "walkable": True}]
+    sea = [{"name": "grass", "walkable": True},
+           {"name": "water", "walkable": False}]
+
+    dry = int(regions.shore_mask(grid, land).sum())
+    wet = int(regions.shore_mask(grid, sea).sum())
+    assert dry == 0, f"all-walkable should have no shore, got {dry}"
+    assert wet > 0, ("shore_mask found no shore next to unwalkable water - "
+                     "the guard cannot fire")
+    assert "port" not in regions.possible_kinds({"shore_tiles": dry})
+    assert "port" in regions.possible_kinds({"shore_tiles": wet}),         "a map with shore must be allowed to have a port"
+    return f"0 shore when all walkable, {wet} when water is not; port follows"
+
+
 def main() -> int:
     failed = 0
     for name, fn in CASES:

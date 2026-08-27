@@ -713,6 +713,11 @@ scripts, so there is no longer a reason to reach past it. The general rule:
 path needs a credential, the recording is what you are giving up.** Make the
 supported path reachable instead.
 
+And why the trade keeps getting made, which is the peer's addition and the
+reason a rule alone will not hold: **the supported path's cost is visible -
+mint a key, wire the scope - and the recording it gives you is invisible until
+you need it.** Nobody knowingly trades away something they can see.
+
 ### D15 - A declared terrain colour must exist in the art, 2026-08-27
 
 The first two maps built through the queue both warned:
@@ -759,6 +764,74 @@ builds. Nothing was silently wrong - it was loudly wrong for two builds while
 I read the warning as noise and went looking for a model problem. Three
 explanations of mine were wrong before I measured: the default model, then the
 adapter, then the prompt. The measurement took two minutes and no GPU.
+
+Confirmed end to end: rebuilt with the one colour corrected, the tilemap grid
+is 20.8% water and the coverage warnings are empty.
+
+**Which palettes need this check, and which never will.** A peer ran the same
+measurement across the sprite pipeline and found nothing displaced - worst case
+6.9 Lab against this map's 77.7 - because every palette there is DERIVED from
+the art it is applied to (`extract_palette` on the source, style profiles
+aggregated from references, background keys voted from corner pixels). Median
+cut puts entries ON real colours, so the snap is lossless by construction and a
+test for this cannot fail while the palette stays derived.
+
+So the hazard is a property of **declaring**, not of quantisation:
+
+- a **derived** palette gets "close to the art" for free and cannot be got
+  wrong;
+- a **declared** palette has to be re-checked every time the art changes.
+
+That is the sentence worth carrying: it tells you which of your palettes needs
+the check and which never will.
+
+## D16 - Every map ever built said the sea was walkable, 2026-08-27
+
+Found while asking why a map that is 20.8% water still produced no `port`.
+
+`regions.shore_mask` reported **0 shore tiles on a map a fifth of which is
+sea**. The cause is three lines away from D15's and much plainer: **`Terrain`
+had no `walkable` field.**
+
+Pydantic drops an undeclared field silently. So every `walkable: false` any
+caller ever sent was discarded, `map_tasks` filled in its
+`t.get("walkable", True)` default, and every terrain in every tilemap this
+service has produced is walkable - including water.
+
+Three guards depended on it, and all three were inert:
+
+- **`shore_mask`** is walkable-next-to-unwalkable. With nothing unwalkable it
+  returns zero on any map, so `possible_kinds` withheld `port` from the LLM on
+  every map ever built. The whole shore rule was dead code in practice.
+- **`map_geometry.road_layer`** refuses to route across unwalkable ground and
+  had nothing to refuse.
+- **something2 paths on this field.** Every map this service handed it said the
+  sea could be walked across.
+
+Measured on the real grid, changing only the flag:
+
+| | shore tiles | `port` offered |
+|---|---|---|
+| as built | 0 | no |
+| water unwalkable | **115** | **yes** |
+
+**This is the day's pattern in its purest form.** Not a wrong value - an
+*absent* one, replaced by a default that made three guards return a legitimate-
+looking answer. Zero shore tiles is exactly what a landlocked map reports, so
+nothing could distinguish "no coast" from "cannot see coasts". The guards did
+not fail; they were never given anything to guard.
+
+Two tests, and the second is the one that matters. The first asserts the field
+survives the spec model - the seam where it was lost. The second asserts
+**reachability**: the same grid must give a different answer when a terrain is
+unwalkable. Without it the fix can be reverted and every other case still
+passes. Mutation-checked: removing the field turns the first red with
+`Terrain dropped 'walkable' - pydantic discards undeclared fields`.
+
+**Maps built before this fix mis-declare walkability and should be rebuilt.**
+`check-artifacts.py` will call them whole, correctly - it checks that a map is
+internally consistent, and one that says the sea is walkable is internally
+consistent. That limit is in its docstring and this is what it looks like.
 
 ## D13 - Density is uniform across a region, and that is a decision to make
 
