@@ -206,9 +206,25 @@ check("and so does the threshold",
 # original's source is extracted and executed on its own. That is the point:
 # the test reads the original rather than restating what it is believed to do,
 # so a change there fails HERE instead of quietly making the copy wrong.
-_measure_src = open(os.path.join(os.path.dirname(_here), "src",
-                                 "sprite_generator", "measure.py"),
-                    encoding="utf-8").read()
+#
+# TWO LAYOUTS, because this suite runs in both and the first version only
+# worked in one. On the host the repo is laid out as `<repo>/scripts` and
+# `<repo>/src/sprite_generator`. In the worker container `src/sprite_generator`
+# is mounted AS `/app` and the scripts at `/app/scripts`, so the same relative
+# walk lands on `/app/src/sprite_generator/measure.py`, which does not exist.
+#
+# It passed locally and crashed under `make test-train-prep`, which is the only
+# way it is ever run by anyone but me. Found by executing it in the container
+# rather than by reading it.
+_measure_candidates = [
+    os.path.join(os.path.dirname(_here), "src", "sprite_generator", "measure.py"),
+    os.path.join(os.path.dirname(_here), "measure.py"),
+]
+_measure_path = next((p for p in _measure_candidates if os.path.isfile(p)), None)
+if _measure_path is None:
+    sys.exit("cannot find measure.py; looked in:\n  "
+             + "\n  ".join(_measure_candidates))
+_measure_src = open(_measure_path, encoding="utf-8").read()
 _start = _measure_src.index("def pixel_scale(")
 _end = _measure_src.index("\ndef ", _start)
 _ns: dict = {"np": np}

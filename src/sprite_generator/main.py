@@ -72,6 +72,14 @@ app.include_router(references_router)
 from training import router as training_router
 app.include_router(training_router)
 
+# Operator commands - the audit, the recovery pipeline and the test suites -
+# which existed only as Makefile targets and so needed a terminal and a
+# checkout. The endpoint takes a KEY from an allowlist, never a command line;
+# see commands.py, which explains why that distinction is load-bearing when
+# auth is off by default.
+from maintenance import router as maintenance_router
+app.include_router(maintenance_router)
+
 # Isometric ground tiles. A separate spec from sheets - no actions, no frames -
 # but the same queue and the same GET /api/jobs/{id} polling contract.
 from tiles import router as tiles_router

@@ -355,6 +355,47 @@ export interface TrainingRun {
   finished_at: string | null
 }
 
+/**
+ * What a command changes if it runs. Not a boolean, because the three cases
+ * want three different treatments: "nothing" runs on a click, "files" says
+ * where the output lands, "database" needs a confirmation with a rowcount.
+ */
+export type CommandWrites = 'nothing' | 'files' | 'database'
+
+export interface Command {
+  name: string
+  label: string
+  group: string
+  writes: CommandWrites
+  summary: string
+  detail: string
+  minutes: number
+  /** False when the image lacks something the command needs. */
+  available: boolean
+  unavailable_why: string | null
+}
+
+export interface CommandListing {
+  commands: Command[]
+  groups: string[]
+  /** Live reference rows the database write could touch. Null if unreachable. */
+  stakes: { trainable: number | null; with_reason: number | null; why?: string }
+  /** True while these share the single generation worker. */
+  shares_worker: boolean
+}
+
+export interface CommandStatus {
+  task_id: string
+  status: string
+  name: string | null
+  lines: string[]
+  message: string | null
+  exit_code: number | null
+  /** The task itself blew up. A non-zero `exit_code` is NOT this. */
+  crashed: boolean
+  error: string | null
+}
+
 export interface TrainingReadiness {
   ready: boolean
   usable_references: number
@@ -507,6 +548,20 @@ export const api = {
     ),
   deleteRun: (id: string) =>
     request<unknown>(`/api/training/${id}`, { method: "DELETE" }),
+
+  commands: () => request<CommandListing>("/api/commands"),
+  /**
+   * `confirm` is only consulted for a command that writes to the database.
+   * Sent every time so there is one call shape; the server decides whether it
+   * matters, which keeps the rule in one place rather than two.
+   */
+  runCommand: (name: string, confirm = false) =>
+    request<{ task_id: string; name: string; writes: CommandWrites; status: string }>(
+      `/api/commands/${name}`,
+      { method: "POST", body: JSON.stringify({ confirm }) },
+    ),
+  commandStatus: (taskId: string) =>
+    request<CommandStatus>(`/api/commands/${taskId}`),
 
   recentTasks: () => request<RecentTask[]>("/api/tasks/recent"),
   retryTask: (id: number) =>

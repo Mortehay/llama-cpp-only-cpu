@@ -31,7 +31,10 @@ approximation of the table rather than the one `--apply` will actually meet.
 THE ASSUMPTION THIS TEST IS BUILT TO FALSIFY
 
 Seeded paths are PRODUCTION-format (`/app/images/<name>`) while `--data` points
-at a local directory. They are made to disagree deliberately. The first version
+at a COPY of three fixtures in a temp directory. They are made to disagree
+deliberately, and the copy is what makes that true everywhere: in the worker
+container `images/` IS `/app/images`, so pointing --data at the repo would have
+made seed and query agree again and quietly emptied this test. The first version
 seeded whatever path its own invocation produced, so seed and query agreed and
 every assertion passed - a test that shares the assumption it is checking
 cannot check it. A sibling session shipped exactly that and its `--apply`
@@ -55,8 +58,10 @@ every assertion stayed green.
 """
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 
 import psycopg2
@@ -88,9 +93,33 @@ def env_value(key: str) -> str:
     sys.exit(f"{key} not found in {ENV}")
 
 
-USER, PW, PROD_DB = env_value("DB_USER"), env_value("DB_PASSWORD"), env_value("DB_NAME")
-HOST = os.environ.get("DB_HOST", "127.0.0.1")
-BASE = f"postgresql://{USER}:{PW}@{HOST}:5432/"
+# DB_URL FIRST, because in the container it is the only one there is.
+#
+# The worker gets `DB_URL=postgresql://user:pw@db:5432/name` composed by
+# compose; the individual DB_USER / DB_PASSWORD / DB_NAME are interpolated at
+# compose time and never reach the process. And `compose/develop/.env` is
+# outside the mount, so the fallback below finds nothing either.
+#
+# This ran only from a host shell until the Makefile target that runs it in the
+# container was actually executed, at which point it exited on the first line
+# with "DB_USER not in the environment". Green from where it was written, dead
+# from where it ships.
+_url = os.environ.get("DB_URL", "").strip()
+if _url:
+    from urllib.parse import unquote, urlparse
+    _u = urlparse(_url)
+    USER = unquote(_u.username or "")
+    PW = unquote(_u.password or "")
+    HOST = _u.hostname or "127.0.0.1"
+    PORT = _u.port or 5432
+    PROD_DB = (_u.path or "/postgres").lstrip("/")
+else:
+    USER, PW = env_value("DB_USER"), env_value("DB_PASSWORD")
+    PROD_DB = env_value("DB_NAME")
+    HOST = os.environ.get("DB_HOST", "127.0.0.1")
+    PORT = 5432
+
+BASE = f"postgresql://{USER}:{PW}@{HOST}:{PORT}/"
 ADMIN, SCRATCH, PROD = BASE + "postgres", BASE + SCRATCH_NAME, BASE + PROD_DB
 
 # The one guard that matters. Everything below drops a database by name.
@@ -151,13 +180,34 @@ try:
     # is not the one --apply will meet.
     check("scratch schema matches production", columns(SCRATCH), columns(PROD))
 
-    IMG = os.path.join(REPO, "images")
+    SRC = os.path.join(REPO, "images")
     reject = "ref_sprite_004228080a22.png"   # 135 subjects, 5.6:1 strip
     keep = "ref_core_01ac2de061db.png"       # single subject, flat backdrop
     gone = "ref_sprite_5e0e1537bee8.png"     # checkerboard, but soft-deleted
     for f in (reject, keep, gone):
-        if not os.path.isfile(os.path.join(IMG, f)):
+        if not os.path.isfile(os.path.join(SRC, f)):
             sys.exit(f"fixture missing: {f} - this test needs the real images")
+
+    # The three fixtures are COPIED somewhere that is definitely not
+    # `/app/images`, and `--data` points there.
+    #
+    # Not tidiness - it is the test's only real property. The seeded rows use
+    # production's `/app/images/<name>` and the audit must be given a DIFFERENT
+    # directory, or a whole-path comparison matches just as well as a suffix
+    # one and the mutation stops being caught.
+    #
+    # On a host checkout that happened for free, because the repo is not at
+    # /app. In the worker container `images/` IS `/app/images`, so seed and
+    # query would have agreed and the test would have gone green while
+    # measuring nothing - the same collapse its own docstring describes, moved
+    # from the fixture into the filesystem layout. Copying makes it hold in
+    # both places instead of depending on where it is run.
+    #
+    # A side effect worth having: the audit reads 3 images instead of 483, so
+    # this went from about six minutes to a few seconds.
+    IMG = tempfile.mkdtemp(prefix="apply-verdicts-")
+    for f in (reject, keep, gone):
+        shutil.copy(os.path.join(SRC, f), os.path.join(IMG, f))
 
     # Seed PRODUCTION-format paths, not the ones this invocation happens to use.
     #
@@ -268,6 +318,9 @@ finally:
         conn.close()
     admin(f"DROP DATABASE IF EXISTS {SCRATCH_NAME}")
     print(f"dropped {SCRATCH_NAME}")
+    # `IMG` is only bound once the fixtures are copied, and the schema check
+    # above can exit before that.
+    shutil.rmtree(globals().get("IMG") or "", ignore_errors=True)
 
 print("\nFAILURES:", ", ".join(fails) if fails else "none")
 sys.exit(1 if fails else 0)

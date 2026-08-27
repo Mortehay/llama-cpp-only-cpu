@@ -10,6 +10,7 @@ import Training from './tabs/Training'
 import Tiles from './tabs/Tiles'
 import Maps from './tabs/Maps'
 import Worlds from './tabs/Worlds'
+import Commands from './tabs/Commands'
 
 const TABS = [
   { id: 'core', label: 'Entity Generation' },
@@ -23,6 +24,7 @@ const TABS = [
   { id: 'worlds', label: 'Worlds' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
+  { id: 'commands', label: 'Commands' },
   { id: 'settings', label: 'Settings & API' },
 ] as const
 
@@ -106,6 +108,7 @@ export default function App() {
         {tab === 'worlds' && <Worlds />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
+        {tab === 'commands' && <Commands />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
       </div>
     </>

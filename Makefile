@@ -322,7 +322,18 @@ test-split-sheets:
 
 # `--apply` is the only WRITING part of the audit and it had never run once.
 # This builds a throwaway database from production's schema, exercises it there,
-# and drops it. Production is read-only throughout. Needs postgresql-client.
+# and drops it. Production is read-only throughout.
+#
+# THIS TARGET DOES NOT WORK AS WRITTEN, and saying so is more useful than the
+# note that used to be here ("Needs postgresql-client"). The image these
+# containers build from has no `pg_dump`, so the run dies on FileNotFoundError.
+# It was only ever executed from a host shell, where the binary exists - green
+# where it was written, dead where it ships.
+#
+# Run it from a shell with postgresql-client and access to the database:
+#     python3 scripts/test-apply-verdicts.py
+# or add postgresql-client to compose/develop/sprite_generator/Dockerfile,
+# which is a deployment change and is deliberately not made here.
 test-apply-verdicts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
