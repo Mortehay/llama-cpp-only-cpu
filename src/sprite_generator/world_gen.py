@@ -668,6 +668,28 @@ def socket_kib_s(per_screen_count: float, chunk_size: int) -> float:
     is". Reachable at `horde` (target 11.1+) and `swarm`; `smoke-world-gen`
     asserts the threshold still sits inside the reachable set, because a guard
     that cannot fire reads as "checked and fine".
+
+    CHUNK_SIZE IS THE OTHER LEVER, and the only one that does not cost visual
+    density. The neighbourhood is `NEIGHBOURHOOD_CHUNKS` chunks, so its area -
+    and this cost - falls with the SQUARE of chunk_size. Measured at 20/screen:
+
+        chunk 32   9216 tiles   ~736 KiB/s   warns
+        chunk 24   5184 tiles   ~414 KiB/s   warns
+        chunk 16   2304 tiles   ~184 KiB/s   quiet
+        chunk  8    576 tiles    ~46 KiB/s   quiet
+
+    WHAT THIS FORMULA DOES NOT COUNT, and it matters before anyone takes the
+    bottom row: it models creature broadcast in the active neighbourhood and
+    nothing else. Smaller chunks mean a player crosses boundaries more often,
+    so chunk load/unload traffic goes UP while this number goes down, and that
+    traffic is not measured here.
+
+    It also shrinks the activated area. A screen is ~15x15 tiles, so a radius-1
+    neighbourhood is 6.4 screens wide at chunk 32, 3.2 at chunk 16, and only
+    1.6 at chunk 8 - about 4.5 tiles of margin beyond the visible edge, which a
+    moving player can outrun and see creatures activate inside their view.
+    Chunk 16 keeps a full screen of margin either way; chunk 8 is a gameplay
+    change, not a saving.
     """
     tiles = NEIGHBOURHOOD_CHUNKS * chunk_size * chunk_size
     creatures = per_screen_count * tiles / TILES_PER_SCREEN
@@ -1173,9 +1195,11 @@ def report(spec: dict, target_per_screen: float | None = None) -> dict:
             f"({dens}). Their measurement puts the cost at "
             f"~{BYTES_PER_CREATURE_PER_SEC} B/s per creature in the active "
             f"neighbourhood, so this is a bandwidth decision rather than a "
-            f"flavour one. target_per_screen of 11 or below lands on `dense` "
-            f"(8.1/screen) and clears it; the tier, not the biomes, is what "
-            f"sets this.")
+            f"flavour one. Two levers, and the biomes are neither: "
+            f"target_per_screen of 11 or below lands on `dense` (8.1/screen), "
+            f"or keep the density and halve chunk_size - the neighbourhood is "
+            f"{NEIGHBOURHOOD_CHUNKS} chunks, so the cost falls with the SQUARE "
+            f"of it (32 -> 16 is ~4x less).")
 
     caveats = []
     raw = sum(r["creatures"] for r in rows)
