@@ -679,11 +679,67 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    > and a slime. Every one is `ref_core`, centred, transparent, with no
    > pedestal and nothing beside it — which is exactly the target.
    >
-   > **Eleven clears `MIN_IMAGES = 8`**, so a training run can now start on this
-   > set where it could not before. It is still short of the 20+ ADR 0006 D3
-   > asks for, and eleven images of eleven unrelated creatures is a style
+   > **Eleven clears `MIN_IMAGES = 8`.** It is still short of the 20+ ADR 0006
+   > D3 asks for, and eleven images of eleven unrelated creatures is a style
    > sample, not a character. Judge it as "can this teach a cutout silhouette",
    > not as "can this teach an entity".
+   >
+   > ### The recovery was inert until the cutouts were registered
+   >
+   > "A training run can now start on this set" was **wrong when it was
+   > written**. `all_trainable_refs` selects from `reference_assets` by
+   > `file_path`, so eleven PNGs in `images/recovered/entity/` were invisible to
+   > the trainer — and all eleven ORIGINALS were still `deleted = false,
+   > trainable = true, trainable_why 'fine to train on'`, pointing at the
+   > versions with the backdrop, the floating diamond and the ember specks. A
+   > run started at that moment would have consumed exactly what the recovery
+   > removed, and every count in this note would still have read eleven.
+   >
+   > `--register` follows `scripts/split-sheets.py`, which had the same problem:
+   > write the cutout into the images directory as a fresh
+   > `ref_core_<hex>.png` with a `thumb_` beside it, insert a row carrying
+   > `recovered_from`, then retire the parent with a reason naming its
+   > replacement. **Run against production on 2026-08-28**, after snapshotting
+   > into `reference_assets_pre_register` (2,600 rows):
+   >
+   > ```
+   >   core trainable   212 -> 212     ten cutouts in, ten originals retired
+   >   cutout rows        0 -> 10
+   > ```
+   >
+   > Ten, not eleven: `ref_core_08e39eb3c931` needed no repair, so its original
+   > IS the usable file and it keeps its single row. Registering a copy would
+   > train on the same image twice at double weight.
+   >
+   > Revert with `UPDATE ... FROM reference_assets_pre_register`, then
+   > `DELETE FROM reference_assets WHERE metrics ? 'recovered_from'`.
+   >
+   > ### The container and the host disagreed, and only one of them was safe
+   >
+   > The first containerised dry run reported **10 usable instead of 11** and
+   > queued `fefbb01e57b5`, `eabdbd199746` and `06bb8045fba3` for registration
+   > as trainable — **three of the four files rejected by eye**: the figure on a
+   > black bar, the dragon on rock slabs, the frog fused to a ground blob.
+   >
+   > `.ai/` is not one of the directories compose mounts, so the default
+   > verdicts path resolved to `/app/.ai/...`, which is absent — and
+   > `read_verdicts` returned `{}` for a missing file. Every by-eye judgement
+   > vanished, the output looked entirely normal, and the count was plausible.
+   > The same command from a host shell gave the right answer. Only the
+   > dangerous one would have written to the database.
+   >
+   > A missing verdicts file is now a hard exit naming the risk; `--verdicts ''`
+   > means "deliberately none". The Makefile mounts the directory for the two
+   > targets that need it, quoted, because this repo lives under a path with a
+   > space in it.
+   >
+   > Two more of the same species, both fixed: `recover-grid-refs.py` located
+   > `tasks.py` at `<repo>/src/sprite_generator/`, which in the worker is `/app`
+   > with the scripts at `/app/scripts` — green from a host shell, dead from
+   > where it ships. `test-isolate-mirrors-tasks.py` had it too, and
+   > `test-audit-mirrors-cutout.py` and `test-train-prep.py` had already been
+   > fixed for it. **Four scripts, one bug, found only by running the Makefile
+   > target rather than the script.**
 
    **The `sprite` kind contributes zero.** All 23 are `ref_core`, which is the
    kind ADR 0009 argues should be split off as painted concept art. Crossing

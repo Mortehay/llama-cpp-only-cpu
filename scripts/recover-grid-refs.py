@@ -76,8 +76,25 @@ from PIL import Image
 from scipy import ndimage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TASKS = os.path.join(HERE, "..", "src", "sprite_generator", "tasks.py")
-PIXELATE_DIR = os.path.join(HERE, "..", "src", "sprite_generator")
+
+
+# Two layouts, because this runs from both and only worked in one.
+# On the host the package is `<repo>/src/sprite_generator`. Compose mounts that
+# directory AS `/app` with the scripts separately at `/app/scripts:ro`, so the
+# same relative walk lands on `/app/src/sprite_generator/`, which does not
+# exist - `make recover-entity-refs` died on FileNotFoundError while the
+# identical run from a host shell passed. Same fault and same fix as
+# test-audit-mirrors-cutout.py and test-train-prep.py before it.
+_PKG_CANDIDATES = [
+    os.path.join(HERE, "..", "src", "sprite_generator"),
+    os.path.join(HERE, ".."),
+]
+PIXELATE_DIR = next((p for p in _PKG_CANDIDATES
+                     if os.path.isfile(os.path.join(p, "tasks.py"))), None)
+if PIXELATE_DIR is None:
+    sys.exit("cannot find tasks.py; looked in: "
+             + ", ".join(os.path.abspath(p) for p in _PKG_CANDIDATES))
+TASKS = os.path.join(PIXELATE_DIR, "tasks.py")
 
 
 # ACCEPTANCE TEST ON THE REPAIRED FILE, and the reason the audit needs one.
@@ -370,8 +387,28 @@ def read_verdicts(path):
     re-checkable, and the file count does not quietly change when someone
     disagrees with one line of it.
     """
-    if not path or not os.path.exists(path):
+    # A MISSING VERDICTS FILE IS A HARD ERROR, and this is not defensiveness.
+    #
+    # It used to return {} when the path did not exist. `.ai/` is not one of the
+    # directories compose mounts, so in the worker the default path resolves to
+    # `/app/.ai/...`, which is absent - and the container run silently dropped
+    # every by-eye judgement, reported a plausible 10 usable instead of 11, and
+    # queued `fefbb01e57b5`, `eabdbd199746` and `06bb8045fba3` for registration
+    # as trainable. Those are three of the four files REJECTED by eye: a figure
+    # on a black bar, a dragon on rock slabs, a frog fused to a ground blob.
+    #
+    # Nothing in the output looked wrong. The same run from a host shell, where
+    # the file exists, gave the right answer - so the two disagreed and only the
+    # dangerous one would have written to the database.
+    #
+    # Pass --verdicts '' to mean "deliberately none".
+    if path is None or path == "":
         return {}
+    if not os.path.exists(path):
+        sys.exit("verdicts file not found: %s\n"
+                 "Without it every by-eye rejection is dropped and rejected "
+                 "files are queued as trainable. Pass --verdicts '' if you "
+                 "really mean to run with none." % os.path.abspath(path))
     out = {}
     for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
         line = line.strip()

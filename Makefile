@@ -428,12 +428,20 @@ test-spec-fields:
 #
 # Look at the sheet it writes. Do not take the count on trust - that is the
 # mistake this target exists to stop repeating.
+# .ai/ is not one of the directories compose mounts, so the verdicts file is
+# invisible in the worker. Mounted here rather than in docker-compose.yml: this
+# is one operator target's input, not a service dependency.
+# Quoted: this repo lives under a path with a space in it, and an unquoted
+# -v splits there and is read as a service name.
+VERDICTS_MOUNT := -v "$(CURDIR)/.ai/specs/entity-cutout:/app/verdicts:ro"
+VERDICTS_ARG := --verdicts /app/verdicts/entity_verdicts.txt
+
 recover-entity-refs:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
-		--entrypoint python sprite-worker \
+		$(VERDICTS_MOUNT) --entrypoint python sprite-worker \
 		/app/scripts/recover-grid-refs.py --dir /app/images \
 		--grid-list /app/images/_audit/grid483.txt \
-		--out /app/images/recovered/entity \
+		--out /app/images/recovered/entity $(VERDICTS_ARG) \
 		--contact-sheet /app/images/_audit/recovered_entity.png \
 		--markdown /app/images/_audit/recovered_entity.md
 
@@ -512,10 +520,10 @@ check-artifacts:
 # database.
 register-entity-cutouts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
-		--entrypoint python sprite-worker \
+		$(VERDICTS_MOUNT) --entrypoint python sprite-worker \
 		/app/scripts/recover-grid-refs.py --dir /app/images \
 		--grid-list /app/images/_audit/grid483.txt \
-		--out /app/images/recovered/entity \
+		--out /app/images/recovered/entity $(VERDICTS_ARG) \
 		--images-dir /app/images --register
 
 # Does --register put the cutouts where training will see them?

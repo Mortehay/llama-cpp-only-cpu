@@ -46,7 +46,18 @@ from PIL import Image
 from scipy import ndimage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TASKS = os.path.join(HERE, "..", "src", "sprite_generator", "tasks.py")
+# Two layouts - see test-audit-mirrors-cutout.py. On the host the package is
+# `<repo>/src/sprite_generator`; in the container that directory IS `/app` with
+# the scripts at `/app/scripts`, so the relative walk lands on a path that does
+# not exist and the Makefile target dies where a host shell passes.
+_TASKS_CANDIDATES = [
+    os.path.join(HERE, "..", "src", "sprite_generator", "tasks.py"),
+    os.path.join(HERE, "..", "tasks.py"),
+]
+TASKS = next((p for p in _TASKS_CANDIDATES if os.path.isfile(p)), None)
+if TASKS is None:
+    sys.exit("cannot find tasks.py; looked in: "
+             + ", ".join(os.path.abspath(p) for p in _TASKS_CANDIDATES))
 
 
 class _Logger:
