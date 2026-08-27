@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -407,3 +407,38 @@ recover-entity-refs:
 		--out /app/images/recovered/entity \
 		--contact-sheet /app/images/_audit/recovered_entity.png \
 		--markdown /app/images/_audit/recovered_entity.md
+
+# The map and world suites, as a SET.
+#
+# These eight existed for a day reachable only by remembering
+# `docker exec sprite_generator python /app/scripts/smoke-map-build.py`, which
+# means nobody but their author was ever going to run them - the same failure
+# as the map rows that never existed because the endpoint wanted a key
+# (ADR 0008 D14). A test nobody can find is a test nobody runs.
+#
+# One target rather than eight, because running only the suites you touched is
+# how a suite that cannot execute in the container it ships to stays green on
+# a laptop. Runs through `run --rm` like the others so it works on a machine
+# where nothing is up yet.
+#
+# `-` on none of them: the first failure should stop the set.
+MAP_SUITES := smoke-map-build smoke-map-resolve smoke-map-facade \
+              smoke-map-palette smoke-regions smoke-world-gen \
+              smoke-world-api smoke-measure-map
+
+test-maps:
+	@for s in $(MAP_SUITES); do \
+		echo "== $$s"; \
+		docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+			--entrypoint python sprite-generator /app/scripts/$$s.py || exit 1; \
+	done
+
+# Is what we SERVE what this code would produce?
+#
+# Regenerates every stored region from its own parameters and diffs it, then
+# checks that finished maps are internally whole. Run it after deploying and
+# before telling anyone a fix has landed - a green suite says nothing about
+# what is being served, which is the whole of ADR 0008 D12.
+check-artifacts:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-generator /app/scripts/check-artifacts.py
