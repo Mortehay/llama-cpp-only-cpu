@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -342,3 +342,15 @@ test-audit-mirrors-cutout:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-audit-mirrors-cutout.py --data /app/images
+
+# Does the entity cutout remove a pedestal without amputating a wide-based prop?
+#
+# generate_raw_task runs strip_ground_patch(require_legs=True) on every cutout.
+# A pedestal is fused to the feet, so neither remove_background nor
+# _isolate_largest_sprite can see it - and prompting cannot be the backstop,
+# because the caller's negative prompt is discarded outright on a distilled
+# checkpoint. The guard is what stops the same cut amputating a barrel.
+test-pedestal-guard:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-pedestal-guard.py

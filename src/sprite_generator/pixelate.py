@@ -30,8 +30,12 @@ Two rules that are easy to get wrong when doing this per-cell:
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 # Alpha at or above this becomes fully opaque; below it becomes fully
 # transparent. There is no middle: a partially transparent pixel is what
@@ -46,6 +50,13 @@ DEFAULT_COLORS = 24
 # feet and the ground blob while staying below the hips on every character
 # tested here.
 SHIN_BAND = (0.15, 0.35)
+
+# strip_ground_patch's precondition: shins must be narrower than the body for
+# "wider than the legs" to mean anything. At or above this ratio the subject has
+# no narrow legs - a barrel, a bush, a rock, a robed figure whose hem flares -
+# and its wide base is its own shape rather than a pedestal. Only consulted when
+# a caller passes require_legs=True.
+LEGS_MAX_SHIN_RATIO = 0.8
 
 
 # --- colour -------------------------------------------------------------
@@ -132,7 +143,8 @@ def snap_to_palette(rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
 # --- background ---------------------------------------------------------
 
 def strip_ground_patch(img: Image.Image, width_ratio: float = 1.8,
-                       max_band_frac: float = 0.25) -> Image.Image:
+                       max_band_frac: float = 0.25,
+                       require_legs: bool = False) -> Image.Image:
     """Delete a ground/shadow patch fused to the bottom of a sprite.
 
     Moved here from tasks.py, which now imports it, because it is pure
@@ -200,6 +212,37 @@ def strip_ground_patch(img: Image.Image, width_ratio: float = 1.8,
     reference = float(np.median(shins))
     if reference <= 0:
         return img
+
+    # THE RULE'S OWN PRECONDITION, checked rather than assumed.
+    #
+    # Everything below rests on "the thing standing on the ground is legs", so
+    # the shin band has to actually BE narrower than the body. On a barrel, a
+    # bush, a rock, a chest or a robed figure whose hem flares, it is not - the
+    # wide bottom IS the subject's shape, and cutting there amputates the
+    # object rather than removing a pedestal.
+    #
+    # Off by default so every existing caller keeps the behaviour it was tuned
+    # against: those run on character turnarounds, where the precondition holds
+    # and this would only ever decline to help. Entity generation turns it on,
+    # because there the subject is arbitrary - something2 asks for trees and
+    # barrels as readily as for characters.
+    #
+    # 0.8 is deliberately permissive: it is not trying to find the boundary
+    # between legs and no-legs, only to refuse the cases where "narrower" is
+    # plainly false. Measured over 245 single-subject references the ratio runs
+    # a median of 1.00, so on arbitrary art this declines far more often than it
+    # fires - which is the safe direction when the alternative is cutting a
+    # barrel in half.
+    body = widths[top:bot + 1]
+    body = body[body > 0]
+    if require_legs and body.size:
+        body_median = float(np.median(body))
+        if body_median > 0 and reference / body_median >= LEGS_MAX_SHIN_RATIO:
+            logger.info(
+                "strip_ground_patch declined: shins are %.2fx the body median, "
+                "so this subject has no narrow legs to stand on and its wide "
+                "base is its own shape.", reference / body_median)
+            return img
 
     band = np.arange(max(bot - int(height * max_band_frac), top), bot + 1)
     wide = band[widths[band] > reference * width_ratio]

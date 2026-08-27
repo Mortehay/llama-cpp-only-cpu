@@ -2373,6 +2373,26 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     if strip_background:
         img = remove_background(img)
 
+        # A PEDESTAL IS NOT BACKGROUND, so remove_background cannot touch it.
+        #
+        # The patch under a generated entity is fused to its feet: not
+        # border-connected, so the flood fill walks past it, and not a separate
+        # blob, so _isolate_largest_sprite walks past it too. That is why
+        # NEGATIVE_SINGLE carries ground terms at all. Prompting is not a
+        # reliable second line here either - this task takes the CALLER's
+        # negative prompt, and on the distilled checkpoints it is usually run
+        # with, resolve_sampling_params strips it entirely because guidance 0
+        # disables classifier-free guidance. So the geometry is the only stage
+        # that can be depended on.
+        #
+        # require_legs=True is what makes this safe to apply unconditionally to
+        # an arbitrary entity. something2 asks for barrels, bushes, rocks and
+        # chests as readily as for characters, and every one of those is
+        # legitimately widest at its base - cutting there amputates the subject.
+        # The guard declines whenever the shins are not clearly narrower than
+        # the body, which on non-humanoid subjects is most of the time.
+        img = strip_ground_patch(img, require_legs=True)
+
         # A cutout that did not cut is the dangerous outcome, not a loud one.
         #
         # something2 composites entity images over terrain, so every one must be
@@ -3189,3 +3209,59 @@ def build_tile_job(self, job_id: str):
                 progress_msg="done", sheet_path=out_path)
     logger.info("tile job %s -> %s", job_id, out_path)
     return {"path": out_path}
+
+
+@celery_app.task(bind=True, name="tasks.run_command_job")
+def run_command_job(self, name: str):
+    """Run one named operator command from the `commands` allowlist.
+
+    The API sends a KEY, never a command line - see `commands.py` for why that
+    distinction is the whole design. This looks the key up and refuses anything
+    it does not recognise, so a bad name is a failed task rather than a shell.
+
+    Returns the last lines of output rather than all of it. The audit prints a
+    line per 25 images and its real product is a file; putting the whole stream
+    in the Celery result would push megabytes through Redis for a panel that
+    shows a summary. `report_path` points at what to read instead.
+    """
+    import subprocess
+
+    import commands as command_table
+
+    spec = command_table.COMMANDS.get(name)
+    if spec is None:
+        # Deliberately does not echo `name` back into a shell or a path. It is
+        # already untrusted; the only safe thing to do with it is say no.
+        raise ValueError(f"unknown command: {name!r}")
+
+    logger.info("command %s: %s", name, " ".join(spec["argv"]))
+    self.update_state(state="PROGRESS",
+                      meta={"name": name, "msg": "starting", "lines": []})
+
+    proc = subprocess.Popen(spec["argv"], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    tail: list[str] = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        tail.append(line)
+        # Enough to show a failing test's assertions and the summary lines the
+        # audit ends with, and short enough to survive being polled.
+        del tail[:-40]
+        logger.info("%s: %s", name, line)
+        self.update_state(state="PROGRESS",
+                          meta={"name": name, "msg": line, "lines": tail[-12:]})
+    rc = proc.wait()
+
+    result = {"name": name, "exit_code": rc, "lines": tail,
+              "writes": spec["writes"]}
+
+    # A non-zero exit is REPORTED, not raised. These are operator tools and a
+    # red exit code is frequently the answer - a test suite that fails has done
+    # its job. Raising would surface as a Celery traceback and bury the output
+    # that says what actually happened.
+    if rc != 0:
+        result["error"] = "\n".join(tail[-12:]) or f"exit code {rc}"
+        logger.warning("command %s exited %d", name, rc)
+    return result
