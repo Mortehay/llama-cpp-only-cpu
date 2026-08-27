@@ -23,11 +23,20 @@ what it replaced: this ADR claimed that 103 cells recovered from 12 keyed
 sheets were "the only training-grade character material here". They are not
 pixel art at all - see the recovery section - and the measurement that shows it
 is one function. The claim was made from thumbnails and was never put through
-the gate this same document defines. Of 483 references and 103 recovered cells,
-the files with a real pixel grid number **fourteen** - and six of those are
-filed under `core`, which this document elsewhere describes as painted concept
-art. Both numbers in this paragraph were wrong in an earlier draft, in the same
-direction: stated from an impression, not from a measurement.
+the gate this same document defines.
+
+What replaced it, after three wrong counts in a row: of 483 references and 103
+recovered cells, **twenty files can be demonstrated to be pixel art, and nine
+of those pass this audit. All nine are `core`. The `sprite` tab contributes
+none.** Eight of the eleven that fail are the best pixel art in the repo and
+are rejected for being too SMALL - 64x96, under the 160px floor. The rest are
+contact sheets.
+
+Every count in this paragraph has been wrong at least once today, always in the
+same direction: stated from an impression and corrected by a measurement. The
+sequence was 2, then 0, then 8, then 14, then 20-with-9-usable. Reported here
+in full rather than presented as though the last one arrived first, because the
+pattern is the useful part - each number felt sufficient when written.
 
 ## What was measured, 2026-08-27
 
@@ -419,8 +428,68 @@ Every rule below is one of the failure modes above, stated as a requirement.
 and fail 5, which is the one that names the style. They are a good reference
 for FRAMING and a bad one for pixel art.
 
-**The 14 files that ARE pixel art.** Every reference with a detected grid AND
-flat blocks under it - the two tests together, which neither alone survives:
+**THE ANSWER, AFTER THREE WRONG VERSIONS OF IT: NINE FILES, ALL `core`.**
+
+Crossing "is it pixel art" against "does the audit pass it" - two questions
+this document had been conflating - gives the set that can actually be trained
+on today:
+
+| file | grid | colours | verdict |
+|---|---|---|---|
+| ref_core_08e39eb3c931 | 3 | 9 | keep |
+| ref_core_22e10326d210 | 3 | 11 | keep |
+| ref_core_b667f8002995 | 4 | 18 | keep |
+| ref_core_68076e9e3f53 | 10 | 20 | keep |
+| ref_core_bba9e371f7fa | 2 | - | keep |
+| ref_core_eabdbd199746 | 2 | - | keep |
+| ref_core_0b0d7f3217d6 | 2 | - | keep |
+| ref_core_a0f76603de29 | 10 | 16 | review - one detached mark |
+| ref_core_ca0070408096 | 3 | 246 | review - foreground unresolvable |
+
+Nine, against `MIN_IMAGES` of 8 and 0006 D3's own "20+". It clears the gate it
+is measured by and does not clear the number that document says is needed.
+
+**The `sprite` tab contributes nothing.** Not one file. Twenty references in
+this repo are genuine pixel art; eleven of them are unusable, and the way they
+fail is worth reading because it is not the way this ADR predicted:
+
+  * **eight are too SMALL.** The 64x96 hand-made sprites - 4 colours, grid 4,
+    block error exactly 0.00, the best pixel art here by every measure - are
+    rejected at `MIN_TRAIN_SIDE`. They are not bad art. They are art at roughly
+    the size the game renders, and training would upscale them 10x and invent
+    the detail it is meant to be learning. That is the precise failure
+    `curate-training-set.py` was written to stop on the tile side.
+  * **three are multi-subject** - two icon boards and an eight-pose skeleton
+    turnaround. Real pixel art, and a contact sheet is a contact sheet.
+
+So the shortage is not "no pixel art exists". It is that the pixel art here is
+either too small to train at resolution or packed several to a file, and the
+one usable pool is filed under the wrong kind.
+
+ONE DISAGREEMENT LEFT STANDING: `ref_core_93f55ceabeae` (grid 3, 19 colours) is
+rejected as "2 separable subjects". By eye it is one treant with detached
+branch limbs. The audit counts connected components and cannot know that;
+looking at it, I think the audit is wrong and I am not overriding it, because
+"this one is really one subject" is exactly the judgement the counter exists to
+replace. Flagged rather than resolved.
+
+**Twenty files are DEMONSTRABLY pixel art. That is a floor, not a count.**
+
+The union of two detectors with opposite blind spots - `pixel_scale` for exact
+grids, `grid_by_profile` for damaged ones. Ten were opened and every one is
+pixel art, so there are no known false positives. But a sibling session found
+`ref_core_ee265a10678a` by a third method and confirmed it by eye at 8x, and it
+is NOT in this list: its grid is shallow at factor 2, which my depth test
+discards as the smoothness of a render.
+
+So the list below is what can be DEMONSTRATED, and the true number is higher by
+an unknown amount. The way to raise it is to open files, not to add a fourth
+detector - the last detector added here was `edge_softness`, and it was built
+to make a set come out the way somebody expected.
+
+The first eight are the 64x96 hand-made sprites, and they are the best pixel
+art here by every measure and rejected by size. Six more are the `core` files
+in the usable table above; the rest are contact sheets:
 
 | file | size | grid | colours |
 |---|---|---|---|
@@ -438,6 +507,16 @@ flat blocks under it - the two tests together, which neither alone survives:
 | ref_core_b667f8002995 | 512x512 | 4 | 18 |
 | ref_core_93f55ceabeae | 540x762 | 3 | 19 |
 | ref_core_68076e9e3f53 | 1280x1280 | 10 | 20 |
+| ref_core_ca0070408096 | 486x342 | 3 | 246 |
+| ref_core_bba9e371f7fa | - | 2 | 16793 |
+| ref_core_eabdbd199746 | - | 2 | 18779 |
+| ref_core_0b0d7f3217d6 | - | 2 | 15668 |
+| ref_core_ebf0d0953c2e | - | 2 | 20067 |
+| ref_sprite_9e2539f0bbea | - | 2 | 241 |
+
+The last six are the ones `pixel_scale` alone could not see, found only after
+a sibling session reported that its 98% edge-alignment rule collapses to "no
+grid" on lightly re-compressed art. Four are single creatures; two are sheets.
 
 All fourteen score exactly 0.00. There is no middle of this distribution: an
 image here either has a real grid or has none, and nothing sits between 0.00

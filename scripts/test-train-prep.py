@@ -193,6 +193,73 @@ check("the audit's copy of the measure agrees, image by image",
 check("and so does the threshold",
       audit.MAX_GRID_ROUND_TRIP_ERROR, m.MAX_GRID_ROUND_TRIP_ERROR)
 
+# The copy that has an ORIGINAL, checked against the original itself.
+#
+# The check above compares two copies to each other. That catches them drifting
+# apart and misses them drifting together, which is the failure mode that
+# matters when there is a source of truth - and for `pixel_scale` there is one:
+# `measure.pixel_scale`, which the audit's docstring says it mirrors and which
+# nothing verified. A sibling session shipped exactly this and its copy had
+# been transcribed from a DIFFERENT function entirely, flipping 25 verdicts.
+#
+# measure.py cannot be imported here - it pulls the `concept` package - so the
+# original's source is extracted and executed on its own. That is the point:
+# the test reads the original rather than restating what it is believed to do,
+# so a change there fails HERE instead of quietly making the copy wrong.
+_measure_src = open(os.path.join(os.path.dirname(_here), "src",
+                                 "sprite_generator", "measure.py"),
+                    encoding="utf-8").read()
+_start = _measure_src.index("def pixel_scale(")
+_end = _measure_src.index("\ndef ", _start)
+_ns: dict = {"np": np}
+exec(compile(_measure_src[_start:_end], "measure.pixel_scale", "exec"), _ns)
+original = _ns["pixel_scale"]
+
+# Fixtures spanning what the two can disagree about: a real 8x grid, art at
+# 1:1, and a smooth image with no honest answer. Built here rather than reusing
+# the `grid` fixture below, so this block does not depend on statement order in
+# a file that is appended to.
+_base = Image.new("RGB", (32, 32))
+for _y in range(32):
+    for _x in range(32):
+        _base.putpixel((_x, _y), (_x * 8 % 256, _y * 8 % 256, 0))
+
+# A fixture where the 0.98 THRESHOLD is load-bearing, which the three above are
+# not. Added because the first version of this guard was decoration: mutating
+# the copy's threshold from 0.98 to 0.50 left every check green. Clean fixtures
+# give the same answer under any threshold, so they cannot detect a change to
+# it - a guard that only sees unambiguous cases proves nothing about the rule.
+#
+# Vertical bands only, so `coords` is the x boundaries alone. Ten fall on a
+# multiple of 16, five more only on a multiple of 8:
+#     s=16 explains 10/15 = 0.67   s=8 explains 15/15 = 1.00
+# At 0.98 the answer is 8. At anything below 0.67 it is 16.
+_amb = Image.new("RGB", (256, 64), (20, 20, 20))
+_cuts = sorted([16 * i for i in range(1, 11)] + [8, 24, 40, 56, 72])
+_px, _on = _amb.load(), False
+for _x in range(256):
+    if _x in _cuts:
+        _on = not _on
+    for _y in range(64):
+        _px[_x, _y] = (210, 40, 90) if _on else (20, 20, 20)
+
+_probe = [("8x upscale", _base.resize((256, 256), Image.NEAREST)),
+          ("1:1 art", _base),
+          ("no grid at all", painted),
+          ("threshold is load-bearing", _amb)]
+for _label, _img in _probe:
+    _arr = np.asarray(_img.convert("RGBA"))
+    check(f"audit mirrors measure.pixel_scale: {_label}",
+          audit.pixel_scale(_arr), original(_arr)["scale"])
+
+# The one place they deliberately differ, asserted so it stays deliberate.
+# `measure` returns scale=None for a flat fill - "no honest answer" - while the
+# audit returns 1, because its callers branch on `scale == 1` and None would
+# read as a grid. Documented divergence, not drift.
+_flat = np.asarray(Image.new("RGBA", (64, 64), (7, 9, 11, 255)))
+check("flat fill: audit says 1 where measure says None",
+      (audit.pixel_scale(_flat), original(_flat)["scale"]), (1, None))
+
 grid = Image.new("RGB", (32, 32))
 for y in range(32):
     for x in range(32):

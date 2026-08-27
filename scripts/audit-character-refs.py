@@ -284,6 +284,94 @@ def grid_round_trip_error(img: Image.Image, max_scale: int = 12) -> float:
     return 0.0 if best == float("inf") else best
 
 
+def grid_by_profile(img: Image.Image, max_scale: int = 8) -> tuple[int, float]:
+    """Grid factor read from the SHAPE of the block-error curve, or (1, err).
+
+    The companion `pixel_scale` needs, and this one does not.
+
+    `pixel_scale` asks whether 98% of edge coordinates fall on a multiple of s.
+    That is exact and unforgiving: it reads a pristine 3x upscale perfectly and
+    collapses to 1 on the same art after one lossy re-save, because the damage
+    puts a difference between nearly every adjacent pair of lines. Measured on
+    two files of the same art, one damaged (fraction of edges divisible by s):
+
+        ref_core_08e39eb3c931   s=2 0.502  s=3 1.000  s=4 0.255  s=5 0.200
+        ref_core_ca0070408096   s=2 0.503  s=3 0.358  s=4 0.252  s=5 0.198
+
+    The second row is almost exactly 1/s - the signature of EVERY row and column
+    registering as an edge. No s can clear 98%, so the detector says "no grid".
+    Its block-error profile says otherwise, loudly: 5.15 at 2, 0.28 at 3, 10.32
+    at 4. An 18x minimum.
+
+    So this reads the minimum's DEPTH against the shallowest other factor - the
+    hardest available comparison, so a merely smooth image cannot qualify by
+    being flat everywhere.
+
+    THE BLIND SPOTS ARE OPPOSITE, WHICH IS THE POINT. This one misses the
+    cleanest art in the repo: palette-locked pixel art is flat at several
+    factors at once, so its minimum has no depth to measure and eight 64x96
+    references score a ratio near 1. `pixel_scale` reads all eight perfectly.
+    Use both - `looks_like_pixel_art` below - and neither alone.
+
+    Opaque pixels only. The transparent margin is flat and dilutes every factor
+    equally, which flatters exactly the files that deserve it least.
+    """
+    arr = np.asarray(img.convert("RGBA"))
+    rgb = np.asarray(img.convert("RGB")).astype(np.float32)
+    h, w = rgb.shape[:2]
+    prof: dict[int, float] = {}
+    for n in range(2, max_scale + 1):
+        if h // n < 8 or w // n < 8:
+            break
+        hh, ww = (h // n) * n, (w // n) * n
+        b = rgb[:hh, :ww].reshape(hh // n, n, ww // n, n, 3)
+        dev = np.abs(b - b.mean(axis=(1, 3), keepdims=True)).mean(axis=4)
+        m = (arr[:hh, :ww, 3] >= 128).reshape(hh // n, n, ww // n, n)
+        if m.any():
+            prof[n] = float(dev[m].mean())
+    if len(prof) < 3:
+        return 1, float("inf")
+    best = min(prof, key=lambda k: prof[k])
+    second = min(v for k, v in prof.items() if k != best)
+    deep = (second + 1e-6) / (prof[best] + 1e-6) >= MIN_GRID_PROFILE_DEPTH
+    if deep and prof[best] <= MAX_GRID_ROUND_TRIP_ERROR:
+        return best, prof[best]
+    return 1, prof[best]
+
+
+def looks_like_pixel_art(img: Image.Image, arr: np.ndarray) -> bool:
+    """Either detector firing is evidence; they miss different things."""
+    return pixel_scale(arr) > 1 or grid_by_profile(img)[0] > 1
+
+
+# How much deeper the minimum must be than the shallowest other factor.
+#
+# SET AT THE BOTTOM OF THE OBSERVED RANGE, BECAUSE THERE IS NO GAP TO SIT IN.
+# The first draft used 4.0 and called it measured. It was not: the ranked list
+# over 586 images runs
+#
+#     ... 5.6  4.9  4.6 | 3.8  3.7  3.7  3.1  2.4  2.0  1.8   then nothing
+#
+# with the bar drawn at the pipe for no reason. Ten of those sixteen were
+# opened and looked at, spanning the whole range - a spirit, a serpent, a
+# minotaur, a dragon, a lich, an icon board, a skeleton turnaround, a 32-frame
+# cat sheet at 3.8, a tree tutorial board at 3.7, a framed tree at 2.0. Every
+# one is genuine pixel art. No false positive has been seen at ANY depth.
+#
+# Which means the boundary has not been found, not that there is none. The test
+# is extremely specific either way - 16 hits out of 586 - so it is doing its
+# work through specificity, not through this number.
+#
+# A NOTE ON A REJECTED ALTERNATIVE. A sibling session proposed `palette <= 300`
+# as the second gate, having measured a clean gap from 246 colours to 4,455 in
+# its own hit list. That gap does not exist in this one: the minotaur, dragon,
+# lich and icon board above carry 15k-20k colours and are unambiguously pixel
+# art by eye. Palette size identifies pixel art that was EXPORTED cleanly, and
+# these are heavily shaded, lossily re-saved, or both - which is exactly the
+# population this detector was added to catch. Adopting it would have discarded
+# four confirmed files to close a gap that was an artefact of a smaller sample.
+MIN_GRID_PROFILE_DEPTH = 2.0
+
 # ABOVE this there is real noise inside the blocks. Read it in that direction
 # only: below it means "not noisy", NOT "pixel art" - a smooth gradient scores
 # 0.42 here. The gap on the populations that matter is enormous (0.00 against
@@ -352,6 +440,31 @@ def count_subjects(img: Image.Image) -> tuple[int, str, int]:
     bars, detached drop shadows, and loose specks of the art. Worth reporting,
     never a subject. A count that could not be established is never silently
     reported as 1.
+
+    THE COUNT IS BADLY WRONG ON PACKED SHEETS, AND DELIBERATELY LEFT THAT WAY.
+
+    `binary_closing` below joins a figure's own anti-aliased gaps so an arm
+    separated by one transparent pixel is not a second subject. On a densely
+    packed sheet the same closing bridges the GUTTERS BETWEEN sprites.
+    `ref_sprite_939803c0ff65` is a 384px RPG Maker sheet with 1,082 connected
+    components; this function reports 2.
+
+    Why it is not fixed: the verdict is unaffected, and the fix is worse than
+    the bug. 2 is already multi-subject, so the file is rejected either way.
+    Checked across the whole set rather than assumed - of 139 kept references,
+    ZERO have three or more substantial raw components, so no sheet has ever
+    fused far enough to be waved through as a single subject. That was the only
+    failure that would have changed an answer, and it does not occur here.
+
+    Removing or shrinking the closing would trade this for the opposite error,
+    on the case that is already the shakiest: a single creature with detached
+    limbs. `ref_core_93f55ceabeae` is one treant that this function already
+    calls 2 subjects WITH the closing. Without it, that class gets worse.
+
+    So: read `subjects` as "at least this many, and at least 2 means a sheet",
+    never as a quantity. If you need the real number on a sheet, `find_cells`
+    gives it - it returned exactly 96 on a store page whose own banner reads
+    "96 tiles".
     """
     from scipy import ndimage
 
@@ -422,6 +535,16 @@ def judge(path: str, kind: str, seen: list) -> dict:
     subjects, confidence, minor = count_subjects(img)
     colors = distinct_colors(arr)
     scale = pixel_scale(arr)
+    # Two detectors with opposite blind spots - see `grid_by_profile`. Using
+    # only `pixel_scale` here read six files as having no grid that plainly do,
+    # four of them single creatures on clean alpha: the best material in the
+    # set, rejected for not being the thing it is.
+    # Deferred, not computed here: it reshapes the whole image once per factor
+    # and only the sprite branch below ever asks. Computing it eagerly for all
+    # 483 references - two thirds of them `core`, many at 1200x1200 - took the
+    # full audit from about two minutes to over seven.
+    def profile_scale() -> int:
+        return grid_by_profile(img)[0]
     checker = baked_checkerboard(img)
     flat = border_flatness(arr)
     transparent = float((alpha < 128).mean())
@@ -448,7 +571,8 @@ def judge(path: str, kind: str, seen: list) -> dict:
                       f"({checker}px squares) - the model learns to draw the "
                       f"checker and no prompt removes it. Key it out to real "
                       f"alpha and the image is fine")
-    if kind == "sprite" and scale == 1 and colors > MAX_SPRITE_COLORS:
+    if (kind == "sprite" and scale == 1 and profile_scale() == 1
+            and colors > MAX_SPRITE_COLORS):
         # The round-trip separates the two ways of failing this test, and they
         # want opposite things done about them. An honestly painted image
         # belongs under 'core'. An IMITATION of pixel art - blocky at thumbnail
