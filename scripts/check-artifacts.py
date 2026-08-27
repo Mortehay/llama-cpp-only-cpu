@@ -41,6 +41,8 @@ sys.path.insert(0, "/app")
 import world_gen  # noqa: E402
 import worlds  # noqa: E402
 
+IMAGES_DIR = "/app/images"
+
 
 def diff_summary(stale: dict, fresh: dict) -> list:
     """What actually differs, in terms a person can act on."""
@@ -60,6 +62,116 @@ def diff_summary(stale: dict, fresh: dict) -> list:
     if stale.get("links") != fresh.get("links"):
         out.append("links differ")
     return out
+
+
+def check_maps() -> int:
+    """Are the served MAPS still whole?
+
+    Maps get a weaker guarantee than regions and the difference is worth being
+    explicit about. A region is regenerated from its stored params and diffed,
+    which proves the artifact matches the current code. A map cannot be - its
+    painting and its tiles cost GPU, so regenerating one to check it would cost
+    more than the thing being checked.
+
+    So this asks a different question: is the artifact INTERNALLY WHOLE? The
+    tilemap now names its terrain tiles, a promise the contract made from the
+    start and the build only began keeping recently. Nothing verified those
+    files still exist, and a map whose tiles were swept is a tilemap something2
+    downloads and cannot draw.
+
+    That is the same class as the region check without the same strength, and
+    calling it 'verified' would be the overclaim this whole file exists to stop.
+    """
+    import json as _json
+
+    import psycopg2
+    import psycopg2.extras
+
+    db = os.environ.get("DB_URL")
+    if not db:
+        print("  ?     maps - no DB_URL, cannot check")
+        return 0
+
+    with psycopg2.connect(db) as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT id, spec->>'name' AS name, sheet_path, atlas_path "
+                    "FROM jobs WHERE kind = 'map' AND deleted = false "
+                    "  AND status = 'done' ORDER BY created_at")
+        rows = cur.fetchall()
+
+    if not rows:
+        print("  --    no finished maps to check")
+        return 0
+
+    broken = 0
+    for r in rows:
+        name = r["name"] or str(r["id"])[:8]
+        faults = []
+
+        if not r["sheet_path"] or not os.path.exists(r["sheet_path"]):
+            faults.append("picture missing")
+        if not r["atlas_path"] or not os.path.exists(r["atlas_path"]):
+            faults.append("tilemap missing")
+            broken += 1
+            print(f"  BROKEN {name}  - {', '.join(faults)}")
+            continue
+
+        try:
+            with open(r["atlas_path"], "r", encoding="utf-8") as fh:
+                tm = _json.load(fh)
+        except Exception as e:
+            broken += 1
+            print(f"  BROKEN {name}  - tilemap will not parse: {e}")
+            continue
+
+        terrains = tm.get("terrains") or []
+        for t in terrains:
+            # The contract promises these; something2 draws the grid from them.
+            url = t.get("tile")
+            if not url:
+                faults.append(f"terrain {t.get('name')!r} names no tile")
+            elif not os.path.exists(os.path.join(IMAGES_DIR,
+                                                 os.path.basename(url))):
+                faults.append(f"tile for {t.get('name')!r} is gone ({url})")
+
+        road = tm.get("road_tile")
+        if road and not os.path.exists(os.path.join(IMAGES_DIR,
+                                                    os.path.basename(road))):
+            faults.append(f"road tile is gone ({road})")
+
+        grid = tm.get("layers", {}).get("terrain") or []
+        if grid:
+            top = max(max(row) for row in grid)
+            if top >= len(terrains):
+                faults.append(f"grid names terrain id {top} but only "
+                              f"{len(terrains)} are declared")
+            h, w = len(grid), len(grid[0])
+            for e in tm.get("entities") or []:
+                if not (0 <= e.get("x", -1) < w and 0 <= e.get("y", -1) < h):
+                    faults.append(f"entity at ({e.get('x')},{e.get('y')}) is "
+                                  f"outside the {w}x{h} grid")
+                    break
+
+        # `complete` and the placements have to agree, or a consumer trusts the
+        # wrong one. This is the pair that disagreed for two days elsewhere.
+        still_pending = {e.get("want") for e in (tm.get("entities") or [])
+                         if e.get("status") == "pending" and e.get("want")}
+        if bool(tm.get("complete")) and still_pending:
+            faults.append(f"claims complete while {len(still_pending)} "
+                          f"placement(s) are still pending")
+        if not tm.get("complete") and not still_pending:
+            faults.append("claims incomplete but nothing is pending")
+
+        if faults:
+            broken += 1
+            print(f"  BROKEN {name}  ({len(faults)} fault(s))")
+            for f in faults[:8]:
+                print(f"          {f}")
+        else:
+            print(f"  ok    {name}  - {len(terrains)} terrains, all tiles "
+                  f"present, grid and entities consistent")
+
+    return broken
 
 
 def main() -> int:
@@ -112,7 +224,17 @@ def main() -> int:
               f"suite says nothing about what is being served.")
     else:
         print(f"{len(paths)} region(s) checked, all match the current code.")
-    return 1 if stale_count else 0
+
+    print()
+    broken = check_maps()
+    print()
+    if broken:
+        print(f"{broken} map(s) are not whole. Rebuild them - a tilemap whose "
+              f"tiles are gone is one something2 downloads and cannot draw.")
+    else:
+        print("maps checked, all whole.")
+
+    return 1 if (stale_count or broken) else 0
 
 
 if __name__ == "__main__":
