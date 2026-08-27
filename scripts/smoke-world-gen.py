@@ -112,6 +112,49 @@ def _coarse_gap():
     return f"asked 6.0, got {rep['totals']['mean_per_screen']}, and said so"
 
 
+@case("every world declares a level band, and an omitted one means 1-1")
+def _bands():
+    """The fifth bug of the week, and the most quietly destructive.
+
+    `scripts/seed-map.js` writes a world's level range as
+
+        w.level_band ? w.level_band[0] : 1,
+        w.level_band ? w.level_band[1] : 1,
+
+    so an omitted band is not "unspecified" - it is level 1-1. This generator
+    omitted it on surface worlds, copying a vale-region convention that is
+    correct there (its surface ring IS the level-1 area) and wrong for a region
+    that descends. emerald-reach's first three worlds seeded at 1-1 and then
+    jumped to 3-5.
+
+    A default that is itself a legal value, so nothing downstream can tell
+    "unset" from "the lowest setting". Same shape as `Number('') === 0`.
+    """
+    spec = wg.plan_region("Bands", world_count=8, target_per_screen=8.1)
+    bands = [w.get("level_band") for w in spec["worlds"]]
+
+    assert all(bands), f"a world has no band: {bands}"
+    # A null is the same as an absent key to that ternary, so neither is ok.
+    assert "null" not in wg.to_json(spec), "a null band reached the spec"
+
+    # The entry must stay a level-1 area. The deep ramp's lowest rung is 3, so
+    # reusing it here would silently make a starting meadow level 3-5 - a
+    # design change wearing a bug fix's clothes.
+    assert bands[0][0] == 1, bands[0]
+    assert bands[0] == wg.SURFACE_BAND, bands[0]
+
+    for a, b in zip(bands, bands[1:]):
+        assert a[0] <= b[0] and a[1] <= b[1], f"band went backwards: {a} -> {b}"
+    assert bands[-1][0] > bands[0][0], "the region does not ramp at all"
+
+    # And the surface band must lead into the deep ramp without overlapping it.
+    deep = [b for w, b in zip(spec["worlds"], bands)
+            if any(wg.BIOMES.get(x, {}).get("depth") == "deep"
+                   for x in w["biomes"])]
+    assert deep and deep[0][0] > wg.SURFACE_BAND[1], (wg.SURFACE_BAND, deep[0])
+    return f"{bands[0]} through {bands[-1]}, all present, none null"
+
+
 @case("a generated region has no empty worlds")
 def _no_empty():
     spec = wg.plan_region("Emerald Reach", world_count=8, target_per_screen=6.0)
@@ -395,7 +438,10 @@ def _descent():
             assert "deep" in depths, (w["key"], i, w["biomes"])
 
     entry = spec["worlds"][0]
-    assert entry["is_entry"] and "level_band" not in entry
+    # It used to assert the entry had NO band. It must now have the surface
+    # one: an omitted band seeds as level 1-1, so "no band" was never a way of
+    # saying "the starting area".
+    assert entry["is_entry"] and entry["level_band"] == wg.SURFACE_BAND, entry
     last = spec["worlds"][-1]
     assert "deep" in {wg.BIOMES[b]["depth"] for b in last["biomes"]}
     return (f"entry {entry['biomes']} -> last {last['biomes']}, "
@@ -422,7 +468,7 @@ def _repair_depth():
     return "deep worlds repaired with deep biomes; no mixed-depth world"
 
 
-@case("level bands ramp monotonically, and surface worlds carry none")
+@case("the DEEP ramp is strictly increasing, in descent order")
 def _bands():
     """something2 found these oscillating 3-7 / 5-9, with the deepest world
     landing back at the same band as world 1 - a player fights through six
@@ -431,27 +477,29 @@ def _bands():
     The cause: depth was driven by grid distance, but the layout is a SPIRAL,
     so distance and position-in-the-journey are unrelated. The LLM authors
     biomes by index, so biomes descended while bands ramped by distance.
+
+    This used to also assert that surface worlds carry NO band. That was the
+    fifth bug - an omitted band seeds as 1-1 - and `every world declares a
+    level band` above now covers the whole region. What survives here is the
+    part that was always right: the DEEP ramp must rise strictly, in the order
+    the worlds are descended through, not in grid order.
     """
     for n in (4, 8, 12):
-        spec = wg.plan_region("Bands", world_count=n, target_per_screen=6.0)
-        bands, surface_with_band = [], []
-        for w in spec["worlds"]:
-            depths = {wg.BIOMES[b]["depth"] for b in w["biomes"]}
-            if "level_band" in w:
-                bands.append(w["level_band"])
-                if depths == {"surface"}:
-                    surface_with_band.append(w["key"])
-            else:
-                assert depths == {"surface"}, (w["key"], w["biomes"])
+        spec = wg.plan_region("Bands", world_count=n, target_per_screen=8.1)
+        deep = [w["level_band"] for w in spec["worlds"]
+                if any(wg.BIOMES[b]["depth"] == "deep" for b in w["biomes"])]
 
-        assert not surface_with_band, surface_with_band
-        # Monotonic, and strictly so - equal consecutive bands would still read
-        # as a flat stretch.
-        for a, b in zip(bands, bands[1:]):
+        # Strictly, because equal consecutive bands would still read as a flat
+        # stretch - which is the symptom that started this.
+        for a, b in zip(deep, deep[1:]):
             assert b[0] > a[0] and b[1] > a[1], (n, a, b)
-        for lo, hi in bands:
+        for lo, hi in deep:
             assert hi > lo, (lo, hi)
-    return f"strictly increasing over 4/8/12-world regions, none on surface"
+
+        surface = [w["level_band"] for w in spec["worlds"]
+                   if all(wg.BIOMES[b]["depth"] == "surface" for b in w["biomes"])]
+        assert all(b == wg.SURFACE_BAND for b in surface), surface
+    return "deep bands strictly increasing over 4/8/12-world regions"
 
 
 @case("bandwidth is projected, so a dense big map is a visible decision")

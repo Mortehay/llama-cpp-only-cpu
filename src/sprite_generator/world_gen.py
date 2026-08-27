@@ -417,6 +417,31 @@ def leader_count(types) -> int:
 # Below this a world reads as empty space rather than as a quiet stretch. Their
 # re-scale comment puts the pre-scale game at 0.7-2.7 per screen and calls that
 # the thing being fixed, so the floor sits just above it.
+# The band for a surface world, and the reason every world now carries one.
+#
+# `scripts/seed-map.js` writes a world's level range as:
+#
+#     w.level_band ? w.level_band[0] : 1,
+#     w.level_band ? w.level_band[1] : 1,
+#
+# AN OMITTED BAND IS NOT "unspecified" OR "derive it". It becomes level 1-1 -
+# a valid-looking band that pins the world to level-1 creatures and is
+# indistinguishable afterwards from a world that asked for exactly that. The
+# same trap as `Number('') === 0`: a default that is itself a legal value, so
+# nothing downstream can tell "unset" from "the lowest setting".
+#
+# This generator used to omit the band on surface worlds, copying vale-region's
+# convention. That convention is correct FOR VALE-REGION, whose surface ring is
+# the level-1 starting area. It does not transfer to a region that DESCENDS: it
+# left emerald-reach's first three worlds at 1-1 and then jumping to 3-5.
+#
+# [1, 2] rather than [1, 1]: it keeps the entry a level-1 area, which is what
+# omitting it was always meant to convey, and it leads into the deep ramp's
+# first band of [3, 5] with neither a gap nor an overlap. The deep formula
+# cannot be reused here - its lowest rung is 3, which would make a starting
+# meadow a level 3-5 world and that is a design change, not a bug fix.
+SURFACE_BAND = [1, 2]
+
 EMPTY_BELOW_PER_SCREEN = 3.0
 
 # Above this a screen is a crowd, and the wire cost bites: their measurement
@@ -792,16 +817,15 @@ def plan_region(name: str, world_count: int = 6,
         if bestiary:
             biomes = enrich_variety(biomes, None)
 
-        # The band is computed AFTER the biomes, because whether a world has
-        # one at all depends on what it is made of.
+        # EVERY world gets a band, including surface ones. Omitting it was a
+        # bug - see SURFACE_BAND.
         #
-        # vale-region's five SURFACE worlds carry no level_band; the band is a
-        # descent mechanism there, not a per-world property. Declaring [1,5] on
-        # a meadow and [3,7] three worlds later is what produced a region that
-        # felt flat. So: surface worlds get none, and the deep ones ramp
-        # monotonically in the order they are descended through.
+        # The deep ramp is computed AFTER the biomes, because where a world
+        # sits in the descent depends on what it is made of, and it ramps on
+        # depth_rank rather than the loop index so the ramp stays monotonic
+        # when surface worlds are interleaved.
         if all(BIOMES.get(b, {}).get("depth") == "surface" for b in biomes):
-            band = None
+            band = list(SURFACE_BAND)
         else:
             lo = 3 + depth_rank * 2
             band = [lo, lo + 2 + depth_rank // 2]
@@ -829,11 +853,9 @@ def plan_region(name: str, world_count: int = 6,
             "density": tier,
             "is_entry": i == 0,
         }
-        # Omitted entirely on surface worlds rather than written as null: an
-        # absent optional key is the safer of the two against a validator, and
-        # it matches vale-region's surface ring.
-        if band is not None:
-            w["level_band"] = band
+        # ALWAYS written, and never as null. An absent key and a null are the
+        # same thing to the seeder's ternary, and both mean level 1-1.
+        w["level_band"] = band
         if i == 0:
             centre = to_px(size // 2)
             w["entry_spawn"] = {"x": centre, "y": centre}
