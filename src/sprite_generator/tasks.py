@@ -2371,7 +2371,18 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
 
     cutout_stats = None
     if strip_background:
-        img = remove_background(img)
+        # keep_largest, matching every other cutout in this file (1380, 1593,
+        # 2036). This was the only one without it, so it was the only one that
+        # kept the stray duplicates a distilled checkpoint produces - and on
+        # sdxl-turbo at guidance 0 the negative prompt cannot suppress them,
+        # which is the whole reason _isolate_largest_sprite exists.
+        #
+        # Gated behind `strip_background` and safe there: a caller asking for a
+        # cutout has asserted the image contains one object. It is NOT free -
+        # sparks off a torch, or leaves detached from a tree, are dropped with
+        # the duplicates. That trade is the one the rest of the file already
+        # makes, and a stray copy of the subject is the worse artefact.
+        img = remove_background(img, keep_largest=True)
 
         # A PEDESTAL IS NOT BACKGROUND, so remove_background cannot touch it.
         #
