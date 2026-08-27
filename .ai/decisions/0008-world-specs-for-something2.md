@@ -833,6 +833,22 @@ passes. Mutation-checked: removing the field turns the first red with
 internally consistent, and one that says the sea is walkable is internally
 consistent. That limit is in its docstring and this is what it looks like.
 
+### Is there another one? Audited, and no.
+
+The signature is specific enough to search for: **a pydantic spec model paired
+with a downstream `.get(field, default)`**. The model drops what it does not
+declare, the default supplies it, and nothing between them can tell.
+
+Every spec key `map_tasks` reads was checked against `MapSpec`, `Terrain` and
+`Scatter`. Twenty are declared. Two are not - `map_job` and `wants` - and both
+are written by `_queue_props_job` and read by `resolve_map_props`, the same
+module either side with no model in between, so there is nothing to drop them.
+
+One instance existed. It is fixed. Recorded as a negative result rather than
+left unsaid, because "we looked and found nothing" and "we did not look" are
+the same silence otherwise - which is the zero-denominator rule from D12
+applied to an audit instead of a check.
+
 ## D13 - Density is uniform across a region, and that is a decision to make
 
 D10 removed the biome multiplier because it described nothing real. It was also
