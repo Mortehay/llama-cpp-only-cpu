@@ -314,15 +314,28 @@ deliberately generous — real alpha in use, exactly one subject, under 60% fram
 coverage, touching at most one edge — and nothing matched. There is no misfiled
 entity hiding in the tile tab, and no additional training data to recover there.
 
-**The rest of the tile numbers are artefacts and must not be quoted.** Applying
-an entity rule to a ground texture produces nonsense in a specific and
-instructive way: 138 tiles came back "nothing visible", which sounds like 138
-blank files. They are not. Checked: 31x30 to 65x55 pixels, 231 to 649 distinct
-colours each, zero transparency — ordinary textured tiles. A full-bleed texture
-has no backdrop to distinguish from a subject, so the corner flood fill spreads
-across the whole low-contrast image and keys it away, and "coverage 0" follows.
-The rule assumes a subject sitting on a separable background; a tile is
-definitionally the opposite.
+**The rest of the tile numbers should still not be quoted** — an entity rule
+applied to a ground texture is a category error whatever it returns. But one
+specific claim made here has since been withdrawn, and the reason is worth
+keeping.
+
+This note originally reported **138 tiles as "nothing visible"** and explained
+it as an inherent limitation: a full-bleed texture has no backdrop to separate
+from a subject, so the flood fill spreads across the whole low-contrast image
+and keys it away. The images are real — 31x30 to 65x55 pixels, 231 to 649
+distinct colours each, zero transparency.
+
+**That was not a limitation, it was the keying bug.** The any-corner rule
+(see §6) spread from four different corner colours across a textured tile and
+cleared it. With `remove_background`'s actual majority-vote rule, "nothing
+visible" has **disappeared entirely** from the tile results — those images now
+land on `opaque background` and `full bleed`, which is what they are. The
+verdict now fires only on genuinely blank images, confirmed against a
+constructed fully-transparent case.
+
+Worth noting because I had written the false positive up as a property of the
+problem rather than a symptom of my own defect, and it stayed that way through
+two commits.
 
 The one number that does corroborate something: 1,340 of 2,001 tiles are under
 the training-size floor. That matches `curate-training-set.py`'s independent
@@ -740,6 +753,16 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+**A second pattern, and it is the one that hid longest:** *a defect of mine
+explained as a property of the problem.* The 138 "nothing visible" tiles were
+written up as an inherent limit of applying an entity rule to a texture. They
+were the any-corner keying bug, and the explanation was good enough to survive
+two commits without anyone re-testing it — including me, twice. A caveat that
+explains a bad result is the most comfortable place for a bug to live, because
+it stops anyone looking. Every verdict was re-tested for reachability against
+constructed cases afterwards; all four still fire, and "nothing visible" now
+only fires on genuinely blank images.
+
 **What every entry below has in common**, which took three sessions and a day to
 see: *the check and the thing it checked shared an ancestor.* The palette gap
 was computed from the hit list it was justifying. The `--apply` fixture seeded
