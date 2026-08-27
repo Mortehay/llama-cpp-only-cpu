@@ -59,6 +59,7 @@ import psycopg2
 import psycopg2.extras
 from PIL import Image, ImageDraw
 
+import core_models
 import map_geometry
 import pixelate
 import regions
@@ -84,6 +85,26 @@ def _spec(job_id: str) -> dict | None:
         cur.execute("SELECT spec FROM jobs WHERE id = %s::uuid", (job_id,))
         row = cur.fetchone()
     return dict(row["spec"] or {}) if row else None
+
+
+def _triggered(model: str, prompt: str) -> str:
+    """Prepend the adapter's trigger token, if the chosen model has one.
+
+    A TRAINED LoRA IS INERT WITHOUT ITS TRIGGER. It loads, it fuses, and it
+    returns plain base-model output with nothing saying why - which reads as
+    "the training did not work" rather than "the prompt is missing a word".
+    `a1111.py` injects it for something2's requests for exactly this reason;
+    the map path built its own prompts and never did, so selecting the map
+    adapter here would have looked like a failed training run.
+
+    Idempotent - `apply_trigger` skips a prompt that already carries it.
+    """
+    try:
+        return core_models.apply_trigger(model, prompt)
+    except Exception as e:
+        # A missing trigger is a weaker prompt, not a failed build.
+        logger.warning("could not apply trigger for %s: %s", model, e)
+        return prompt
 
 
 def _reference_path(ref_id: str) -> str | None:
@@ -114,10 +135,12 @@ def _paint(spec: dict) -> Image.Image:
     # Generated large and shrunk by quantize(), because a diffusion model asked
     # for a 64px image produces noise. The prompt asks for a MAP, not a scene:
     # what matters is that regions of ground read as distinct flat colours.
-    brief = (f"{spec.get('prompt', '')}, top-down world map, flat regions of "
-             f"colour, distinct biomes, no text, no labels, no border, "
-             f"no shading, no perspective")
-    pipe = get_sd_pipeline(spec.get("llm_name") or default_model())
+    model = spec.get("llm_name") or default_model()
+    brief = _triggered(model,
+                       f"{spec.get('prompt', '')}, top-down world map, flat "
+                       f"regions of colour, distinct biomes, no text, no "
+                       f"labels, no border, no shading, no perspective")
+    pipe = get_sd_pipeline(model)
     gen = torch.Generator(device=pipe.device).manual_seed(int(spec.get("seed", 0)))
     return pipe(prompt=brief, num_inference_steps=25, guidance_scale=7.5,
                 generator=gen).images[0].convert("RGB")
@@ -143,10 +166,12 @@ def _make_tile(terrain: dict, w: int, h: int, colors: int,
     from tasks import default_model, get_sd_pipeline
     import torch
 
-    full = (f"{terrain.get('prompt') or terrain['name']}, seamless tiling "
-            f"ground texture, top-down view, pixel art, flat lighting, "
-            f"no shadows, no objects")
-    pipe = get_sd_pipeline(llm_name or default_model())
+    model = llm_name or default_model()
+    full = _triggered(model,
+                      f"{terrain.get('prompt') or terrain['name']}, seamless "
+                      f"tiling ground texture, top-down view, pixel art, flat "
+                      f"lighting, no shadows, no objects")
+    pipe = get_sd_pipeline(model)
     gen = torch.Generator(device=pipe.device).manual_seed(seed)
     image = pipe(prompt=full, num_inference_steps=25, guidance_scale=7.5,
                  generator=gen).images[0]
