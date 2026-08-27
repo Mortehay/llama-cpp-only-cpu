@@ -599,6 +599,44 @@ def _queue_props_job(map_job_id: str, spec: dict, wants: list) -> str:
     return props_id
 
 
+def _release_vram() -> None:
+    """Hand the caching allocator's spare blocks back to the driver.
+
+    MEASURED on this box after one prop run, with the queue empty and
+    llama.cpp asleep:
+
+        allocated  6.63 GB      what the pipeline is really using
+        reserved  11.32 GB      what PyTorch is sitting on
+        total     12.00 GB
+
+    So nearly 5 GB was held and free. `nvidia-smi` reports the RESERVED
+    figure, which is why the card read as full with nothing running, and why
+    the next big allocation failed - first `CUDA driver error: device not
+    ready`, then a `CUDACachingAllocator` internal assert. That is the
+    fragmented-allocator failure ADR 0005 already describes.
+
+    Called once when the whole resolve is finished, not between props: freeing
+    and re-requesting around every generation would trade the fragmentation for
+    latency and get neither.
+
+    This does NOT unload the pipeline - `get_sd_pipeline` caches it on purpose,
+    and the 6.63 GB stays. It only stops this task from leaving the other 5 GB
+    looking occupied to everything else on the card.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            before = torch.cuda.memory_reserved() / 2**30
+            torch.cuda.empty_cache()
+            after = torch.cuda.memory_reserved() / 2**30
+            logger.info("released %.2f GB of reserved VRAM (%.2f -> %.2f)",
+                        before - after, before, after)
+    except Exception as e:
+        # Never fatal. The props are generated and the map is about to be
+        # redrawn; failing that over a memory hint would be absurd.
+        logger.warning("could not release VRAM: %s", e)
+
+
 def _register_prop(want: str, path: str, llm_name: str | None) -> None:
     """Make the generated prop visible in the gallery.
 
@@ -747,6 +785,8 @@ def resolve_map_props(self, props_job_id: str):
         except Exception as e:
             logger.exception("prop %r failed for map %s", want, map_job_id)
             failed[want] = str(e)
+
+    _release_vram()
 
     try:
         job_update(props_job_id, progress_pct=92,
