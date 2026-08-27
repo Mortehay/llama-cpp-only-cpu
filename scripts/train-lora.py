@@ -93,20 +93,33 @@ CACHE_DIR = os.environ.get("HF_HUB_CACHE", "/models")
 # They are not here - stage 1 encodes everything and unloads them - so only the
 # UNet and its activations occupy the card.
 #
-# Measured on this 3060, rank 32, batch 1, gradient checkpointing on:
+# TWO NUMBERS, TWO METRICS, ONE RUN - and I had them as old-versus-new
+#
+# Measured on this 3060, rank 32, batch 1, gradient checkpointing on, by
+# `torch.cuda.max_memory_allocated` at the end of the run:
 #     768 px  -> 5.38 GiB peak (45% of the card)
 #    1024 px  -> 5.61 GiB peak (47%)
 #
-# THOSE TWO FIGURES PREDATE THE CURRENT TRAINER AND ARE LOW. A real run of THIS
-# code, sampled every 10s across 1000 steps at 1024px, rank 32, 114 images,
-# AdamW8bit, 46.4M trainable parameters, peaked at 6741 MiB - 6.58 GiB, about
-# 1 GiB above the number above. Anyone treating 5.61 as headroom would have
-# been wrong in the dangerous direction. Kept side by side rather than
-# overwritten, because the gap IS the point: the old figures were quoted
-# confidently for two days by someone who had not run the code they describe.
+# A separate report of the mapstyle2 run - 1024 px, rank 32, 114 images, 1000
+# steps, AdamW8bit, 46.4M trainable parameters - put the peak at 6741 MiB
+# (6.58 GiB), and this comment used to say the figures above "PREDATE THE
+# CURRENT TRAINER AND ARE LOW".
 #
-# The staging holds, and was watched: VRAM fell to 732 MiB between stages as
-# the VAE and text encoders unloaded, then climbed to 6.7 GB for the UNet.
+# They do not, and the worker's own log for that exact run says so: `Peak VRAM
+# 5.60/12.00 GiB`. 5.60 against 5.61 is the same measurement. The 6741 MiB came
+# from sampling the DEVICE from outside every 10s, which counts the CUDA
+# context, cuBLAS and cuDNN workspaces and allocator fragmentation on top of
+# the tensors. The ~1.1 GiB between them is that overhead, not drift.
+#
+# Which one to use depends on the question. For "will this fit", the device
+# figure - about 6.6 GiB here - is the one that has to clear 12 GiB. For "did a
+# change make the model heavier", the allocator figure is the comparable one,
+# and it is what the log prints. Comparing across the two is how a run looks
+# like a 1 GiB regression when nothing moved.
+#
+# The staging holds, and was watched from outside: the device fell to 732 MiB
+# between stages as the VAE and text encoders unloaded, then climbed to 6.7 GB
+# for the UNet.
 #
 # Native resolution costs 0.23 GiB and avoids training the model at a scale it
 # was not trained for, so it is the default. There is room above this for a
@@ -831,11 +844,22 @@ def train(cache_path, out_dir, name, steps, rank, lr, batch_size, dtype, seed,
     # card, and it is invisible unless recorded: an OOM says what failed, never
     # how close the successful run was. Reported so the headroom is known
     # before someone raises the resolution.
+    #
+    # Both figures, because one of them was read as a regression. `allocated`
+    # is tensors and is what to compare between runs; `reserved` is the pool
+    # the caching allocator holds and is much closer to what nvidia-smi shows.
+    # Neither includes the CUDA context, so an outside sampler will still read
+    # a few hundred MiB higher than `reserved` - the header note has the
+    # arithmetic. Printing one number invited comparing it against a device
+    # measurement and concluding the trainer had grown by a gigabyte.
     if torch.cuda.is_available():
-        peak = torch.cuda.max_memory_allocated() / 1024 ** 3
+        alloc = torch.cuda.max_memory_allocated() / 1024 ** 3
+        held = torch.cuda.max_memory_reserved() / 1024 ** 3
         total = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
-        logger.info("Peak VRAM %.2f/%.2f GiB (%.0f%% of the card)",
-                    peak, total, 100 * peak / total)
+        logger.info("Peak VRAM %.2f GiB allocated, %.2f GiB reserved, of "
+                    "%.2f GiB (%.0f%% of the card reserved; a device-level "
+                    "sampler reads higher still, by the CUDA context)",
+                    alloc, held, total, 100 * held / total)
     return path
 
 
