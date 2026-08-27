@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -327,3 +327,18 @@ test-apply-verdicts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-apply-verdicts.py
+
+# Does the entity audit still predict what the cutout stage actually does?
+#
+# `audit-entity-refs.key_background` is a copy of `tasks.remove_background`'s
+# rule, and the audit's whole claim - "this backdrop is recoverable, that one is
+# not" - holds only while the copy matches. It once mirrored a DIFFERENT
+# function and mis-scored 300 of 462 references before anyone compared them.
+#
+# The test executes remove_background's real source out of tasks.py rather than
+# re-stating the rule, because a transcription inherits whatever misunderstanding
+# wrote it. Mutation result is in the script's docstring.
+test-audit-mirrors-cutout:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-audit-mirrors-cutout.py --data /app/images

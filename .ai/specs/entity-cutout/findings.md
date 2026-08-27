@@ -727,6 +727,21 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+**What every entry below has in common**, which took three sessions and a day to
+see: *the check and the thing it checked shared an ancestor.* The palette gap
+was computed from the hit list it was justifying. The `--apply` fixture seeded
+whatever paths the invocation produced. The first verification of the keying fix
+compared against a transcription typed from the same reading that caused the
+bug. In each case the result was green, and green said nothing, because nothing
+in the setup was independent of the belief under test.
+
+So: **a check counts only when its provenance is independent of what it is
+checking** — and a passing result never tells you whether it was. That is why
+`test-audit-mirrors-cutout.py` executes `remove_background`'s real source rather
+than re-stating its rule, and why its docstring carries the mutation result. Two
+other sessions hit this same shape on the same day, so treat it as structural
+rather than as anyone being careless.
+
 - **Mirroring the WRONG function.** `key_background` here exists to predict
   what `tasks.remove_background` will do to an image — that is the audit's
   entire subject. It was written as a twin of `pixelate.key_background`
