@@ -25,6 +25,25 @@ roads, one value per tile, flat by definition - and two are object lists,
 creatures and props, which STAND on the ground and are therefore composited in
 a single shared depth sort rather than one after the other. Players and
 projectiles are runtime, not authored, and appear in neither.
+
+RESOLVING THE GAPS
+
+`build_map_job` finishes as soon as the TERRAIN is final, even when props are
+still missing - that provisional state is the point of ADR 0007 D7. A second
+task, `resolve_map_props`, then generates the missing art and rewrites the
+picture in place.
+
+It is a SEPARATE JOB ROW (`kind='map_props'`) rather than a continuation of the
+map job, for one reason that matters: `job_runner.fail_stranded_jobs` already
+sweeps every row in `jobs`, so a resolver whose worker died is reaped for free
+and `GET /api/maps/{id}` can say so. Without a row there is nothing to reap,
+and a lost Celery message leaves the map at `complete: false` forever with no
+way to tell that from "still working" - which is exactly the strand the plan
+named.
+
+ONE resolver row per map, not one per prop. N rows would each have to
+re-composite and rewrite the SAME picture file, racing on it, while the solo
+pool serialises them anyway.
 """
 
 from __future__ import annotations
@@ -32,6 +51,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
+import uuid
 
 import numpy as np
 import psycopg2
@@ -48,6 +69,12 @@ logger = logging.getLogger(__name__)
 
 DB_URL = os.environ.get("DB_URL")
 IMAGES_DIR = "/app/images"
+
+# A generated prop is filed under a name derived from what was asked for, so
+# the SECOND map that wants a windmill finds the first one's art on disk
+# instead of spending the GPU again. Library-first (ADR 0007 D6) is only worth
+# anything if the library actually grows.
+PROP_PREFIX = "prop_"
 
 
 def _spec(job_id: str) -> dict | None:
@@ -162,6 +189,126 @@ def _asset_image(name: str) -> Image.Image | None:
     return Image.open(path).convert("RGBA")
 
 
+def _tile_path(map_job_id: str, i: int) -> str:
+    """Where a terrain's CUT tile is kept.
+
+    Saved rather than held in memory because the resolver has to composite the
+    same map again later, and regenerating four terrain tiles on the GPU to
+    replace one prop would cost more than the prop did. It also closes a hole
+    in the wire format: `terrains[].tile` is documented in the contract and the
+    built tilemap was not emitting it, so nothing downstream could draw the
+    grid itself.
+    """
+    return os.path.join(IMAGES_DIR, f"map_{map_job_id[:12]}_t{i}.png")
+
+
+def _road_tile_path(map_job_id: str) -> str:
+    return os.path.join(IMAGES_DIR, f"map_{map_job_id[:12]}_road.png")
+
+
+def _picture_path(map_job_id: str) -> str:
+    return os.path.join(IMAGES_DIR, f"map_{map_job_id[:12]}.png")
+
+
+def _tilemap_path(map_job_id: str) -> str:
+    return os.path.join(IMAGES_DIR, f"map_{map_job_id[:12]}.json")
+
+
+def _replace_atomically(path: str, write) -> None:
+    """Write via a neighbour and rename over the target.
+
+    Both the picture and the tilemap are REWRITTEN IN PLACE by the resolver
+    while `GET /api/maps/{id}` may be reading them. A plain overwrite gives a
+    reader half a file - a truncated JSON parse error on a map that is
+    perfectly fine, which would be a maddening bug to chase. `os.replace` is
+    atomic within a filesystem, and the temp file is a sibling so it always is
+    one.
+    """
+    # The temp name keeps NO usable extension, deliberately. A sibling called
+    # `map_x.tmp.png` is indistinguishable from a real asset to anything that
+    # scans the images directory, and this one is garbage by construction. The
+    # cost is that PIL can no longer infer the format, so image callers pass it
+    # explicitly - which is the better habit anyway.
+    tmp = f"{path}.tmp"
+    try:
+        write(tmp)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def _write_tilemap(path: str, tilemap: dict) -> None:
+    def _write(target):
+        with open(target, "w", encoding="utf-8") as fh:
+            json.dump(tilemap, fh)
+    _replace_atomically(path, _write)
+
+
+def _slug(want: str) -> str:
+    """`"old windmill"` -> `"old_windmill"`. The library filing key.
+
+    Deliberately lossy and deliberately stable: two maps asking for the same
+    thing in the same words must land on the same file, or the library never
+    gets a second hit. Nothing here reaches a shell or a SQL clause, but it is
+    still restricted to a known alphabet because it becomes a filename.
+    """
+    s = re.sub(r"[^a-z0-9]+", "_", (want or "").lower()).strip("_")
+    return s[:40] or "prop"
+
+
+def _library_path(want: str) -> str:
+    return os.path.join(IMAGES_DIR, f"{PROP_PREFIX}{_slug(want)}.png")
+
+
+def _resolve_art(entity: dict, target: tuple[int, int]):
+    """Art for one placement, and whether it is real.
+
+    Three places are tried in the order they cost: the named asset, the prop
+    library under the `want`, and finally the placeholder. The library lookup
+    is what makes a resolved prop visible to EVERY later map rather than only
+    the one that paid for it.
+    """
+    img = _asset_image(entity.get("asset")) if entity.get("asset") else None
+    asset = entity.get("asset") if img is not None else None
+
+    if img is None and entity.get("want"):
+        path = _library_path(entity["want"])
+        img = _asset_image(path)
+        if img is not None:
+            asset = os.path.basename(path)
+
+    if img is None:
+        return _placeholder(target[0] // 2, target[1] // 2), None, "pending"
+
+    img.thumbnail(target, Image.LANCZOS)
+    return img, asset, "placed"
+
+
+def _dress(entities, tile_w: int, tile_h: int):
+    """Placements -> draw objects, updating each entity's status in place.
+
+    Shared by the build and by the resolver, which is the point: after the
+    resolver has written a prop into the library, re-running exactly this turns
+    the same placements into real art with no second scatter and therefore no
+    chance of the entities moving between the two renders.
+    """
+    # Sprites are scaled to the tile so a tree is not the size of a world.
+    target = (max(8, tile_w), max(8, tile_h * 2))
+
+    objects, pending = [], []
+    for e in entities:
+        img, asset, status = _resolve_art(e, target)
+        e["asset"], e["status"] = asset, status
+        if status == "pending" and e.get("want") and e["want"] not in pending:
+            pending.append(e["want"])
+        objects.append({"x": e["x"], "y": e["y"], "layer": e["layer"],
+                        "image": img})
+
+    return objects, pending
+
+
 def _populate(spec: dict, grid, roads_grid, terrains, tile_w: int, tile_h: int):
     """Layers 3 and 4: scatter, then resolve each placement to art.
 
@@ -182,27 +329,11 @@ def _populate(spec: dict, grid, roads_grid, terrains, tile_w: int, tile_h: int):
                                       seed=int(spec.get("seed", 0)),
                                       roads=roads_grid)
 
-    # Sprites are scaled to the tile so a tree is not the size of a world.
-    target = (max(8, tile_w), max(8, tile_h * 2))
+    entities = [{"asset": p.get("asset"), "want": p.get("want"),
+                 "x": p["x"], "y": p["y"], "layer": p["layer"],
+                 "status": "pending"} for p in placements]
 
-    entities, objects, pending = [], [], []
-    for p in placements:
-        img = _asset_image(p.get("asset")) if p.get("asset") else None
-        if img is not None:
-            img.thumbnail(target, Image.LANCZOS)
-            status = "placed"
-        else:
-            img = _placeholder(target[0] // 2, target[1] // 2)
-            status = "pending"
-            if p.get("want") and p["want"] not in pending:
-                pending.append(p["want"])
-
-        entities.append({"asset": p.get("asset"), "want": p.get("want"),
-                         "x": p["x"], "y": p["y"], "layer": p["layer"],
-                         "status": status})
-        objects.append({"x": p["x"], "y": p["y"], "layer": p["layer"],
-                        "image": img})
-
+    objects, pending = _dress(entities, tile_w, tile_h)
     return entities, objects, pending
 
 
@@ -233,10 +364,14 @@ def build_map_job(self, job_id: str):
             job_update(job_id,
                        progress_pct=25 + int(45 * i / max(len(terrains), 1)),
                        progress_msg=f"tile {i + 1}/{len(terrains)}: {t['name']}")
-            tiles.append(_make_tile(t, tile_w, tile_h,
-                                    int(spec.get("colors", 16)),
-                                    int(spec.get("seed", 0)) + i,
-                                    spec.get("llm_name")))
+            tile = _make_tile(t, tile_w, tile_h,
+                              int(spec.get("colors", 16)),
+                              int(spec.get("seed", 0)) + i,
+                              spec.get("llm_name"))
+            # Kept on disk so the resolver can composite again without paying
+            # for the GPU twice, and so the served tilemap can name its tiles.
+            tile.save(_tile_path(job_id, i))
+            tiles.append(tile)
 
         # Layer 2. Refused rather than drawn wrong if a road would cross
         # terrain nobody can walk on - a road across a lake is not a road.
@@ -251,6 +386,7 @@ def build_map_job(self, job_id: str):
             road_tiles = [_make_tile({"name": "road", "tile": spec["road_tile"]},
                                      tile_w, tile_h, int(spec.get("colors", 16)),
                                      int(spec.get("seed", 0)), None)]
+            road_tiles[0].save(_road_tile_path(job_id))
 
         # Layers 3 and 4.
         job_update(job_id, progress_pct=72, progress_msg="placing entities")
@@ -262,15 +398,12 @@ def build_map_job(self, job_id: str):
                                          road_tiles=road_tiles,
                                          objects=objects)
 
-        pic_path = os.path.join(IMAGES_DIR, f"map_{job_id[:12]}.png")
+        pic_path = _picture_path(job_id)
         picture.save(pic_path)
 
         tilemap = {
             "id": job_id,
             "name": spec.get("name"),
-            # No entity placements yet - that is Slice 4. The key is present
-            # and empty so a consumer written against this shape does not have
-            # to branch when it arrives.
             # Provisional is a SERVED state, not an error (ADR 0007 D7). A map
             # with unresolved props is walkable now and improves without being
             # re-requested; withholding it would let one missing prop block the
@@ -283,9 +416,15 @@ def build_map_job(self, job_id: str):
             "terrains": [
                 {"id": i, "name": t["name"], "color": t["color"],
                  "walkable": t.get("walkable", True),
+                 # The cut tile itself, so a consumer can draw the grid rather
+                 # than only look at the picture. Browser path, not the
+                 # container path - `/images` is what is mounted.
+                 "tile": "/images/" + os.path.basename(_tile_path(job_id, i)),
                  "coverage": coverage.get(t["name"], 0.0)}
                 for i, t in enumerate(terrains)
             ],
+            "road_tile": ("/images/" + os.path.basename(_road_tile_path(job_id))
+                          if road_tiles else None),
             # Grid layers are one value per tile and can only ever be flat.
             # `roads` is present and empty rather than absent when unused, so a
             # consumer never has to branch on whether the key exists.
@@ -301,9 +440,14 @@ def build_map_job(self, job_id: str):
             "entities": entities,
             "picture_url": f"/api/jobs/{job_id}/sheet",
         }
-        map_path = os.path.join(IMAGES_DIR, f"map_{job_id[:12]}.json")
-        with open(map_path, "w", encoding="utf-8") as fh:
-            json.dump(tilemap, fh)
+        # Queued BEFORE the tilemap is written, so `props_job` is in the very
+        # first version a consumer can read. A map that says `complete: false`
+        # without saying what is going to fix it is the strand all over again.
+        if pending:
+            tilemap["props_job"] = _queue_props_job(job_id, spec, pending)
+
+        map_path = _tilemap_path(job_id)
+        _write_tilemap(map_path, tilemap)
 
     except Exception as e:
         logger.exception("map job %s failed", job_id)
@@ -315,3 +459,226 @@ def build_map_job(self, job_id: str):
                sheet_path=pic_path, atlas_path=map_path)
     logger.info("map job %s -> %s", job_id, pic_path)
     return {"picture": pic_path, "map": map_path, "coverage": coverage}
+
+
+# --- Resolving the gaps ---------------------------------------------------
+
+
+def _queue_props_job(map_job_id: str, spec: dict, wants: list) -> str:
+    """A job row for the prop generation, and the Celery message to run it.
+
+    The row is the whole point. `job_runner.fail_stranded_jobs` sweeps `jobs`
+    without caring about `kind`, so a resolver whose Celery message was lost -
+    a purged queue, a worker killed mid-generate - gets marked failed at the
+    next worker boot exactly like a sheet job would, and `GET /api/maps/{id}`
+    can then tell a caller "this is not coming" instead of leaving it to wait
+    on `complete: false` forever.
+
+    That is the failure `aece983` fixed for training runs, and the one the
+    Slice 4 notes flagged as still open here.
+    """
+    props_id = str(uuid.uuid4())
+    payload = {
+        "kind": "map_props",
+        "map_job": map_job_id,
+        "name": spec.get("name"),
+        "wants": list(wants),
+        "llm_name": spec.get("llm_name"),
+        "seed": int(spec.get("seed", 0)),
+    }
+    with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs (id, kind, status, spec, progress_msg) "
+            "VALUES (%s, 'map_props', 'queued', %s, %s)",
+            (props_id, json.dumps(payload),
+             f"queued, {len(wants)} prop(s) for map {map_job_id[:8]}"))
+
+    async_result = celery_app.send_task("maps.resolve_map_props",
+                                        args=[props_id])
+    with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET celery_task_id = %s WHERE id = %s::uuid",
+                    (async_result.id, props_id))
+
+    logger.info("map %s queued props job %s for %s", map_job_id, props_id,
+                ", ".join(wants))
+    return props_id
+
+
+def _register_prop(want: str, path: str, llm_name: str | None) -> None:
+    """Make the generated prop visible in the gallery.
+
+    Writing the file is not enough: nothing lists the images directory, so an
+    asset that is not in `sprite_images` exists only for the map that happened
+    to want it. `assets_v` unions this table with finished jobs, so one INSERT
+    is the whole of "it appears in the library".
+    """
+    try:
+        with psycopg2.connect(DB_URL) as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO sprite_images (prompt, file_path, image_type, "
+                "                           progress_pct, progress_msg, llm_name) "
+                "VALUES (%s, %s, 'prop', 100, 'done', %s)",
+                (want, path, llm_name))
+    except Exception as e:
+        # The art is on disk and the map will find it. Failing the whole
+        # resolve because a gallery row did not write would throw away work
+        # that actually succeeded.
+        logger.error("prop %r generated but not registered: %s", want, e)
+
+
+def _generate_prop(want: str, llm_name: str | None, seed: int) -> str:
+    """One prop, cut out, filed in the library. Returns its path.
+
+    Asked for as a lone object on a plain background, because
+    `remove_background` flood-fills from the border - a prop generated inside a
+    scene has no background to fill from and comes back as an opaque square.
+    """
+    from tasks import default_model, get_sd_pipeline, remove_background
+    import torch
+
+    model = llm_name or default_model()
+    brief = (f"{want}, single isolated object, centered, full view, "
+             f"pixel art, top-down three-quarter view, flat lighting, "
+             f"plain flat white background, no ground, no scene, no shadow")
+    negative = "background, scenery, landscape, multiple, text, watermark, frame"
+
+    pipe = get_sd_pipeline(model)
+    if not pipe:
+        raise ValueError(f"model {model!r} failed to load")
+
+    gen = torch.Generator(device=pipe.device).manual_seed(seed)
+    img = pipe(prompt=brief, negative_prompt=negative, num_inference_steps=25,
+               guidance_scale=7.5, generator=gen).images[0]
+    img = remove_background(img).convert("RGBA")
+
+    # REFUSE ONLY WHAT IS CERTAINLY BROKEN, as the entity cutout path settled
+    # on in c967bed. A prop is composited over terrain, so an opaque one is a
+    # white rectangle sitting in a field and nobody notices until they look at
+    # the map. Zero transparent pixels means the flood fill did nothing at all,
+    # which cannot be a correct cutout. Subtler thresholds were measured on the
+    # entity path and were wrong in both directions.
+    alpha = np.asarray(img)[..., 3]
+    if not bool((alpha < 128).any()):
+        raise ValueError(
+            f"cutout for {want!r} left no transparency; it would composite as "
+            f"an opaque block over the terrain")
+
+    path = _library_path(want)
+    _replace_atomically(path, lambda t: img.save(t, format="PNG"))
+    _register_prop(want, path, model)
+    return path
+
+
+def _rerender_map(map_job_id: str) -> dict:
+    """Composite the map again with whatever art now exists.
+
+    Everything is reloaded from the tilemap and the saved tiles, so this costs
+    no GPU and - the part that matters - does NOT re-scatter. Re-scattering
+    would be deterministic from the seed and still wrong: it would depend on
+    the grids round-tripping through JSON identically, and a map whose trees
+    moved when a windmill resolved would be a baffling bug to be handed.
+    """
+    map_path = _tilemap_path(map_job_id)
+    with open(map_path, "r", encoding="utf-8") as fh:
+        tilemap = json.load(fh)
+
+    grid = np.array(tilemap["layers"]["terrain"], dtype=int)
+    tiles = [Image.open(_tile_path(map_job_id, t["id"])).convert("RGBA")
+             for t in tilemap["terrains"]]
+
+    roads_grid, road_tiles = None, None
+    if tilemap.get("road_tile"):
+        roads_grid = np.array(tilemap["layers"]["roads"], dtype=int)
+        road_tiles = [Image.open(_road_tile_path(map_job_id)).convert("RGBA")]
+
+    tile_w = int(tilemap["tile"]["w"])
+    tile_h = int(tilemap["tile"]["h"])
+    objects, pending = _dress(tilemap["entities"], tile_w, tile_h)
+
+    picture = map_geometry.composite(grid, tiles, roads=roads_grid,
+                                     road_tiles=road_tiles, objects=objects)
+    _replace_atomically(_picture_path(map_job_id),
+                        lambda t: picture.save(t, format="PNG"))
+
+    tilemap["pending"] = pending
+    tilemap["complete"] = not pending
+    _write_tilemap(map_path, tilemap)
+    return tilemap
+
+
+@celery_app.task(bind=True, name="maps.resolve_map_props")
+def resolve_map_props(self, props_job_id: str):
+    """Generate the props a map is missing, then draw it again.
+
+    PARTIAL SUCCESS IS THE NORMAL OUTCOME and is recorded as success. One want
+    that will not cut out must not discard the four that did: the map goes from
+    eight placeholders to one, stays `complete: false`, and names what is still
+    open. Failing the whole job would leave all five as placeholders and make
+    the map worse for having tried.
+
+    The job fails only when NOTHING could be resolved, which is the case worth
+    surfacing - a dead model, an unreadable images directory.
+    """
+    spec = _spec(props_job_id)
+    if spec is None:
+        logger.error("props job %s vanished before it started", props_job_id)
+        return {"error": "no such job"}
+
+    map_job_id = spec.get("map_job")
+    if not map_job_id:
+        job_update(props_job_id, status="failed", finished_at=now(),
+                   error="props job has no map to resolve")
+        return {"error": "no map_job in spec"}
+
+    wants = list(spec.get("wants") or [])
+    seed = int(spec.get("seed", 0))
+
+    job_update(props_job_id, status="running", started_at=now(), progress_pct=2,
+               progress_msg=f"{len(wants)} prop(s) to generate")
+
+    resolved, failed = [], {}
+    for i, want in enumerate(wants):
+        job_update(props_job_id,
+                   progress_pct=2 + int(88 * i / max(len(wants), 1)),
+                   progress_msg=f"prop {i + 1}/{len(wants)}: {want}")
+        try:
+            # Library first even here: another map may have generated this
+            # exact prop while this job sat in the queue.
+            if os.path.exists(_library_path(want)):
+                logger.info("prop %r already in the library", want)
+            else:
+                _generate_prop(want, spec.get("llm_name"), seed + i)
+            resolved.append(want)
+        except Exception as e:
+            logger.exception("prop %r failed for map %s", want, map_job_id)
+            failed[want] = str(e)
+
+    try:
+        job_update(props_job_id, progress_pct=92,
+                   progress_msg="compositing the map again")
+        tilemap = _rerender_map(map_job_id)
+    except Exception as e:
+        # The props may well have generated. The MAP is what could not be
+        # updated, and that is a real failure - its placeholders are still on
+        # it, so a caller told "done" would be told a lie.
+        logger.exception("re-render of map %s failed", map_job_id)
+        job_update(props_job_id, status="failed", finished_at=now(),
+                   error=f"props generated but the map could not be "
+                         f"redrawn: {e}")
+        return {"error": str(e), "resolved": resolved}
+
+    if resolved:
+        summary = f"resolved {len(resolved)}/{len(wants)}"
+        if failed:
+            summary += f", still missing: {', '.join(sorted(failed))}"
+        job_update(props_job_id, status="done", finished_at=now(),
+                   progress_pct=100, progress_msg=summary)
+    else:
+        job_update(props_job_id, status="failed", finished_at=now(),
+                   error="; ".join(f"{w}: {e}" for w, e in failed.items())
+                         or "nothing to resolve")
+
+    logger.info("map %s props: %d resolved, %d failed, complete=%s",
+                map_job_id, len(resolved), len(failed), tilemap["complete"])
+    return {"resolved": resolved, "failed": failed,
+            "complete": tilemap["complete"], "pending": tilemap["pending"]}

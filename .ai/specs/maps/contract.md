@@ -104,6 +104,10 @@ A `scatter` rule on the map spec says what goes where:
   [0007](../../decisions/0007-maps-paint-then-quantize.md) D6. A rule with only
   a `want` is still placed - with placeholder art and `status: "pending"` - so
   the map is usable now and improves later.
+- **A resolved `want` joins the library under its own name.** The art is filed
+  as `prop_<slug>.png` and registered in the gallery, so the *second* map that
+  wants a windmill finds the first one's art instead of spending the GPU again.
+  Library-first is only worth anything if the library actually grows.
 - **`density`** is the fraction of matching tiles to occupy;
   **`spacing`** is the minimum tiles between two of the same rule. Spacing is
   not decoration: uniform sampling clumps, and three trees on adjacent tiles
@@ -123,12 +127,17 @@ the real thing.
   "id": "...",
   "complete": false,
   "pending": ["windmill", "shrine"],
+  "props_job": "...",
+  "props_status": { "state": "working", "progress_pct": 40,
+                    "detail": "prop 2/5: windmill", "final": false },
   "size": { "w": 128, "h": 128 },
+  "tile": { "w": 64, "h": 32 },
   "projection_ratio": 2.0,
   "terrains": [
-    { "id": 0, "name": "grass", "tile": "/images/tile_grass_a1b2.png",
-      "color": "#4a7c3f", "walkable": true }
+    { "id": 0, "name": "grass", "tile": "/images/map_a1b2c3d4e5f6_t0.png",
+      "color": "#4a7c3f", "walkable": true, "coverage": 0.41 }
   ],
+  "road_tile": "/images/map_a1b2c3d4e5f6_road.png",
   "layers": {
     "terrain": [[0, 0, 1, 1]],
     "roads":   [[0, 1, 1, 0]]
@@ -139,18 +148,30 @@ the real thing.
     { "asset": "wolf_c3d4", "x": 12, "y": 8,
       "layer": "creatures", "status": "placed" },
     { "asset": null, "want": "windmill", "x": 20, "y": 20,
-      "layer": "props", "status": "pending", "job": "..." }
+      "layer": "props", "status": "pending" }
   ],
   "region_graph": { }
 }
 ```
 
-Three things a consumer must get right:
+Four things a consumer must get right:
 
 - **`complete: false` is not an error.** The terrain is final and walkable; some
   entity placements are still standing in with placeholder art and will resolve
   without the map being re-requested. A caller that treats it as failure abandons
   a usable map; a caller that caches it as final keeps a placeholder forever.
+- **`props_status.final` says whether waiting is worth it.** `complete: false`
+  on its own cannot distinguish "the resolver is working" from "the resolver
+  died", and a consumer that cannot tell them apart polls forever. Only
+  `state: "working"` will change on its own; `partial`, `failed` and `lost` are
+  terminal and mean the remaining placeholders need a rebuild, not patience.
+  The key is absent when the map is complete, and absent on maps built before
+  the resolver existed.
+
+`terrains[].tile` and `road_tile` are the **cut** tiles for this map, saved per
+map rather than shared, because they were cut at this map's projection ratio and
+tiles cut at different ratios do not tessellate. They are browser paths under
+`/images`, servable without a bearer.
 - **`terrains[].color` is the binding back to the biome painting**, not a display
   hint. It is the palette entry that produced every tile carrying that id.
 - **`projection_ratio` must match the style profile the tiles were cut at.** Tiles
@@ -219,10 +240,12 @@ palette starts as the one the reference art already uses.
 
 ## Prerequisites
 
-- **Placeholder art must exist and must look obviously provisional** before D7
-  ships. A placeholder that reads as finished is worse than a missing map.
-- **Map jobs need the reaping that `aece983` gave training runs.** A failed
-  entity job otherwise strands its map at `complete: false` permanently.
+- ~~**Placeholder art must exist and must look obviously provisional**~~ - done.
+  Magenta box and cross, and a smoke case asserts the magenta is actually there.
+- ~~**Map jobs need the reaping that `aece983` gave training runs.**~~ - done,
+  and for free. The resolver is its own `jobs` row (`kind='map_props'`), so
+  `fail_stranded_jobs` already sweeps it; `props_status` is what makes the
+  reaped row visible to a caller instead of leaving it waiting.
 - **The Maps tab must fetch images with the bearer into a blob URL**
   (`useAuthedObjectUrl`), as `Tiles.tsx` does. A plain `<img src>` against an
   authed route 401s the moment a key is minted.

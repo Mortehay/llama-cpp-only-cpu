@@ -162,7 +162,7 @@ alpha, where it previously returned 3% fewer. Ground tiles generated before this
 carry the old shape and will show pinholes when tiled; regenerate them if that
 matters.
 
-### Slice 4 - Entity placements and provisional - DONE (scatter half)
+### Slice 4 - Entity placements and provisional - DONE
 
 Shipped 2026-08-27: `map_geometry.scatter`, `map_tasks._populate`, the
 `scatter` rules on `MapSpec`, and the provisional state. Verified end to end on
@@ -184,10 +184,45 @@ Four decisions worth keeping:
   reads as finished is worse than a missing one, because it gets cached
   downstream as the real thing.
 
-**Not done in this slice:** queuing actual generation jobs for `pending` props,
-and the reaping that stops a failed entity job stranding a map at
-`complete: false` forever. The placements and the provisional state are real;
-the job that resolves them is not written yet.
+**The resolver landed 2026-08-27**, closing the gap this section used to
+record. `resolve_map_props` generates each missing `want`, files it in the prop
+library, and composites the map again; `scripts/smoke-map-resolve.py` covers it
+in 23 cases. Verified end to end with no GPU: a 24x24 map with 36 placements
+went from 36 placeholders to 26 placed, stayed `complete: false`, and named the
+one want that could not be generated.
+
+Five decisions worth keeping:
+
+- **The resolver is its own `jobs` row** (`kind='map_props'`), not a
+  continuation of the map job. That was the whole trick for the reaping this
+  slice owed: `fail_stranded_jobs` already sweeps `jobs` without caring about
+  `kind`, so a resolver whose Celery message was lost is reaped for free. No
+  new sweep, no new table.
+- **`props_status` on the served map is what makes the reaping useful.** The
+  reaper turns a lost job into a `failed` row, but a row nobody reads changes
+  nothing - `complete: false` still means both "working" and "dead". The route
+  now reports which, with `final` saying whether waiting will help.
+- **A finished resolver on an incomplete map reads `partial`, never `done`.**
+  Found by running it: the live check reported `state: "done"` on a map still
+  missing a wolf, which sends a caller back to wait for art that is not coming.
+  Same infinite wait, arriving by a different route.
+- **One resolver row per map, not one per prop.** N rows would each have to
+  re-composite and rewrite the same picture, racing on it, while the solo pool
+  serialises them anyway.
+- **The resolver re-draws, it does not re-scatter.** It reloads the placements
+  and the saved terrain tiles from disk, so it costs no GPU and nothing can
+  move. A map whose trees shuffled when a windmill resolved would be a baffling
+  bug to be handed.
+
+Two things fell out of it. Terrain tiles are now **saved per map and named in
+the wire format**, which the contract had always documented and the build had
+never emitted - so a consumer can finally draw the grid rather than only look
+at the picture. And a resolved prop is **registered in the gallery**, so the
+library grows and the second map wanting a windmill pays nothing.
+
+**Still open:** maps built before this exist without saved terrain tiles, so
+they can never be re-composited. Nothing tries - they have no `props_job` - and
+they stay provisional until rebuilt.
 
 ### Slice 4 - original scope
 

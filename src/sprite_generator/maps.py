@@ -293,7 +293,57 @@ def get_map(job_id: str, authorization: str | None = Header(None)):
                    f"/api/jobs/{job_id}")
 
     with open(row["atlas_path"], "r", encoding="utf-8") as fh:
-        return json.load(fh)
+        tilemap = json.load(fh)
+
+    return _with_props_status(tilemap)
+
+
+def _with_props_status(tilemap: dict) -> dict:
+    """Say whether the missing props are still coming.
+
+    Without this, `complete: false` means two completely different things - the
+    resolver is working, or the resolver is dead - and a caller has no way to
+    tell them apart, so it waits forever on a map that will never improve. That
+    indefinite wait is the strand the plan's Slice 4 notes named; the reaper
+    turns it into a `failed` row, and this is what makes the row visible.
+
+    Added rather than folded into `complete`, because `complete: false` still
+    means exactly what it meant: the terrain is final, some art is provisional.
+    """
+    if tilemap.get("complete") or not tilemap.get("props_job"):
+        return tilemap
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT status, progress_pct, progress_msg, error "
+                    "FROM jobs WHERE id = %s::uuid", (tilemap["props_job"],))
+        job = cur.fetchone()
+
+    if not job:
+        tilemap["props_status"] = {
+            "state": "lost",
+            "detail": "the job that was to generate these props no longer "
+                      "exists; rebuild the map to try again",
+        }
+        return tilemap
+
+    # `done` is never the right word here. This function only runs while the
+    # map is INCOMPLETE, so a finished resolver means some wants could not be
+    # generated and never will be without a rebuild. Reporting that as "done"
+    # sends a caller back to wait for art that is not coming - the same
+    # indefinite wait the reaper exists to end, arriving by a different route.
+    state = {"queued": "working", "running": "working",
+             "done": "partial"}.get(job["status"], job["status"])
+
+    tilemap["props_status"] = {
+        "state": state,
+        "progress_pct": job["progress_pct"],
+        "detail": job["error"] or job["progress_msg"],
+        # Only `working` will change on its own. Everything else is terminal,
+        # and a consumer that caches on this will not cache a placeholder.
+        "final": state != "working",
+    }
+    return tilemap
 
 
 @router.get("/api/maps")
