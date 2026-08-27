@@ -824,6 +824,20 @@ tests provenance and says nothing about capability. There is no single check for
 both — which is probably why three sessions on this codebase shipped one of each
 in a single day. Treat it as structural, not as anyone being careless.
 
+**One more, about trusting a source with a good record.** Every finding in this
+note that came from the parallel audit was accurate except one, and the
+distribution is the lesson. Their checkerboard mechanism was right and this note
+took it on trust. Their grid detector was wrong, and it was found only because
+one claim — `ref_core_ca0070408096` having no grid — happened to get checked
+rather than accepted. *Same kind of claim, same source, same day.* Nothing
+distinguished them in advance.
+
+So a good record does not lower the odds that a check was necessary; it raises
+the cost of the one you skip, because a reliable source is exactly the one whose
+claims nobody else re-derives either. The corrections in this section ran in both
+directions, and roughly half of the ones on each side were invisible from where
+their author stood — not difficult to see. Invisible.
+
 - **Mirroring the WRONG function.** `key_background` here exists to predict
   what `tasks.remove_background` will do to an image — that is the audit's
   entire subject. It was written as a twin of `pixelate.key_background`
