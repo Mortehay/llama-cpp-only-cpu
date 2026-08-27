@@ -55,6 +55,7 @@ import ast
 import json
 import os
 import sys
+import time
 
 _here = os.path.dirname(os.path.abspath(__file__))
 CANDIDATES = [os.path.join(_here, "..", "src", "sprite_generator"), "/app"]
@@ -180,19 +181,43 @@ def served_check(fails):
     /openapi.json is the running process describing its own models, and it
     needs no key. It answers "what is served", which no source-reading check
     can.
+
+    WHAT IT DOES NOT ANSWER is why served and disk differ, and that limit has
+    already caught someone out: a peer read one such reading as "the process is
+    stale", restarted, saw it agree, and wrote up a diagnosis. Neither of us
+    could then reproduce any staleness - this API reloads on a poll, hundreds of
+    times a day - so the reading was right and the cause was invented. Report
+    the difference; do not name a mechanism for it.
+
+    The retry below is not politeness. A reload takes about 7 seconds
+    detect-to-serving and the API is genuinely unreachable for part of it, so
+    running this straight after an edit - which is exactly when someone runs it
+    - would skip spuriously. Measured during a reload: +3s unreachable, +6s
+    serving the new schema.
     """
     url = os.environ.get("SPRITE_API", "http://sprite-generator:8001")
-    try:
+
+    def fetch():
         import urllib.request
         with urllib.request.urlopen(url + "/openapi.json", timeout=10) as r:
-            schemas = json.load(r)["components"]["schemas"]
-    except Exception as e:
-        # NOT a pass. A skip that reads like a pass is the failure this whole
-        # file is about, so it says what it could not do and why.
-        print("  SKIPPED: no API at %s (%s)" % (url, type(e).__name__))
-        print("  This says NOTHING about what the running service serves.")
-        print("  Set SPRITE_API, or run this where the API is reachable.")
-        return
+            return json.load(r)["components"]["schemas"]
+
+    try:
+        schemas = fetch()
+    except Exception as first:
+        print("  unreachable at %s (%s); a reload takes ~7s, so waiting once"
+              % (url, type(first).__name__))
+        time.sleep(9)
+        try:
+            schemas = fetch()
+            print("  reachable on retry - that was a reload, not a dead API")
+        except Exception as e:
+            # NOT a pass. A skip that reads like a pass is the failure this
+            # whole file is about, so it says what it could not do and why.
+            print("  SKIPPED: still no API after 9s (%s)" % type(e).__name__)
+            print("  This says NOTHING about what the running service serves.")
+            print("  Set SPRITE_API, or run this where the API is reachable.")
+            return
 
     for mod, model, _rmod, _func, _var in PAIRS:
         declared = model_fields(os.path.join(PKG, mod), model) or set()
