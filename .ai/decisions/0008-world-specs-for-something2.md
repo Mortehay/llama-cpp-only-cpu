@@ -549,3 +549,29 @@ identical from the outside.**
 
 That is the same instrument as `check-artifacts.py` in D12: compare the thing
 against what it claims to cover, rather than against itself.
+
+### A track record is evidence about a person, not about a claim
+
+The guard-reachability claim in D13 was wrong, and it arrived with a strong
+recommendation to act on it immediately - singled out from a message where
+everything else was explicitly deferred to a human, on the grounds that this
+one needed no design decision. The tier table that refutes it was one function
+call away and nobody made it, on either side.
+
+It was worth checking **because** the source had been right five times that
+day, not despite it. A track record feels like evidence about the claim while
+only ever being evidence about the claimant, which makes it the one input that
+grows more persuasive exactly as it grows more dangerous.
+
+This is the same object as the other six, one level up. Each of those was a
+description trusted in place of the thing it described: a comment, a
+convention, a test, a commit message, a count. A reputation is another such
+description, and the cheapest one to mistake for the thing.
+
+It also names the failure that produced D10 from the other direction: a
+plausible mechanism was offered for why something2's density measurement did
+not matter, and it withdrew a correct finding on the strength of it. Same
+error, opposite roles.
+
+**Checking cost one function call in both directions and was not paid in
+either.**
