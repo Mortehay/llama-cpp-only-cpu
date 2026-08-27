@@ -56,9 +56,32 @@ check("core hash dropped", m.caption_for("/i/ref_core_00e81fce7f73.png", T),
 # ref_map_ was missing from the strip list entirely, so these read "ref map ...".
 check("map hash dropped", m.caption_for("/i/ref_map_112233445566.png", T),
       "<x-style> pixel art sprite")
+# A description someone really did type must survive the filter UNTOUCHED,
+# commas and all. That is what makes filtering labels safe rather than lossy.
 check("real label kept",
       m.caption_for("/i/ref_sprite_ab.png", T, "dwarf ranger, walking south"),
       "<x-style> pixel art sprite, dwarf ranger, walking south")
+
+# LABELS ARE FILENAMES HERE, and the first version of caption_for returned them
+# verbatim on the reasoning that "a person typed it". Measured against the live
+# database, 2,544 of 2,555 labels carry a hash token, so a real training run
+# captioned all 114 of its images with one. These four are real rows copied out
+# rather than invented - and the last is a label this pipeline GENERATES, so
+# even its own naming carries a hash.
+for _lab, _frag in (("0bc2ae64d34fe36096ed376d5352a7f2.jpg", "0bc2ae64"),
+                    ("9a9ad13c7208251573a6b45c2a9ea5b1 - копія.jpg", "9a9ad13c"),
+                    ("07692b93d80fdfec159f369b4e47b210.jpg", "07692b93"),
+                    ("cell 045 of ref_tile_2e2273e3ec26", "2e2273e3ec26")):
+    check(f"hash label never reaches the caption: {_frag}",
+          _frag in m.caption_for("/i/ref_map_112233445566.png", T, _lab), False)
+
+# The extension is why this needs its own step: `<hash>.jpg` is ONE token and
+# the hex test fails on it for the sake of a dot, so without stripping the
+# suffix first the entire hash survives.
+check("a bare hash label leaves only the body",
+      m.caption_for("/i/ref_map_112233445566.png", T,
+                    "0bc2ae64d34fe36096ed376d5352a7f2.jpg"),
+      "<x-style> pixel art sprite")
 # split-sheets writes `cell_<kind>_<kind>_<hash>_<index>`. A prefix list cannot
 # strip that, and the first version of the fix let all 103 through with the
 # hash intact - which is the original bug, on new filenames.

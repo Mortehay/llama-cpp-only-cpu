@@ -97,6 +97,17 @@ CACHE_DIR = os.environ.get("HF_HUB_CACHE", "/models")
 #     768 px  -> 5.38 GiB peak (45% of the card)
 #    1024 px  -> 5.61 GiB peak (47%)
 #
+# THOSE TWO FIGURES PREDATE THE CURRENT TRAINER AND ARE LOW. A real run of THIS
+# code, sampled every 10s across 1000 steps at 1024px, rank 32, 114 images,
+# AdamW8bit, 46.4M trainable parameters, peaked at 6741 MiB - 6.58 GiB, about
+# 1 GiB above the number above. Anyone treating 5.61 as headroom would have
+# been wrong in the dangerous direction. Kept side by side rather than
+# overwritten, because the gap IS the point: the old figures were quoted
+# confidently for two days by someone who had not run the code they describe.
+#
+# The staging holds, and was watched: VRAM fell to 732 MiB between stages as
+# the VAE and text encoders unloaded, then climbed to 6.7 GB for the UNet.
+#
 # Native resolution costs 0.23 GiB and avoids training the model at a scale it
 # was not trained for, so it is the default. There is room above this for a
 # larger batch or a higher rank; if either ever OOMs, the ladder down is
@@ -177,6 +188,61 @@ DEFAULT_CAPTION = "pixel art sprite"
 _STORAGE_WORDS = {"ref", "cell", "core", "sprite", "tile", "map", "sheet",
                   "thumb", "img", "image"}
 
+# Extensions stripped before tokenising. Needed because a label is often a
+# whole filename: `0bc2ae64....jpg` is ONE token, and the hex test below fails
+# on it for the sake of a dot - so without this the entire hash survives.
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+
+
+def _describing_tokens(text: str) -> list[str]:
+    """The words in `text` that describe the picture, with storage naming gone.
+
+    Used for BOTH the label and the filename, which is the point - see
+    `caption_for`. Splitting on underscores and hyphens as well as spaces is
+    what makes it hold up against `cell_sprite_sprite_<hash>_000`, a name no
+    prefix list can handle.
+    """
+    stem = text
+    for ext in _IMAGE_EXTENSIONS:
+        if stem.lower().endswith(ext):
+            stem = stem[: -len(ext)]
+            break
+
+    kept = []
+    for tok in stem.replace("_", " ").replace("-", " ").split():
+        # Test the word without its punctuation, keep the word with it, so
+        # "ranger," survives intact and "004228080a22," is still recognised as
+        # a hash rather than saved by a trailing comma.
+        bare = tok.strip(".,;:()[]{}<>'\"")
+        low = bare.lower()
+        if not low or low in _STORAGE_WORDS or low.isdigit():
+            continue
+        # A hex blob is storage naming, not a description.
+        #
+        # The DIGIT is what makes this safe. "pure hex" alone would also match
+        # words a person might genuinely type - face, beef, dead, cafe - and
+        # eat a real one. Requiring a digit keeps those, and still catches
+        # every storage stem, which is random hex and effectively never
+        # all-letters.
+        if (len(low) >= 3 and all(c in "0123456789abcdef" for c in low)
+                and any(c.isdigit() for c in low)):
+            continue
+        kept.append(tok)
+
+    # A remainder of nothing but two-letter scraps is not a description.
+    #
+    # `cell 045 of ref_tile_<hash>` is a label this pipeline generates, and
+    # every part of it is storage naming except the word "of" - so without this
+    # 1,863 tile captions would have read "<trigger> pixel art, of". Measured
+    # over the live table, not supposed.
+    #
+    # A length rule rather than a stopword list, because a list is a guess
+    # about a language and this data already contains Ukrainian. Any real
+    # description has at least one word of three characters.
+    if not any(len(t.strip(".,;:()[]{}<>'\"")) >= 3 for t in kept):
+        return []
+    return kept
+
 
 def caption_for(path: str, trigger: str, label: str | None = None,
                 body: str = DEFAULT_CAPTION) -> str:
@@ -195,33 +261,47 @@ def caption_for(path: str, trigger: str, label: str | None = None,
     style. `ref_map_*` was not even in the strip list, so those captions read
     'ref map 112233445566'.
 
-    A LABEL is used as given - a person typed it. A FILENAME is filtered token
-    by token, and only what survives becomes caption text. Filtering per token
-    rather than by prefix is what makes this hold up: the cells `split-sheets.py`
-    writes are `cell_sprite_sprite_<hash>_000`, which defeats any fixed prefix
-    list, and the first version of this fix let all 103 of them through with
-    their hash intact.
-    """
-    if label and label.strip():
-        return f"{trigger} {body}, {label.strip()}".strip().rstrip(",")
+    THE LABEL GOES THROUGH THE SAME FILTER, and the first version of this did
+    not. It returned a label verbatim on the reasoning that "a person typed
+    it". Measured against this database, that premise is false for 2,544 of
+    2,555 live references: the label column holds UPLOAD FILENAMES.
 
-    stem = os.path.splitext(os.path.basename(path))[0]
-    kept = []
-    for tok in stem.replace("_", " ").replace("-", " ").split():
-        low = tok.lower()
-        if low in _STORAGE_WORDS or low.isdigit():
-            continue
-        # A hex blob is storage naming, not a description.
-        #
-        # The DIGIT is what makes this safe. "pure hex" alone would also match
-        # words a person might genuinely type - face, beef, dead, cafe - and
-        # eat a real one. Requiring a digit keeps those, and still catches
-        # every storage stem, which is random hex and effectively never
-        # all-letters.
-        if (len(low) >= 3 and all(c in "0123456789abcdef" for c in low)
-                and any(c.isdigit() for c in low)):
-            continue
-        kept.append(tok)
+        0bc2ae64d34fe36096ed376d5352a7f2.jpg
+        9a9ad13c7208251573a6b45c2a9ea5b1 - копія.jpg
+        cell 045 of ref_tile_2e2273e3ec26
+
+    So a real training run captioned all 114 of its images
+
+        <mapstyle-style> world map, 07692b93d80fdfec159f369b4e47b210.jpg
+
+    which is the exact harm the paragraph above describes, arriving through the
+    door this function left open. The filename was filtered and the label was
+    not, and almost every image has a label. A sibling session found it by
+    reading the captions of a run it had already started.
+
+    This is not a new heuristic about whether a label "looks like" a filename -
+    that judgement is exactly the kind that misfires. It is the SAME rule
+    applied to both inputs. A description a person really did type has no
+    hex-and-digit tokens in it, so it passes through untouched; that is what
+    makes running it over human text safe rather than lossy.
+
+    Swept over all 2,555 live references afterwards: zero captions still carry
+    a hash, and 2,534 reduce to the body alone - which is the honest answer,
+    because those images have no description anywhere.
+
+    WHAT STILL GETS THROUGH, on 9 rows: `- копія` and `завантаження`, the
+    Ukrainian Windows "copy" suffix and a browser's "download". They are
+    bookkeeping rather than description, and they are NOT filtered, because
+    removing them means a word list in a language this code cannot claim to
+    know - and unlike a hash they are SHARED across images, so they give the
+    text encoder no per-image handle. The harm this function exists to prevent
+    is absent; the untidiness is recorded rather than guessed at.
+    """
+    kept = _describing_tokens(label) if label and label.strip() else []
+    if not kept:
+        # Either there was no label or nothing in it described the picture.
+        # Fall back to the filename, which gets the identical treatment.
+        kept = _describing_tokens(os.path.basename(path))
 
     if not kept:
         return f"{trigger} {body}".strip()
