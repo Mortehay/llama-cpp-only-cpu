@@ -376,21 +376,57 @@ The real fix is the one `measure_map()` was built for and nothing yet uses:
 that is its job. Until then, a caller picking colours by eye will lose a
 terrain and not be told which.
 
-## GPU contention, 2026-08-27
+## The card filled up, and the first diagnosis was wrong, 2026-08-27
 
-Plan Q5 assumed **CPU** llama.cpp. The deployed preset is
-`--n-gpu-layers 99`, so the region graph and the prop generator now share a
-12 GB card. Observed directly: after a map build called llama.cpp and then
-queued prop generation, one prop failed with `CUDA driver error: device not
-ready`, a retry failed with a `CUDACachingAllocator` internal assert, and
-`nvidia-smi` showed **11957 / 12288 MiB used with an empty queue**. Restarting
-the worker freed it to 213 MiB.
+**The symptom.** After a map build called llama.cpp and then queued prop
+generation, one prop failed with `CUDA driver error: device not ready` and a
+retry failed with a `CUDACachingAllocator` internal assert. `nvidia-smi` showed
+**11957 / 12288 MiB used with an empty job queue**. Restarting the worker
+freed it to 213 MiB.
 
-`--sleep-idle-seconds 120` means llama.cpp does release the card, but a map
-build calls it and queues prop generation inside that window. Either move the
-text model to CPU as Q5 assumed, or accept that the first props after a graph
-may need the retry below.
+**The wrong diagnosis, recorded because it was convincing.** Plan Q5 assumed
+*CPU* llama.cpp; the deployed preset is `--n-gpu-layers 99`, so the region
+graph had just put a 3B model on the same 12 GB card as SDXL. That fit the
+timeline exactly - the failures began the first time a map build called the
+LLM - and the recommendation was to move the text model to CPU.
 
-`POST /api/maps/{id}/resolve` exists because of this: it retries only the
-missing art, at a different seed each attempt, without repainting terrain that
-was never wrong.
+**The measurement that killed it.** `tasks.describe_device` on the worker, with
+the queue empty and llama.cpp asleep:
+
+```
+allocated   6.63 GB     what the pipeline is really using
+reserved   11.32 GB     what PyTorch is sitting on
+total      12.00 GB
+```
+
+Then the decisive one: **waking llama.cpp from sleep moved VRAM by exactly
+0 MiB.** Contention was never it. `nvidia-smi` reports the RESERVED figure, and
+the worker simply never handed its caching allocator's spare blocks back - so
+the card read as full with nothing running, and the next large allocation hit
+a pool with no contiguous room. That is the fragmented-allocator failure
+ADR 0005 already describes.
+
+**The fix**, in `map_tasks._release_vram`: one `empty_cache()` when a whole
+resolve finishes, not between props. Measured live through a real build:
+`released 4.67 GB of reserved VRAM (11.32 -> 6.65)`. Reserved now tracks
+allocated to within 0.02 GB. The pipeline stays cached deliberately.
+
+**Do not move the text model to CPU on the strength of the paragraph above** -
+that was the wrong call, and the version of this document committed in
+`518a848` recommended it.
+
+Two things worth keeping from the mistake. The hypothesis was never tested
+until it was refuted; waking the model was a thirty-second check available from
+the first minute. And `nvidia-smi` answers a different question from the one
+being asked - it reports what a process has reserved, not what it needs.
+
+**How much headroom this leaves is not established.** The card now shows
+~5.35 GB free with the pipeline resident, and it is tempting to call that
+enough for a training run. The only peak figure anyone has for the trainer
+(`scripts/train-lora.py`, ADR 0006) predates the current trainer and was never
+re-measured against it. Treat the headroom as unknown until a run is executed
+and its peak recorded.
+
+`POST /api/maps/{id}/resolve` was written during this and is still worth
+having: it retries only the missing art, at a different seed each attempt,
+without repainting terrain that was never wrong.

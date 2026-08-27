@@ -243,6 +243,54 @@ def pixel_scale(arr: np.ndarray, max_scale: int = 16) -> int:
     return 1
 
 
+def grid_round_trip_error(img: Image.Image, max_scale: int = 12) -> float:
+    """How far the image is from being flat NxN blocks, at its best N.
+
+    `pixel_scale` above answers "is there a grid, and how big". This answers a
+    narrower question that was missing: "does this image carry noise inside its
+    apparent blocks". An image can look like pixel art at thumbnail size and be
+    noise all the way down. Collapsing each block to its mean is lossless for
+    the genuine article and expensive for the imitation.
+
+    ONE DIRECTION ONLY. High is a real finding. Low is not evidence of pixel
+    art - a smooth gradient scores 0.42, since a soft ramp also varies little
+    between neighbours. Used here inside the `scale == 1 and colors > MAX`
+    branch, where the only question left is WHICH kind of not-pixel-art the
+    image is, and both answers are already a rejection.
+
+    Measured over this repo, in 0-255 units of mean absolute error:
+
+        hand-made 64x96 references    0.00   (p10 and p90 also 0.00)
+        1024x1024 sprite references   7.73
+        the 103 recovered cells      10.79
+
+    Duplicated in train-lora.py rather than shared, for the same reason
+    everything else here is: /app/scripts cannot import the /app package, and
+    the trainer and the audit disagreeing about what pixel art is was how this
+    function came to be written in the first place. If you change one, change
+    both - test-train-prep.py covers the trainer's copy.
+    """
+    rgb = np.asarray(img.convert("RGB")).astype(np.float32)
+    h, w = rgb.shape[:2]
+    best = float("inf")
+    for n in range(2, max_scale + 1):
+        if h // n < 8 or w // n < 8:
+            break
+        hh, ww = (h // n) * n, (w // n) * n
+        blocks = rgb[:hh, :ww].reshape(hh // n, n, ww // n, n, 3)
+        err = float(np.abs(
+            blocks - blocks.mean(axis=(1, 3), keepdims=True)).mean())
+        best = min(best, err)
+    return 0.0 if best == float("inf") else best
+
+
+# ABOVE this there is real noise inside the blocks. Read it in that direction
+# only: below it means "not noisy", NOT "pixel art" - a smooth gradient scores
+# 0.42 here. The gap on the populations that matter is enormous (0.00 against
+# 7.73), so the exact value matters far less than their being disjoint.
+MAX_GRID_ROUND_TRIP_ERROR = 1.0
+
+
 def distinct_colors(arr: np.ndarray) -> int:
     opaque = arr[..., 3] >= 128
     if not opaque.any():
@@ -401,9 +449,29 @@ def judge(path: str, kind: str, seen: list) -> dict:
                       f"checker and no prompt removes it. Key it out to real "
                       f"alpha and the image is fine")
     if kind == "sprite" and scale == 1 and colors > MAX_SPRITE_COLORS:
-        reject.append(f"{colors} colours and no pixel grid - a render or a "
-                      f"painting, not the finished pixel art this tab means. "
-                      f"It may still belong under 'core'")
+        # The round-trip separates the two ways of failing this test, and they
+        # want opposite things done about them. An honestly painted image
+        # belongs under 'core'. An IMITATION of pixel art - blocky at thumbnail
+        # size, per-pixel noise underneath - belongs nowhere: it is what
+        # generated art looks like, and 013 already says not to train on that.
+        #
+        # This distinction is here because the old wording ("a render or a
+        # painting") sent a reader looking for brush strokes, found none, and
+        # concluded the gate was wrong. It was not. See 0009's recovery section.
+        err = grid_round_trip_error(img)
+        if err > MAX_GRID_ROUND_TRIP_ERROR:
+            reject.append(
+                f"{colors} colours, no pixel grid, and it does not survive a "
+                f"round-trip through its own blocks (error {err:.1f}; hand-made "
+                f"pixel art here scores 0.0) - blocky to look at, noise "
+                f"underneath. Either art imitating pixel art, or real pixel "
+                f"art that has been through JPEG; the measurement cannot tell "
+                f"those apart and does not try. Both teach the noise")
+        else:
+            reject.append(
+                f"{colors} colours and no pixel grid - a render or a painting, "
+                f"not the finished pixel art this tab means. It may still "
+                f"belong under 'core'")
 
     dup = next((f for hv, f in seen if bin(hv ^ h9).count("1") <= DUP_HAMMING), None)
     if dup and not reject:
@@ -469,12 +537,25 @@ def main():
                    help="write trainable=false + trainable_why for every "
                         "rejection. Needs DB_URL. 'review' rows are never "
                         "written - those are a human's call, not this script's")
+    p.add_argument("--pattern", default=None,
+                   help="glob for files that are not registered references, "
+                        "e.g. 'cell_sprite_*.png' for split-sheets output. "
+                        "Report only: these have no row to write back to")
     a = p.parse_args()
     kinds = a.kind or ["sprite", "core"]
 
+    # --apply matches findings to reference_assets rows by filename. A custom
+    # pattern means files that are not references at all, so every finding
+    # would land nowhere - and the run would print `applied: 0` and exit 0,
+    # which is the exact silent no-op the write path was fixed to stop being.
+    if a.apply and a.pattern:
+        sys.exit("--apply needs registered references; --pattern selects files "
+                 "that have no reference_assets row. Drop one of the two.")
+
     rows = []
     for kind in kinds:
-        files = sorted(glob.glob(os.path.join(a.data, f"ref_{kind}_*.png")))
+        pat = a.pattern or f"ref_{kind}_*.png"
+        files = sorted(glob.glob(os.path.join(a.data, pat)))
         files = [f for f in files
                  if not os.path.basename(f).startswith("thumb_")]
         seen: list = []

@@ -143,10 +143,55 @@ ramp[..., 2] = 128
 painted = Image.fromarray(ramp).convert("RGBA")
 check("smooth gradient, enlarged -> lanczos",
       m.prepare_image(painted, 512)[3], "lanczos")
-soft_hd, soft_painted = m.edge_softness(hd), m.edge_softness(painted)
-check("edge_softness separates stepped from ramped",
-      soft_hd is not None and soft_painted is not None
-      and soft_hd < m.MAX_PIXEL_ART_SOFTNESS <= soft_painted, True)
+# The round-trip test, and the fixture that matters is the THIRD one.
+#
+# `hd` above is flat blocks - a real grid. `painted` is a smooth ramp. Any test
+# separates those. The interesting case is art that looks blocky at thumbnail
+# size and is not: take the same flat blocks and add per-pixel noise. That is
+# what the 103 recovered cells turned out to be (block error 10.79 against a
+# hand-made control's 0.00, and 985 distinct colours in a 32x32 patch), and it
+# is what fooled me into writing a whole extra signal to route them to NEAREST.
+rng3 = np.random.default_rng(11)
+noisy = np.repeat(np.repeat(blocks, BLOCK, axis=0), BLOCK, axis=1).astype(np.int16)
+noisy += rng3.integers(-12, 13, noisy.shape)
+imitation = Image.fromarray(np.clip(noisy, 0, 255).astype(np.uint8)).convert("RGBA")
+
+check("real grid survives its own round-trip",
+      m.grid_round_trip_error(hd) <= m.MAX_GRID_ROUND_TRIP_ERROR, True)
+check("imitation blocks do not",
+      m.grid_round_trip_error(imitation) > m.MAX_GRID_ROUND_TRIP_ERROR, True)
+# The two must be far apart, not merely on opposite sides of the constant. On
+# the real data the gap is 0.00 against 7.73, so a fixture that squeaks past
+# would mean the fixture, not the measure, is doing the work.
+check("and by a wide margin, not a squeak",
+      m.grid_round_trip_error(imitation) > 4 * m.MAX_GRID_ROUND_TRIP_ERROR, True)
+# The noise is invisible to the colour-count test: it still reads as
+# high-colour, exactly like the flat-block fixture. That is precisely why
+# colour count could not tell them apart and why a third signal seemed needed.
+check("imitation is high-colour too, so colour count cannot separate them",
+      imitation.convert("RGB").getcolors(m.PIXEL_ART_MAX_COLORS) is None, True)
+# The behaviour that changed. NEAREST protects a grid; there is no grid here,
+# so it would only magnify the noise on the 4-6x upscale to 1024.
+check("imitation, enlarged -> lanczos", m.prepare_image(imitation, 512)[3],
+      "lanczos")
+
+# The two copies must agree, and this is the only thing that makes them.
+#
+# `grid_round_trip_error` lives in both train-lora.py and
+# audit-character-refs.py, because /app/scripts cannot import the /app package
+# and there is nowhere shared to put it. Duplication is tolerable; SILENT
+# divergence is not - the trainer and the audit disagreeing about what pixel
+# art is, each with its own passing tests, is exactly how the signal this
+# replaced came to be written.
+_aspec = importlib.util.spec_from_file_location(
+    "audit_refs", os.path.join(_here, "audit-character-refs.py"))
+audit = importlib.util.module_from_spec(_aspec)
+_aspec.loader.exec_module(audit)
+check("the audit's copy of the measure agrees, image by image",
+      [round(audit.grid_round_trip_error(i), 6) for i in (hd, imitation, painted)],
+      [round(m.grid_round_trip_error(i), 6) for i in (hd, imitation, painted)])
+check("and so does the threshold",
+      audit.MAX_GRID_ROUND_TRIP_ERROR, m.MAX_GRID_ROUND_TRIP_ERROR)
 
 grid = Image.new("RGB", (32, 32))
 for y in range(32):

@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts
+.PHONY: dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -286,15 +286,32 @@ test-train-prep:
 		--entrypoint python sprite-worker \
 		/app/scripts/test-train-prep.py
 
-# Split the keyed sheets into single-character cells big enough to train on.
-# --min-side keeps the 63px mush out; --max-aspect drops the title banners,
-# which are perfectly good components and read as subjects.
+# Split the keyed sheets into single-character cells. --min-side keeps the 63px
+# mush out; --max-aspect drops the title banners, which are perfectly good
+# components and read as subjects.
+#
+# The cells are well-framed and cleanly cut, and they are NOT pixel art: they
+# fail a round-trip through their own blocks at 10.79 where hand-made art
+# scores 0.00. Useful as silhouette and framing material, not as a style
+# reference. See 0009's recovery section before training on them.
 recover-cells:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/split-sheets.py --images /app/images/recovered/keyed \
 		--kind sprite --out /app/images/recovered/cells --write \
 		--min-side 160 --max-aspect 2.0 --drop-edge-slivers
+
+# Put the recovered cells through the SAME gate as the references. Skipping
+# this is what let "the only training-grade character material here" stand in
+# an ADR for half a day: they were judged from thumbnails and never measured.
+# Report only - these files have no reference_assets row, and --apply refuses
+# to combine with --pattern for exactly that reason.
+audit-cells:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/audit-character-refs.py --kind sprite \
+		--data /app/images/recovered/cells --pattern 'cell_sprite_*.png' \
+		--out /app/images/recovered/cells-audit.md
 
 # Cell cleanup, tested. `drop_edge_slivers` edits pixels in training images, so
 # it gets a suite that was itself checked by mutation - see the module note.

@@ -253,46 +253,54 @@ def has_pixel_grid(img, max_scale: int = 16) -> int:
     return 1
 
 
-def edge_softness(img) -> float | None:
-    """Fraction of colour changes inside the subject that are RAMPS, not steps.
+def grid_round_trip_error(img, max_scale: int = 12) -> float:
+    """How far the image is from being flat NxN blocks, at its best N.
 
-    The signal that says "hard-edged art" when colour count cannot.
+    Real pixel art is flat blocks by construction, so collapsing each block to
+    its mean and comparing costs nothing. Imitation pixel art - art that merely
+    LOOKS blocky at thumbnail size - carries noise inside every block and
+    cannot survive it.
 
-    Colour count was the original test, and it is wrong for exactly the dataset
-    that matters most here. The recovered Mesgard cells - the one consistent
-    pixel-art character set in the whole reference pool - carry 4k to 27k
-    distinct colours, because the style shades heavily. By palette size they
-    look like renders. They are not: their edges STEP.
+    ONE DIRECTION ONLY. High means "there is noise inside the blocks", which is
+    a real finding. Low does NOT mean pixel art: a smooth gradient scores 0.42,
+    because neighbouring pixels of a soft ramp are also similar. Use it to
+    catch the imitation, never to certify the genuine article - `has_pixel_grid`
+    and the palette test are what do that. Stating this because the first
+    version of this docstring called it "the honest test for is this pixel
+    art", which is precisely the overstatement that produced the signal it
+    replaced.
 
-    Measured on this repo's art, and it separates cleanly:
+    Measured here, in 0-255 units of mean absolute error:
 
-        palette-locked pixel art (<=512 colours)   median 0.01
-        the recovered HD pixel cells              median 0.38, p90 0.45
-        painted concept art                       p10 0.52, median 0.70
+        hand-made 64x96 references    0.00   (p10 and p90 also 0.00)
+        1024x1024 sprite references   7.73
+        the 103 recovered cells      10.79
 
-    Returns None when there is too little inside the subject to judge, so the
-    caller can fall back rather than treat "unknown" as "hard".
+    Nothing decides on this yet; it is logged per run so a dataset's nature is
+    recorded at the time it was trained on rather than reconstructed later from
+    a disappointing adapter.
     """
     import numpy as np
 
-    a = np.asarray(img.convert("RGBA"))
-    opaque = a[..., 3] >= 128
-    rgb = a[..., :3].astype(np.int16)
-    d = np.abs(np.diff(rgb, axis=1)).sum(axis=2)
-    # Inside the silhouette only. The step from subject to background is hard
-    # in every image and would drown the thing being measured.
-    inside = opaque[:, 1:] & opaque[:, :-1]
-    d = d[inside]
-    changed = d > 0
-    if changed.sum() < 64:
-        return None
-    return float(((d > 0) & (d < 24)).sum() / changed.sum())
+    rgb = np.asarray(img.convert("RGB")).astype(np.float32)
+    h, w = rgb.shape[:2]
+    best = float("inf")
+    for n in range(2, max_scale + 1):
+        if h // n < 8 or w // n < 8:
+            break
+        hh, ww = (h // n) * n, (w // n) * n
+        blocks = rgb[:hh, :ww].reshape(hh // n, n, ww // n, n, 3)
+        err = float(np.abs(
+            blocks - blocks.mean(axis=(1, 3), keepdims=True)).mean())
+        best = min(best, err)
+    return 0.0 if best == float("inf") else best
 
 
-# Above this fraction of soft transitions the art is painted, not stepped. Sits
-# in the gap between the recovered cells' p90 (0.45) and painted art's p10
-# (0.52) - see `edge_softness`.
-MAX_PIXEL_ART_SOFTNESS = 0.5
+# ABOVE this there is real noise inside the blocks. Read it in that direction
+# only: below it means "not noisy", NOT "pixel art" - a smooth gradient scores
+# 0.42 here. The gap on the populations that matter is enormous (0.00 against
+# 7.73), so the exact value matters far less than their being disjoint.
+MAX_GRID_ROUND_TRIP_ERROR = 1.0
 
 
 def prepare_image(img, resolution: int, fit: str = "pad",
@@ -370,21 +378,36 @@ def prepare_image(img, resolution: int, fit: str = "pad",
         #
         #   1. a clean pixel grid  - the art was exported at an integer upscale
         #   2. a small palette     - drawn at 1:1 and palette-locked
-        #   3. hard edges          - drawn at 1:1 with heavy shading, so neither
-        #                            of the above fires, but it still steps
         #
-        # Signal 3 was added after signal 2 alone routed all 103 recovered
-        # Mesgard cells to LANCZOS. They hold 4k-27k colours and have no grid,
-        # so by the first two tests they look like renders - and blurring them
-        # would have defeated the whole point of this change on the one dataset
-        # it was made for.
+        # There WAS a third signal, `edge_softness`, and removing it is the
+        # point of this comment. It was added because signal 2 sent all 103
+        # recovered Mesgard cells to LANCZOS and I believed those cells were
+        # heavily-shaded pixel art that simply had too many colours to be
+        # recognised. That belief was never measured, and it is false.
+        #
+        # The test that settles it: real pixel art survives a round-trip
+        # through its own grid. Downsample by the block size and back, and the
+        # error is zero, because every block is one flat colour.
+        #
+        #   hand-made 64x96 references   block error 0.00 (p10 and p90 both 0)
+        #   the 103 recovered cells      block error 10.79, at every factor
+        #   1024x1024 sprite references  block error  7.73
+        #
+        # The cells have no grid to preserve. They are an imitation of pixel
+        # art with per-pixel noise - a 32x32 patch of one holds 985 distinct
+        # colours out of 1024 pixels. NEAREST does not protect a grid there; it
+        # magnifies the noise, and these get upscaled 4-6x to reach 1024.
+        #
+        # Worse, the signal was inverted. Across all 483 references it fired
+        # alone on 65 files, and every one of those has block error >= 1.24
+        # (median 9.42). It never once fired on art with a real grid - signals
+        # 1 and 2 had already claimed those - so its entire effect was to send
+        # grid-less art to NEAREST. Do not re-add it without the round-trip
+        # measurement above.
         #
         # `getcolors` returns None above its cap, which reads as "too many".
-        softness = edge_softness(img)
         pixelish = (has_pixel_grid(img) > 1
-                    or flat.getcolors(PIXEL_ART_MAX_COLORS) is not None
-                    or (softness is not None
-                        and softness < MAX_PIXEL_ART_SOFTNESS))
+                    or flat.getcolors(PIXEL_ART_MAX_COLORS) is not None)
         if pixelish and resolution > w:
             filt, name = _Image.NEAREST, "nearest"
         else:
@@ -415,12 +438,15 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype,
     vae.requires_grad_(False)
 
     latents, time_ids = [], []
-    filters = []
+    filters, grid_errors = [], []
     for i, p in enumerate(paths):
         img = Image.open(p)
         prepared, original, crop, filt = prepare_image(
             img, resolution, fit=fit, resample=resample)
         filters.append(filt)
+        # Measured on the SOURCE, before resampling. Afterwards every image has
+        # been through a filter and the answer would describe that instead.
+        grid_errors.append(grid_round_trip_error(img))
 
         # SDXL's micro-conditioning, per image and TRUE of this image:
         # original height/width, crop top/left, target height/width. The old
@@ -448,6 +474,30 @@ def cache_inputs(paths, captions, resolution, cache_path, dtype,
     n_near = filters.count("nearest")
     logger.info("  resampled %d nearest / %d lanczos (fit=%s)",
                 n_near, len(filters) - n_near, fit)
+
+    # Whether this dataset is pixel art AT ALL, recorded while it is being
+    # trained on. Nothing here refuses to run - that is the user's call and the
+    # measurement may be wrong about some new kind of art - but a run whose
+    # images cannot survive a round-trip through their own grid is producing a
+    # style LoRA for imitation pixel art, and the log should say so at the time
+    # rather than leaving it to be guessed from a disappointing adapter.
+    #
+    # Read the measure in ONE direction only. A high error proves the blocks
+    # are not flat - there is noise inside them. A LOW error does not prove
+    # pixel art: a smooth gradient scores 0.42 here, because neighbouring
+    # pixels of a soft ramp are also similar. Signals 1 and 2 are what identify
+    # pixel art; this identifies its imitation.
+    if grid_errors:
+        noisy = sum(1 for e in grid_errors if e > MAX_GRID_ROUND_TRIP_ERROR)
+        med = sorted(grid_errors)[len(grid_errors) // 2]
+        logger.info("  block noise: %d/%d images have noise inside their "
+                    "apparent blocks (median error %.2f; flat-block art "
+                    "scores 0.00)", noisy, len(grid_errors), med)
+        if noisy == len(grid_errors):
+            logger.warning("  EVERY image in this dataset carries per-pixel "
+                           "noise. If it was meant to be pixel art, it is an "
+                           "imitation of it, and training learns the noise "
+                           "too - see .ai/decisions/0009.")
 
     del vae
     torch.cuda.empty_cache()

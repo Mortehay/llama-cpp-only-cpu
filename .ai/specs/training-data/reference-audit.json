@@ -16,7 +16,7 @@
   "why": [
    "5.6:1 strip - the square centre crop discards most of it, and a strip this long is usually a sheet",
    "135 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "241604 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "241604 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -34,7 +34,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.14,
   "why": [
-   "47752 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "47752 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 15.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -53,7 +53,7 @@
   "border_flat": 1.0,
   "why": [
    "187 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "211976 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "211976 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -71,7 +71,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.828,
   "why": [
-   "45776 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "45776 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -89,7 +89,7 @@
   "transparent_pct": 77.9,
   "border_flat": 0.767,
   "why": [
-   "24268 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "24268 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -108,7 +108,7 @@
   "border_flat": 1.0,
   "why": [
    "47 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "179580 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "179580 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -127,7 +127,7 @@
   "border_flat": 0.907,
   "why": [
    "8 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "71874 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "71874 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -164,7 +164,7 @@
   "border_flat": 0.966,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "12733 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "12733 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -182,7 +182,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.817,
   "why": [
-   "26760 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "26760 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -201,7 +201,7 @@
   "border_flat": 0.503,
   "why": [
    "40 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "162298 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "162298 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -220,7 +220,7 @@
   "border_flat": 0.926,
   "why": [
    "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "29441 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "29441 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 11.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -239,7 +239,7 @@
   "border_flat": 0.998,
   "why": [
    "112 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "267746 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "267746 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -258,7 +258,7 @@
   "border_flat": 0.949,
   "why": [
    "105 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "65214 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "65214 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 18.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -277,7 +277,7 @@
   "border_flat": 0.949,
   "why": [
    "12 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "34543 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "34543 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 19.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -296,7 +296,7 @@
   "border_flat": 0.869,
   "why": [
    "21 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "82407 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "82407 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -315,7 +315,7 @@
   "border_flat": 0.92,
   "why": [
    "128 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "231306 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "231306 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -352,7 +352,7 @@
   "border_flat": 0.978,
   "why": [
    "110 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "194973 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "194973 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -371,7 +371,7 @@
   "border_flat": 0.993,
   "why": [
    "65 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "107687 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "107687 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -390,7 +390,7 @@
   "border_flat": 0.816,
   "why": [
    "27 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "59928 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "59928 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -409,7 +409,7 @@
   "border_flat": 0.996,
   "why": [
    "31 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "44625 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "44625 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -428,7 +428,7 @@
   "border_flat": 0.999,
   "why": [
    "180 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "150679 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "150679 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -447,7 +447,7 @@
   "border_flat": 1.0,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "158131 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "158131 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -485,7 +485,7 @@
   "why": [
    "9 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (20px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "86878 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "86878 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -504,7 +504,7 @@
   "border_flat": 0.53,
   "why": [
    "12 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "224237 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "224237 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -523,7 +523,7 @@
   "border_flat": 0.685,
   "why": [
    "23 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "80859 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "80859 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -542,7 +542,7 @@
   "border_flat": 1.0,
   "why": [
    "16 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "29305 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "29305 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -561,7 +561,7 @@
   "border_flat": 0.857,
   "why": [
    "45 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "61617 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "61617 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 17.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -580,7 +580,7 @@
   "border_flat": 1.0,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "29165 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "29165 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -600,7 +600,7 @@
   "why": [
    "3.0:1 strip - the square centre crop discards most of it, and a strip this long is usually a sheet",
    "12 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "397216 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "397216 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -619,7 +619,7 @@
   "border_flat": 1.0,
   "why": [
    "71 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "112322 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "112322 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -655,7 +655,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.994,
   "why": [
-   "51634 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "51634 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -674,7 +674,7 @@
   "border_flat": 0.96,
   "why": [
    "96 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "56979 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "56979 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 13.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -694,7 +694,7 @@
   "why": [
    "4.2:1 strip - the square centre crop discards most of it, and a strip this long is usually a sheet",
    "125 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "329038 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "329038 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 10.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -713,7 +713,7 @@
   "border_flat": 0.893,
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "37157 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "37157 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -731,7 +731,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.0,
   "why": [
-   "47265 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "47265 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -750,7 +750,7 @@
   "border_flat": 0.53,
   "why": [
    "12 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "224237 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "224237 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -769,7 +769,7 @@
   "border_flat": 1.0,
   "why": [
    "26 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "94422 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "94422 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -788,7 +788,7 @@
   "border_flat": 0.99,
   "why": [
    "171 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "299454 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "299454 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -807,7 +807,7 @@
   "border_flat": 0.651,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "63326 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "63326 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -826,7 +826,7 @@
   "border_flat": 0.757,
   "why": [
    "13 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32552 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32552 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 22.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -845,7 +845,7 @@
   "border_flat": 0.969,
   "why": [
    "80 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "24153 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "24153 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 15.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -864,7 +864,7 @@
   "border_flat": 1.0,
   "why": [
    "90 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "33618 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "33618 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -883,7 +883,7 @@
   "border_flat": 0.978,
   "why": [
    "83 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "156589 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "156589 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -902,7 +902,7 @@
   "border_flat": 0.998,
   "why": [
    "18 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "89688 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "89688 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -921,7 +921,7 @@
   "border_flat": 0.684,
   "why": [
    "35 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "80997 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "80997 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -959,7 +959,7 @@
   "why": [
    "13 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (21px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "161385 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "161385 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -978,7 +978,7 @@
   "border_flat": 0.757,
   "why": [
    "13 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32552 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32552 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 22.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -998,7 +998,7 @@
   "why": [
    "14 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (13px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "87030 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "87030 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1017,7 +1017,7 @@
   "border_flat": 0.996,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "12396 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "12396 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1036,7 +1036,7 @@
   "border_flat": 0.917,
   "why": [
    "31 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "42065 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "42065 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 24.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1055,7 +1055,7 @@
   "border_flat": 0.917,
   "why": [
    "31 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "42065 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "42065 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 24.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1073,7 +1073,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.714,
   "why": [
-   "189137 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "189137 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1110,7 +1110,7 @@
   "border_flat": 0.985,
   "why": [
    "17 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32824 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32824 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 10.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1129,7 +1129,7 @@
   "border_flat": 0.77,
   "why": [
    "74 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "210745 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "210745 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1148,7 +1148,7 @@
   "border_flat": 0.814,
   "why": [
    "3 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "314801 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "314801 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1185,7 +1185,7 @@
   "border_flat": 0.969,
   "why": [
    "41 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "124447 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "124447 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1204,7 +1204,7 @@
   "border_flat": 1.0,
   "why": [
    "63 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "24516 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "24516 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1223,7 +1223,7 @@
   "border_flat": 1.0,
   "why": [
    "86 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "163303 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "163303 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1243,7 +1243,7 @@
   "why": [
    "19 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (15px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "123254 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "123254 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1262,7 +1262,7 @@
   "border_flat": 1.0,
   "why": [
    "73 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "70274 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "70274 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1318,7 +1318,7 @@
   "why": [
    "17 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (15px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "144045 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "144045 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1355,7 +1355,7 @@
   "border_flat": 0.59,
   "why": [
    "9 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "115749 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "115749 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1374,7 +1374,7 @@
   "border_flat": 0.97,
   "why": [
    "60 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "29999 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "29999 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1393,7 +1393,7 @@
   "border_flat": 0.845,
   "why": [
    "8 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32275 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32275 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1412,7 +1412,7 @@
   "border_flat": 0.904,
   "why": [
    "46 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "52490 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "52490 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 21.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1449,7 +1449,7 @@
   "border_flat": 0.923,
   "why": [
    "46 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "49349 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "49349 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 23.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1468,7 +1468,7 @@
   "border_flat": 0.614,
   "why": [
    "110 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "151074 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "151074 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1486,7 +1486,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.806,
   "why": [
-   "134754 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "134754 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 14.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1505,7 +1505,7 @@
   "border_flat": 1.0,
   "why": [
    "21 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "47004 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "47004 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1524,7 +1524,7 @@
   "border_flat": 0.739,
   "why": [
    "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "51303 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "51303 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1561,7 +1561,7 @@
   "border_flat": 0.979,
   "why": [
    "39 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "41313 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "41313 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1580,7 +1580,7 @@
   "border_flat": 0.739,
   "why": [
    "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "51303 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "51303 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1599,7 +1599,7 @@
   "border_flat": 1.0,
   "why": [
    "10 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "70146 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "70146 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1618,7 +1618,7 @@
   "border_flat": 0.887,
   "why": [
    "33 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "26790 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "26790 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1637,7 +1637,7 @@
   "border_flat": 1.0,
   "why": [
    "8 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "6051 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "6051 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1657,7 +1657,7 @@
   "why": [
    "3.3:1 strip - the square centre crop discards most of it, and a strip this long is usually a sheet",
    "17 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "64027 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "64027 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1711,7 +1711,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.714,
   "why": [
-   "161413 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "161413 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1731,7 +1731,7 @@
   "why": [
    "13 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (14px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "92221 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "92221 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1751,7 +1751,7 @@
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (17px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "94037 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "94037 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1771,7 +1771,7 @@
   "why": [
    "5 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (17px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "68957 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "68957 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1790,7 +1790,7 @@
   "border_flat": 0.73,
   "why": [
    "24 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "50556 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "50556 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1809,7 +1809,7 @@
   "border_flat": 0.859,
   "why": [
    "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "89627 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "89627 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1827,7 +1827,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.289,
   "why": [
-   "295841 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "295841 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 16.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1846,7 +1846,7 @@
   "border_flat": 0.999,
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "117530 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "117530 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1865,7 +1865,7 @@
   "border_flat": 0.571,
   "why": [
    "20 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "208280 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "208280 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1884,7 +1884,7 @@
   "border_flat": 1.0,
   "why": [
    "47 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "179580 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "179580 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1921,7 +1921,7 @@
   "border_flat": 1.0,
   "why": [
    "9 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "72164 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "72164 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1958,7 +1958,7 @@
   "border_flat": 1.0,
   "why": [
    "26 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "94422 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "94422 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 1.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1977,7 +1977,7 @@
   "border_flat": 1.0,
   "why": [
    "40 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "223934 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "223934 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -1997,7 +1997,7 @@
   "why": [
    "14 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (21px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "29018 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "29018 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2016,7 +2016,7 @@
   "border_flat": 0.563,
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "249746 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "249746 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2053,7 +2053,7 @@
   "border_flat": 1.0,
   "why": [
    "16 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "61887 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "61887 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 3.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2072,7 +2072,7 @@
   "border_flat": 0.96,
   "why": [
    "96 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "56979 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "56979 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 13.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2127,7 +2127,7 @@
   "border_flat": 0.735,
   "why": [
    "56 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "237540 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "237540 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2146,7 +2146,7 @@
   "border_flat": 1.0,
   "why": [
    "7 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "87883 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "87883 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2166,7 +2166,7 @@
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (21px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "58511 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "58511 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2185,7 +2185,7 @@
   "border_flat": 1.0,
   "why": [
    "40 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "72714 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "72714 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2222,7 +2222,7 @@
   "border_flat": 0.98,
   "why": [
    "96 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "45094 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "45094 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2241,7 +2241,7 @@
   "border_flat": 0.521,
   "why": [
    "6 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "212040 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "212040 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2260,7 +2260,7 @@
   "border_flat": 0.979,
   "why": [
    "55 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "161305 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "161305 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2279,7 +2279,7 @@
   "border_flat": 0.803,
   "why": [
    "30 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "56697 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "56697 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 17.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2298,7 +2298,7 @@
   "border_flat": 0.91,
   "why": [
    "71 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "61603 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "61603 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2317,7 +2317,7 @@
   "border_flat": 0.918,
   "why": [
    "8 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "16249 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "16249 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 12.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2335,7 +2335,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.63,
   "why": [
-   "83465 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "83465 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2354,7 +2354,7 @@
   "border_flat": 0.955,
   "why": [
    "85 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "50990 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "50990 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 13.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2373,7 +2373,7 @@
   "border_flat": 0.904,
   "why": [
    "46 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "52490 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "52490 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 21.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2410,7 +2410,7 @@
   "border_flat": 0.991,
   "why": [
    "24 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "77477 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "77477 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2429,7 +2429,7 @@
   "border_flat": 0.704,
   "why": [
    "27 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "10014 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "10014 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 14.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2448,7 +2448,7 @@
   "border_flat": 0.981,
   "why": [
    "6 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "82360 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "82360 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2467,7 +2467,7 @@
   "border_flat": 1.0,
   "why": [
    "10 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "61776 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "61776 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2485,7 +2485,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.954,
   "why": [
-   "176118 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "176118 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 6.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2504,7 +2504,7 @@
   "border_flat": 1.0,
   "why": [
    "11 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "50313 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "50313 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2523,7 +2523,7 @@
   "border_flat": 0.962,
   "why": [
    "48 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "87306 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "87306 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2542,7 +2542,7 @@
   "border_flat": 0.59,
   "why": [
    "23 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "247636 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "247636 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.0; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2561,7 +2561,7 @@
   "border_flat": 0.997,
   "why": [
    "20 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "59762 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "59762 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.8; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2580,7 +2580,7 @@
   "border_flat": 1.0,
   "why": [
    "15 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "138762 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "138762 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2599,7 +2599,7 @@
   "border_flat": 0.997,
   "why": [
    "113 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "130844 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "130844 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2618,7 +2618,7 @@
   "border_flat": 0.983,
   "why": [
    "25 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "14308 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "14308 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 9.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2637,7 +2637,7 @@
   "border_flat": 0.467,
   "why": [
    "4 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "55090 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "55090 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 11.1; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2656,7 +2656,7 @@
   "border_flat": 0.998,
   "why": [
    "18 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "89688 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "89688 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.2; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2675,7 +2675,7 @@
   "border_flat": 0.993,
   "why": [
    "65 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "107687 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "107687 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.9; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2694,7 +2694,7 @@
   "border_flat": 0.962,
   "why": [
    "48 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "87306 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "87306 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 2.6; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2714,7 +2714,7 @@
   "why": [
    "17 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (15px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "100906 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "100906 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 8.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2733,7 +2733,7 @@
   "border_flat": 0.979,
   "why": [
    "23 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32503 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32503 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2753,7 +2753,7 @@
   "why": [
    "4 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
    "transparency checkerboard baked into the pixels (15px squares) - the model learns to draw the checker and no prompt removes it. Key it out to real alpha and the image is fine",
-   "93509 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "93509 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 7.4; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2772,7 +2772,7 @@
   "border_flat": 0.979,
   "why": [
    "23 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "32503 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "32503 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 4.7; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2791,7 +2791,7 @@
   "border_flat": 0.956,
   "why": [
    "91 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "93251 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "93251 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 15.5; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
@@ -2810,7 +2810,7 @@
   "border_flat": 0.692,
   "why": [
    "32 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it",
-   "187296 colours and no pixel grid - a render or a painting, not the finished pixel art this tab means. It may still belong under 'core'"
+   "187296 colours, no pixel grid, and it does not survive a round-trip through its own blocks (error 5.3; hand-made pixel art here scores 0.0) - blocky to look at, noise underneath. Either art imitating pixel art, or real pixel art that has been through JPEG; the measurement cannot tell those apart and does not try. Both teach the noise"
   ]
  },
  {
