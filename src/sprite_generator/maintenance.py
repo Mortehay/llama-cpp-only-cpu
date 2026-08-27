@@ -91,6 +91,26 @@ def _rows_at_stake() -> dict:
         return {"trainable": None, "with_reason": None, "why": str(e)}
 
 
+# NO WORKER-LIVENESS SIGNAL, and the reason is worth keeping.
+#
+# Celery reports PENDING both for a task waiting its turn and for a task id it
+# has never heard of, forever - measured, not assumed. So a worker restart
+# between the POST and the first poll leaves the UI watching something that
+# will never run. A `control.ping()` looked like the missing second signal.
+#
+# It is not, HERE. This worker runs `--pool=solo`, which does not serve control
+# commands: `ping()` returns [] and `inspect().active_queues()` returns False
+# against a worker that is up and had just executed a task. Shipping that would
+# have put "No worker is answering" permanently on screen underneath a
+# perfectly healthy worker - a confident false claim, which is worse than the
+# silence it was meant to fix.
+#
+# What the UI does instead is say how long the task has been queued and name
+# BOTH possibilities without choosing between them. If a liveness signal is
+# ever wanted, the honest one is a real task the worker executes and answers,
+# not a control broadcast the pool ignores.
+
+
 @router.get("/api/commands")
 def list_commands(authorization: str | None = Header(None)):
     auth.require(authorization, "read")
@@ -157,6 +177,7 @@ def command_status(task_id: str, authorization: str | None = Header(None)):
         "lines": payload.get("lines") or info.get("lines") or [],
         "message": info.get("msg"),
         "exit_code": payload.get("exit_code"),
+        "timed_out": bool(payload.get("timed_out")),
         # FAILURE means the task itself blew up. A non-zero exit code is NOT a
         # failure here - a red test suite is a successful run of a test suite,
         # and collapsing the two would hide which one happened.

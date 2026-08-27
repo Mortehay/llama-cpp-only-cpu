@@ -391,6 +391,8 @@ export interface CommandStatus {
   lines: string[]
   message: string | null
   exit_code: number | null
+  /** Killed for exceeding the time limit; `lines` is what it managed. */
+  timed_out: boolean
   /** The task itself blew up. A non-zero `exit_code` is NOT this. */
   crashed: boolean
   error: string | null

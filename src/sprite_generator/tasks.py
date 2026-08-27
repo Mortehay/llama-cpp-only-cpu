@@ -3222,7 +3222,24 @@ def build_tile_job(self, job_id: str):
     return {"path": out_path}
 
 
-@celery_app.task(bind=True, name="tasks.run_command_job")
+# Thirty minutes, against a longest declared command of six.
+#
+# Nothing else in this file has a time limit, and for generation that is right:
+# a training run is ~2 hours. But these are operator tools on a worker with
+# --concurrency=1 shared with the GPU queue, so one hung command blocks every
+# sheet and every training run indefinitely, with nothing in the UI saying why.
+# A ceiling far above the slowest real run still turns "forever" into "half an
+# hour and a clear message".
+#
+# `soft` fires an exception INSIDE the task so the subprocess can be killed and
+# the output kept; `hard` is the backstop if that handler itself wedges.
+COMMAND_SOFT_LIMIT_S = 30 * 60
+COMMAND_HARD_LIMIT_S = COMMAND_SOFT_LIMIT_S + 60
+
+
+@celery_app.task(bind=True, name="tasks.run_command_job",
+                 soft_time_limit=COMMAND_SOFT_LIMIT_S,
+                 time_limit=COMMAND_HARD_LIMIT_S)
 def run_command_job(self, name: str):
     """Run one named operator command from the `commands` allowlist.
 
@@ -3249,21 +3266,43 @@ def run_command_job(self, name: str):
     self.update_state(state="PROGRESS",
                       meta={"name": name, "msg": "starting", "lines": []})
 
+    from celery.exceptions import SoftTimeLimitExceeded
+
     proc = subprocess.Popen(spec["argv"], stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
     tail: list[str] = []
-    for line in proc.stdout:
-        line = line.rstrip()
-        if not line:
-            continue
-        tail.append(line)
-        # Enough to show a failing test's assertions and the summary lines the
-        # audit ends with, and short enough to survive being polled.
-        del tail[:-40]
-        logger.info("%s: %s", name, line)
-        self.update_state(state="PROGRESS",
-                          meta={"name": name, "msg": line, "lines": tail[-12:]})
-    rc = proc.wait()
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            tail.append(line)
+            # Enough to show a failing test's assertions and the summary lines
+            # the audit ends with, short enough to survive being polled.
+            del tail[:-40]
+            logger.info("%s: %s", name, line)
+            self.update_state(state="PROGRESS",
+                              meta={"name": name, "msg": line,
+                                    "lines": tail[-12:]})
+        rc = proc.wait()
+    except SoftTimeLimitExceeded:
+        # The subprocess does NOT die with the task. Without this it keeps the
+        # worker slot and its file handles after Celery has given up on it,
+        # which is the same hang the limit exists to end - just invisible.
+        logger.warning("command %s exceeded %ds; killing it",
+                       name, COMMAND_SOFT_LIMIT_S)
+        proc.kill()
+        proc.wait()
+        return {"name": name, "exit_code": None, "lines": tail,
+                "writes": spec["writes"], "timed_out": True,
+                "error": f"stopped after {COMMAND_SOFT_LIMIT_S // 60} minutes. "
+                         f"The output above is everything it produced."}
+    except BaseException:
+        # Revocation, a worker shutdown, anything else. Same reasoning: an
+        # orphaned child holding the slot is worse than the original failure.
+        proc.kill()
+        proc.wait()
+        raise
 
     result = {"name": name, "exit_code": rc, "lines": tail,
               "writes": spec["writes"]}

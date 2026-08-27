@@ -32,8 +32,27 @@ export default function Commands() {
   // Which database-writing command is waiting for a second click. Held by name
   // rather than as a boolean so arming one cannot arm another.
   const [armed, setArmed] = useState<string | null>(null)
+  // When the current task was queued, so a run that never starts can say so.
+  const [queuedAt, setQueuedAt] = useState<number | null>(null)
+  const [waited, setWaited] = useState(0)
 
   const polling = !!taskId && (!status || !TERMINAL.includes(status.status))
+
+  /**
+   * A task that never arrives looks exactly like one that is queued.
+   *
+   * Celery reports PENDING for an id it has never seen AND for an id waiting
+   * its turn, with no way to tell them apart - so a worker restart between the
+   * POST and the first poll leaves this page polling forever with every button
+   * disabled and nothing on screen explaining it. Measured, not assumed: an
+   * invented task id reports PENDING, info None, ready false, indefinitely.
+   *
+   * So: count how long it has been PENDING and, past a threshold, say what is
+   * probably happening and offer a way out. The escape matters more than the
+   * message - without it the only fix is reloading the tab.
+   */
+  const stalled = polling && status?.status === 'PENDING' && waited > 45
+
 
   usePoll(
     () => {
@@ -51,10 +70,20 @@ export default function Commands() {
           }
         })
         .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+      if (queuedAt) setWaited(Math.round((Date.now() - queuedAt) / 1000))
     },
     1500,
     polling,
   )
+
+  /** Forget the current task. Does not cancel it - says so where it is used. */
+  function stopWatching() {
+    setTaskId(null)
+    setStatus(null)
+    setRunning(null)
+    setQueuedAt(null)
+    setWaited(0)
+  }
 
   async function start(cmd: Command) {
     if (cmd.writes === 'database' && armed !== cmd.name) {
@@ -64,10 +93,12 @@ export default function Commands() {
     setArmed(null)
     setError(null)
     setStatus(null)
+    setWaited(0)
     setRunning(cmd.name)
     try {
       const { task_id } = await api.runCommand(cmd.name, cmd.writes === 'database')
       setTaskId(task_id)
+      setQueuedAt(Date.now())
     } catch (e: unknown) {
       setRunning(null)
       setError(e instanceof Error ? e.message : String(e))
@@ -93,6 +124,24 @@ export default function Commands() {
           <p className="note">
             These run on the same single worker as image generation. A
             five-minute audit delays the next sheet by five minutes.
+          </p>
+        )}
+
+        {/* No worker-liveness claim here, deliberately. The obvious source is
+            `celery.control.ping()`, and this worker runs --pool=solo, which
+            does not answer control commands - it returns [] against a healthy
+            worker. Naming both possibilities is what can honestly be said. */}
+        {stalled && (
+          <p className="warn">
+            Queued {waited}s ago and still not started. Either something ahead
+            of it is still running, or the worker restarted after this was
+            queued — those look identical from here.{' '}
+            <button className="btn ghost" onClick={stopWatching}>
+              Stop watching
+            </button>{' '}
+            <span className="hint">
+              This forgets the task; it does not cancel it.
+            </span>
           </p>
         )}
       </div>
@@ -185,7 +234,13 @@ function Output({ status }: { status: CommandStatus }) {
   // A non-zero exit is not a crash, and the difference matters: a failing test
   // suite has done its job and its output is the point. Only `crashed` means
   // the task itself died, in which case there may be nothing useful below.
-  const failed = status.crashed || (status.exit_code != null && status.exit_code !== 0)
+  // `timed_out` is in here because a killed command reports exit_code null and
+  // crashed false, so without it the header renders green as "finished" - the
+  // single most misleading thing this panel could say.
+  const failed =
+    status.crashed ||
+    status.timed_out ||
+    (status.exit_code != null && status.exit_code !== 0)
 
   return (
     <div className="card">
@@ -198,6 +253,12 @@ function Output({ status }: { status: CommandStatus }) {
 
       {!done && status.message && <p className="muted tight">{status.message}</p>}
       {status.crashed && <p className="err">The command did not run: {status.error}</p>}
+      {status.timed_out && (
+        <p className="warn">
+          Stopped for running too long, and the command was killed so it could
+          not hold the worker. {status.error}
+        </p>
+      )}
       {!status.crashed && status.exit_code != null && status.exit_code !== 0 && (
         <p className="warn">
           Exit code {status.exit_code}. For a test suite that is a result rather
