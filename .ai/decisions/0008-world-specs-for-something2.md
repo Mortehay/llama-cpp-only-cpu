@@ -492,6 +492,41 @@ the claim was checked:
 Both are the same error at different distances: **verifying the description
 instead of the thing.**
 
+### The instrument did it too, 2026-08-27
+
+`check-artifacts.py` has two halves. The region half regenerates and diffs. The
+map half, added later, checks that finished maps are internally whole - and it
+ended every run with:
+
+```
+  --    no finished maps to check
+maps checked, all whole.
+```
+
+There are no map rows in this database. Every map built here today was built by
+calling the functions directly, through smoke scripts and one-off `docker exec`
+runs, so no `kind='map'` job row was ever written. The map half has therefore
+checked **nothing, ever**, and reported a pass for it every time.
+
+The region half never had this bug - it counts what it checked and says
+`0 region(s)` when it finds none. Only the map half collapsed "no faults" into
+"all whole".
+
+So the file written to stop this class of error contained an instance of it,
+one paragraph below a docstring saying that calling this 'verified' would be
+"the overclaim this whole file exists to stop". Writing the warning is not the
+same as obeying it - which is the same error again, at the shortest distance
+yet: **the description and the thing were the same file.**
+
+Fixed: `check_maps` returns `(broken, checked)`, and an empty set now prints
+`NO maps were checked. This says nothing about maps.` A zero denominator is
+never a pass.
+
+**The general rule, worth applying to every guard here:** a check that reports
+success must report its denominator. "Nothing was wrong" and "nothing was
+looked at" produce identical output otherwise, and only one of them is good
+news.
+
 ## D13 - Density is uniform across a region, and that is a decision to make
 
 D10 removed the biome multiplier because it described nothing real. It was also

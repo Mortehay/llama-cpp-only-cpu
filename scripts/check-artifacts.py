@@ -64,7 +64,7 @@ def diff_summary(stale: dict, fresh: dict) -> list:
     return out
 
 
-def check_maps() -> int:
+def check_maps() -> tuple[int, int]:
     """Are the served MAPS still whole?
 
     Maps get a weaker guarantee than regions and the difference is worth being
@@ -81,6 +81,10 @@ def check_maps() -> int:
 
     That is the same class as the region check without the same strength, and
     calling it 'verified' would be the overclaim this whole file exists to stop.
+
+    Returns (broken, checked). Both, because they are different questions:
+    zero broken out of zero checked is not a clean bill of health, and this
+    function used to let `main` report the one as the other.
     """
     import json as _json
 
@@ -90,7 +94,7 @@ def check_maps() -> int:
     db = os.environ.get("DB_URL")
     if not db:
         print("  ?     maps - no DB_URL, cannot check")
-        return 0
+        return 0, 0
 
     with psycopg2.connect(db) as conn, conn.cursor(
             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -101,7 +105,7 @@ def check_maps() -> int:
 
     if not rows:
         print("  --    no finished maps to check")
-        return 0
+        return 0, 0
 
     broken = 0
     for r in rows:
@@ -171,7 +175,7 @@ def check_maps() -> int:
             print(f"  ok    {name}  - {len(terrains)} terrains, all tiles "
                   f"present, grid and entities consistent")
 
-    return broken
+    return broken, len(rows)
 
 
 def main() -> int:
@@ -226,13 +230,19 @@ def main() -> int:
         print(f"{len(paths)} region(s) checked, all match the current code.")
 
     print()
-    broken = check_maps()
+    broken, checked = check_maps()
     print()
     if broken:
         print(f"{broken} map(s) are not whole. Rebuild them - a tilemap whose "
               f"tiles are gone is one something2 downloads and cannot draw.")
+    elif checked:
+        print(f"{checked} map(s) checked, all whole.")
     else:
-        print("maps checked, all whole.")
+        # Nothing was checked, so nothing is known. Said plainly, because the
+        # cheerful version of this line - "maps checked, all whole" over an
+        # empty set - is the exact overclaim this file exists to prevent, and
+        # it sat here reporting a pass over nothing.
+        print("NO maps were checked. This says nothing about maps.")
 
     return 1 if (stale_count or broken) else 0
 
