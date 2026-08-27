@@ -130,7 +130,11 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DB_URL = os.environ.get("DB_URL")
 IMAGES_DIR = "/app/images"
 
-celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL)
+# `include` rather than an import: map_tasks imports this module for the app,
+# so importing it back here at module scope would be circular. Celery loads it
+# after the app exists, which is exactly when it is safe.
+celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL,
+                    include=["map_tasks"])
 
 # Redis client for cooperative cancellation flags
 import redis as _redis

@@ -103,7 +103,31 @@ trigger cannot mean two things.
 *Verifiable:* a run reaches `done` and an adapter appears in `/models/loras`.
 Blocked until >= 8 usable references exist (`MIN_IMAGES`).
 
-### Slice 3 - First map you can look at (no entities, no LLM)
+### Slice 3 - First map you can look at (no entities, no LLM) - MOSTLY DONE
+
+Shipped 2026-08-26: `map_geometry.py`, `map_tasks.py` (registered through the
+Celery app's `include`, so `tasks.py` gained one name rather than a stage),
+`maps.py` (`POST /api/maps`, `GET /api/maps/{id}`, `GET /api/maps`), the Maps
+tab, and `scripts/smoke-map-build.py`. Verified end to end on a real job row:
+32x32 grid -> 2048x1024 picture, ids round-tripped exactly, zero interior holes.
+
+Two departures from the plan as written, both deliberate:
+
+- **A terrain may name an existing tile instead of generating one.** Library
+  first, exactly as D6 has entity placements work. A map whose terrains all
+  reuse tiles costs no GPU at all, which is what made the path testable before
+  the adapter exists.
+- **`painting_from` accepts a map reference as the layout.** Same reason: it
+  decouples this slice from Slice 2 entirely. The generate-from-prompt path is
+  written but unproven, because without the adapter its output is not worth
+  looking at.
+
+Storage reuses `sheet_path` (picture) and `atlas_path` (tilemap JSON), so
+`/api/jobs/{id}/sheet` serves the picture unchanged and **no migration was
+needed**.
+
+**Still open in this slice:** the generated-painting path has never produced a
+map worth keeping, and cannot until Slice 2 trains the adapter.
 
 Terrain set in the Maps tab; `POST /api/maps`; `kind='map'` job; biome painting
 at 1 px per tile with the forced palette; quantize to `layers.terrain`;
@@ -138,7 +162,34 @@ alpha, where it previously returned 3% fewer. Ground tiles generated before this
 carry the old shape and will show pinholes when tiled; regenerate them if that
 matters.
 
-### Slice 4 - Entity placements and provisional
+### Slice 4 - Entity placements and provisional - DONE (scatter half)
+
+Shipped 2026-08-27: `map_geometry.scatter`, `map_tasks._populate`, the
+`scatter` rules on `MapSpec`, and the provisional state. Verified end to end on
+a real job: 32 entities over two layers, 24 placed from the library and 8
+pending, `complete: false` with `pending: ["wolf"]`, none on water and none on
+the road.
+
+Four decisions worth keeping:
+
+- **Terrain is named in a rule, not indexed.** Ids are positional and a caller
+  should not have to count the terrain list to say "on grass". A typo is a 400
+  naming the valid options, rather than a rule that silently matches nothing.
+- **Spacing, not pure random.** Uniform sampling clumps - three trees on
+  adjacent tiles beside a bare stretch reads as a mistake rather than as
+  nature. Rejecting candidates within `spacing` costs nothing.
+- **Scatter avoids roads.** A tree in the middle of the road is not a charming
+  detail, and `safe_road_radius` exists to keep that corridor clear.
+- **The placeholder is deliberately ugly** - magenta box and cross. One that
+  reads as finished is worse than a missing one, because it gets cached
+  downstream as the real thing.
+
+**Not done in this slice:** queuing actual generation jobs for `pending` props,
+and the reaping that stops a failed entity job stranding a map at
+`complete: false` forever. The placements and the provisional state are real;
+the job that resolves them is not written yet.
+
+### Slice 4 - original scope
 
 Library-first lookup, rule scatter by biome density, queued jobs for gaps,
 placeholder art, `complete` / `pending`. Reaping for stranded entity jobs,

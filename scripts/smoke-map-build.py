@@ -164,6 +164,178 @@ def _agree():
     return "4 cells sampled, all agree"
 
 
+def marker(w, h, colour):
+    """A solid block standing on a tile - stands in for a prop or creature."""
+    return Image.new("RGBA", (w, h), (*colour, 255))
+
+
+@case("roads are a GROUND layer, painted under anything standing up")
+def _roads():
+    grid = np.zeros((8, 8), dtype=np.int16)
+    roads = mg.road_layer((8, 8), [[(0, 4), (7, 4)]])
+    assert roads[4].sum() == 8 and roads[3].sum() == 0, roads
+
+    road_tile = Image.new("RGBA", (TILE_W, TILE_H), (200, 170, 120, 255))
+    road_tile.putalpha(tg.diamond_mask(TILE_W, TILE_H))
+    pic = mg.composite(grid, solid_tiles(), roads=roads, road_tiles=[road_tile])
+    assert pic.size == mg.picture_size(8, 8, TILE_W, TILE_H)
+
+    # A creature on a road tile must still be visible: the road is painted in
+    # Pass A, so Pass B draws over it.
+    objs = [{"x": 4, "y": 4, "layer": "creatures", "image": marker(10, 20, (255, 0, 0))}]
+    with_obj = mg.composite(grid, solid_tiles(), roads=roads,
+                            road_tiles=[road_tile], objects=objs)
+    a, b = np.asarray(pic), np.asarray(with_obj)
+    assert (a != b).any(), "the creature did not draw over the road"
+    return "8 road cells, creature draws on top"
+
+
+@case("a road may not cross unwalkable terrain")
+def _road_water():
+    grid = np.zeros((8, 8), dtype=np.int16)
+    grid[4, 4] = 1                       # water at the crossing point
+    walkable = [t.get("walkable", True) for t in TERRAINS]
+    try:
+        mg.road_layer((8, 8), [[(0, 4), (7, 4)]], walkable=walkable, terrain=grid)
+    except ValueError as e:
+        assert "unwalkable" in str(e), str(e)
+        return str(e).split(" at ")[0]
+    raise AssertionError("a road was laid straight across water")
+
+
+@case("creatures and props share ONE depth sort")
+def _one_sort():
+    """The property two flat layers cannot have.
+
+    A prop one tile IN FRONT of a creature must cover it; the same creature one
+    tile further forward must cover the prop. If props were simply a later
+    layer, the first would work and the second would not.
+    """
+    grid = np.zeros((8, 8), dtype=np.int16)
+    creature = marker(16, 30, (255, 0, 0))
+    prop = marker(16, 30, (0, 0, 255))
+
+    def render(cx, cy, px, py):
+        return np.asarray(mg.composite(grid, solid_tiles(), objects=[
+            {"x": cx, "y": cy, "layer": "creatures", "image": creature},
+            {"x": px, "y": py, "layer": "props", "image": prop},
+        ]).convert("RGB"))
+
+    def counts(arr):
+        red = int(((arr[..., 0] > 200) & (arr[..., 2] < 80)).sum())
+        blue = int(((arr[..., 2] > 200) & (arr[..., 0] < 80)).sum())
+        return red, blue
+
+    # Prop in FRONT (greater x+y) -> prop occludes the creature.
+    r1, b1 = counts(render(3, 3, 4, 4))
+    # Creature in FRONT -> creature occludes the prop.
+    r2, b2 = counts(render(4, 4, 3, 3))
+
+    assert b1 > b2, f"prop in front did not occlude ({b1} vs {b2})"
+    assert r2 > r1, f"creature in front did not occlude ({r2} vs {r1})"
+    return f"prop-front blue {b1}>{b2}, creature-front red {r2}>{r1}"
+
+
+@case("a prop settles behind a creature on the SAME tile")
+def _same_tile():
+    grid = np.zeros((8, 8), dtype=np.int16)
+    objs = [
+        {"x": 4, "y": 4, "layer": "props", "image": marker(16, 30, (0, 0, 255))},
+        {"x": 4, "y": 4, "layer": "creatures", "image": marker(16, 30, (255, 0, 0))},
+    ]
+    order = [o["layer"] for o in mg._sorted_objects(objs, 8, 8)]
+    assert order == ["props", "creatures"], order
+    return "props then creatures within one depth"
+
+
+@case("an object outside the grid is refused, not clamped")
+def _oob():
+    grid = np.zeros((8, 8), dtype=np.int16)
+    for bad in ({"x": -1, "y": 3}, {"x": 3, "y": 8}):
+        try:
+            mg.composite(grid, solid_tiles(), objects=[
+                dict(bad, layer="props", image=marker(4, 4, (0, 255, 0)))])
+        except ValueError as e:
+            assert "outside" in str(e), str(e)
+        else:
+            raise AssertionError(f"{bad} was accepted")
+    try:
+        mg.composite(grid, solid_tiles(), objects=[
+            {"x": 1, "y": 1, "layer": "projectiles", "image": marker(4, 4, (0, 255, 0))}])
+    except ValueError as e:
+        assert "not one of" in str(e), str(e)
+    else:
+        raise AssertionError("an unknown layer was accepted")
+    return "out-of-bounds and unknown layers both raise"
+
+
+@case("scatter puts things only on terrain they belong on")
+def _scatter_terrain():
+    grid = np.zeros((20, 20), dtype=np.int16)
+    grid[:10, :] = 1                       # top half water
+    objs = mg.scatter(grid, [
+        {"layer": "props", "asset": "tree", "terrain": [0], "density": 0.3},
+    ], seed=7)
+    assert objs, "nothing placed"
+    for o in objs:
+        assert int(grid[o["y"], o["x"]]) == 0, (o, "landed on water")
+        assert o["layer"] == "props"
+    return f"{len(objs)} props, none on water"
+
+
+@case("scatter is deterministic, and keyed to the seed")
+def _scatter_determinism():
+    grid = np.zeros((16, 16), dtype=np.int16)
+    rule = [{"layer": "props", "asset": "rock", "terrain": [0], "density": 0.2}]
+    a = mg.scatter(grid, rule, seed=3)
+    b = mg.scatter(grid, rule, seed=3)
+    c = mg.scatter(grid, rule, seed=4)
+    assert a == b, "same seed produced a different map"
+    assert a != c, "different seeds produced the same map"
+    return f"seed 3 -> {len(a)} placements, stable; seed 4 differs"
+
+
+@case("scatter keeps its distance, so it reads as scattered not blotchy")
+def _scatter_spacing():
+    grid = np.zeros((30, 30), dtype=np.int16)
+    objs = mg.scatter(grid, [
+        {"layer": "props", "asset": "tree", "terrain": [0],
+         "density": 0.15, "spacing": 3},
+    ], seed=11)
+    pts = [(o["x"], o["y"]) for o in objs]
+    for i, (x, y) in enumerate(pts):
+        for (px, py) in pts[i + 1:]:
+            assert not (abs(x - px) < 3 and abs(y - py) < 3), \
+                f"({x},{y}) and ({px},{py}) are closer than the spacing"
+    return f"{len(pts)} placements, all >= 3 tiles apart"
+
+
+@case("scatter stays off the roads")
+def _scatter_roads():
+    grid = np.zeros((20, 20), dtype=np.int16)
+    roads = mg.road_layer((20, 20), [[(0, 10), (19, 10)]])
+    objs = mg.scatter(grid, [
+        {"layer": "props", "asset": "tree", "terrain": [0], "density": 0.4},
+    ], seed=5, roads=roads)
+    for o in objs:
+        assert int(roads[o["y"], o["x"]]) == 0, (o, "stood in the road")
+    return f"{len(objs)} placements, road corridor clear"
+
+
+@case("a scatter rule with a bad layer or density is refused")
+def _scatter_bad():
+    grid = np.zeros((8, 8), dtype=np.int16)
+    for bad in ({"layer": "projectiles", "terrain": [0], "density": 0.1},
+                {"layer": "props", "terrain": [0], "density": 5.0}):
+        try:
+            mg.scatter(grid, [bad], seed=1)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} was accepted")
+    return "unknown layer and out-of-range density both raise"
+
+
 @case("coverage adds up")
 def _coverage():
     cov = mg.coverage(quadrants(GRID), TERRAINS)

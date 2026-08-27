@@ -44,6 +44,21 @@
 # is precisely why they were chosen, and that constraint no longer applies.
 # Deleted rather than left commented so nothing re-downloads them by accident.
 
+# --- Small model, back for a different job (2026-08-27) ------------------
+# NOT a chat model, and not a reversal of the removal above. The world-spec
+# generator (services/worlds.py, ADR 0008) asks for ~200 tokens of JSON - one
+# biome name per world - and nothing else. For that task a 3B is sufficient and
+# a 9GB chat model is actively wrong: `--models-max 1` means whichever model is
+# resident is the ONLY one, so a large model loaded for chat would have to be
+# evicted and reloaded around every world generation.
+#
+# Size is the point. At 1.80 GB plus KV this coexists with a diffusion pipeline
+# on the 12GB card in a way the 8-9GB entries above explicitly cannot, so a
+# world generation started while a sprite job is running does not evict it.
+#
+# Verified 2026-08-27: HTTP 200, 1.80 GB.
+bartowski/Qwen2.5-3B-Instruct-GGUF Qwen2.5-3B-Instruct-Q4_K_M.gguf
+
 # --- FLUX spritesheet experiment (dead) ----------------------------------
 # tasks.py never loaded this GGUF: get_flux_pipeline expected
 # /models/flux1-schnell.safetensors plus a hardcoded snapshot hash instead, so

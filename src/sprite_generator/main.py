@@ -77,6 +77,17 @@ app.include_router(training_router)
 from tiles import router as tiles_router
 app.include_router(tiles_router)
 
+# World maps: a biome painting quantised to a declared terrain set. The picture
+# and the walkable grid come from the same array, so they cannot disagree.
+from maps import router as maps_router
+app.include_router(maps_router)
+
+# something2 map specs. The only SYNCHRONOUS generation surface here - a spec
+# is arithmetic over a biome table, not a model, so it fits inside the single
+# blocking POST their provider system supports.
+from worlds import router as worlds_router
+app.include_router(worlds_router)
+
 # Ensure images directory exists
 IMAGES_DIR = "/app/images"
 os.makedirs(IMAGES_DIR, exist_ok=True)

@@ -1,0 +1,1236 @@
+{
+ "_readme": "something2 backend/seeds/data/bestiaryP4.js, read 2026-08-26. 288 creatures = 32 families x 9 roles. spawn_tiles is empty on every one, so which creatures appear is decided ENTIRELY by biomes.creature_types. Champion is the only aura-carrying role (aura_radius 260) and their measurement shows leader count, not headcount, is what bends the tick cost.",
+ "roles": [
+  "Swarm",
+  "Skirmisher",
+  "Line",
+  "Ranged",
+  "Caster",
+  "Brute",
+  "Heavy",
+  "Champion",
+  "Apex"
+ ],
+ "leader_roles": [
+  "Champion",
+  "Apex"
+ ],
+ "families": {
+  "Beast": {
+   "Swarm": [
+    1,
+    2
+   ],
+   "Skirmisher": [
+    2,
+    3
+   ],
+   "Line": [
+    4,
+    5
+   ],
+   "Ranged": [
+    5,
+    6
+   ],
+   "Caster": [
+    7,
+    8
+   ],
+   "Brute": [
+    8,
+    9
+   ],
+   "Heavy": [
+    9,
+    10
+   ],
+   "Champion": [
+    11,
+    12
+   ],
+   "Apex": [
+    12,
+    12
+   ]
+  },
+  "Blight": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Bonelord": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Cave": {
+   "Swarm": [
+    1,
+    4
+   ],
+   "Skirmisher": [
+    4,
+    7
+   ],
+   "Line": [
+    7,
+    10
+   ],
+   "Ranged": [
+    10,
+    13
+   ],
+   "Caster": [
+    13,
+    16
+   ],
+   "Brute": [
+    15,
+    18
+   ],
+   "Heavy": [
+    18,
+    21
+   ],
+   "Champion": [
+    21,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Chaos": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Construct": {
+   "Swarm": [
+    20,
+    22
+   ],
+   "Skirmisher": [
+    22,
+    24
+   ],
+   "Line": [
+    24,
+    26
+   ],
+   "Ranged": [
+    26,
+    28
+   ],
+   "Caster": [
+    28,
+    30
+   ],
+   "Brute": [
+    30,
+    32
+   ],
+   "Heavy": [
+    32,
+    34
+   ],
+   "Champion": [
+    34,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Crystal": {
+   "Swarm": [
+    20,
+    22
+   ],
+   "Skirmisher": [
+    22,
+    24
+   ],
+   "Line": [
+    24,
+    26
+   ],
+   "Ranged": [
+    26,
+    28
+   ],
+   "Caster": [
+    28,
+    30
+   ],
+   "Brute": [
+    30,
+    32
+   ],
+   "Heavy": [
+    32,
+    34
+   ],
+   "Champion": [
+    34,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Demonic": {
+   "Swarm": [
+    20,
+    23
+   ],
+   "Skirmisher": [
+    24,
+    27
+   ],
+   "Line": [
+    28,
+    31
+   ],
+   "Ranged": [
+    31,
+    34
+   ],
+   "Caster": [
+    35,
+    38
+   ],
+   "Brute": [
+    39,
+    42
+   ],
+   "Heavy": [
+    43,
+    46
+   ],
+   "Champion": [
+    46,
+    49
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Desert": {
+   "Swarm": [
+    1,
+    2
+   ],
+   "Skirmisher": [
+    2,
+    3
+   ],
+   "Line": [
+    4,
+    5
+   ],
+   "Ranged": [
+    5,
+    6
+   ],
+   "Caster": [
+    7,
+    8
+   ],
+   "Brute": [
+    8,
+    9
+   ],
+   "Heavy": [
+    9,
+    10
+   ],
+   "Champion": [
+    11,
+    12
+   ],
+   "Apex": [
+    12,
+    12
+   ]
+  },
+  "Drowned": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Eldritch": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Ember": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Fallen": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Fungal": {
+   "Swarm": [
+    8,
+    10
+   ],
+   "Skirmisher": [
+    10,
+    12
+   ],
+   "Line": [
+    12,
+    14
+   ],
+   "Ranged": [
+    14,
+    16
+   ],
+   "Caster": [
+    16,
+    18
+   ],
+   "Brute": [
+    18,
+    20
+   ],
+   "Heavy": [
+    20,
+    22
+   ],
+   "Champion": [
+    22,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Gloom": {
+   "Swarm": [
+    8,
+    10
+   ],
+   "Skirmisher": [
+    10,
+    12
+   ],
+   "Line": [
+    12,
+    14
+   ],
+   "Ranged": [
+    14,
+    16
+   ],
+   "Caster": [
+    16,
+    18
+   ],
+   "Brute": [
+    18,
+    20
+   ],
+   "Heavy": [
+    20,
+    22
+   ],
+   "Champion": [
+    22,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Highland": {
+   "Swarm": [
+    8,
+    10
+   ],
+   "Skirmisher": [
+    10,
+    12
+   ],
+   "Line": [
+    12,
+    14
+   ],
+   "Ranged": [
+    14,
+    16
+   ],
+   "Caster": [
+    16,
+    18
+   ],
+   "Brute": [
+    18,
+    20
+   ],
+   "Heavy": [
+    20,
+    22
+   ],
+   "Champion": [
+    22,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Hive": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Jungle": {
+   "Swarm": [
+    8,
+    10
+   ],
+   "Skirmisher": [
+    10,
+    12
+   ],
+   "Line": [
+    12,
+    14
+   ],
+   "Ranged": [
+    14,
+    16
+   ],
+   "Caster": [
+    16,
+    18
+   ],
+   "Brute": [
+    18,
+    20
+   ],
+   "Heavy": [
+    20,
+    22
+   ],
+   "Champion": [
+    22,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Nightmare": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Plague": {
+   "Swarm": [
+    20,
+    23
+   ],
+   "Skirmisher": [
+    24,
+    27
+   ],
+   "Line": [
+    28,
+    31
+   ],
+   "Ranged": [
+    31,
+    34
+   ],
+   "Caster": [
+    35,
+    38
+   ],
+   "Brute": [
+    39,
+    42
+   ],
+   "Heavy": [
+    43,
+    46
+   ],
+   "Champion": [
+    46,
+    49
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Rime": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Ruin": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Stoneborn": {
+   "Swarm": [
+    20,
+    22
+   ],
+   "Skirmisher": [
+    22,
+    24
+   ],
+   "Line": [
+    24,
+    26
+   ],
+   "Ranged": [
+    26,
+    28
+   ],
+   "Caster": [
+    28,
+    30
+   ],
+   "Brute": [
+    30,
+    32
+   ],
+   "Heavy": [
+    32,
+    34
+   ],
+   "Champion": [
+    34,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Storm": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Swamp": {
+   "Swarm": [
+    1,
+    4
+   ],
+   "Skirmisher": [
+    4,
+    7
+   ],
+   "Line": [
+    7,
+    10
+   ],
+   "Ranged": [
+    10,
+    13
+   ],
+   "Caster": [
+    13,
+    16
+   ],
+   "Brute": [
+    15,
+    18
+   ],
+   "Heavy": [
+    18,
+    21
+   ],
+   "Champion": [
+    21,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Titan": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Tundra": {
+   "Swarm": [
+    1,
+    4
+   ],
+   "Skirmisher": [
+    4,
+    7
+   ],
+   "Line": [
+    7,
+    10
+   ],
+   "Ranged": [
+    10,
+    13
+   ],
+   "Caster": [
+    13,
+    16
+   ],
+   "Brute": [
+    15,
+    18
+   ],
+   "Heavy": [
+    18,
+    21
+   ],
+   "Champion": [
+    21,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Umbral": {
+   "Swarm": [
+    20,
+    23
+   ],
+   "Skirmisher": [
+    24,
+    27
+   ],
+   "Line": [
+    28,
+    31
+   ],
+   "Ranged": [
+    31,
+    34
+   ],
+   "Caster": [
+    35,
+    38
+   ],
+   "Brute": [
+    39,
+    42
+   ],
+   "Heavy": [
+    43,
+    46
+   ],
+   "Champion": [
+    46,
+    49
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Undead": {
+   "Swarm": [
+    1,
+    4
+   ],
+   "Skirmisher": [
+    4,
+    7
+   ],
+   "Line": [
+    7,
+    10
+   ],
+   "Ranged": [
+    10,
+    13
+   ],
+   "Caster": [
+    13,
+    16
+   ],
+   "Brute": [
+    15,
+    18
+   ],
+   "Heavy": [
+    18,
+    21
+   ],
+   "Champion": [
+    21,
+    24
+   ],
+   "Apex": [
+    24,
+    24
+   ]
+  },
+  "Void": {
+   "Swarm": [
+    32,
+    34
+   ],
+   "Skirmisher": [
+    34,
+    36
+   ],
+   "Line": [
+    37,
+    39
+   ],
+   "Ranged": [
+    39,
+    41
+   ],
+   "Caster": [
+    41,
+    43
+   ],
+   "Brute": [
+    43,
+    45
+   ],
+   "Heavy": [
+    46,
+    48
+   ],
+   "Champion": [
+    48,
+    50
+   ],
+   "Apex": [
+    50,
+    50
+   ]
+  },
+  "Volcanic": {
+   "Swarm": [
+    8,
+    11
+   ],
+   "Skirmisher": [
+    12,
+    15
+   ],
+   "Line": [
+    15,
+    18
+   ],
+   "Ranged": [
+    19,
+    22
+   ],
+   "Caster": [
+    22,
+    25
+   ],
+   "Brute": [
+    26,
+    29
+   ],
+   "Heavy": [
+    29,
+    32
+   ],
+   "Champion": [
+    33,
+    36
+   ],
+   "Apex": [
+    36,
+    36
+   ]
+  },
+  "Woodland": {
+   "Swarm": [
+    1,
+    2
+   ],
+   "Skirmisher": [
+    2,
+    3
+   ],
+   "Line": [
+    4,
+    5
+   ],
+   "Ranged": [
+    5,
+    6
+   ],
+   "Caster": [
+    7,
+    8
+   ],
+   "Brute": [
+    8,
+    9
+   ],
+   "Heavy": [
+    9,
+    10
+   ],
+   "Champion": [
+    11,
+    12
+   ],
+   "Apex": [
+    12,
+    12
+   ]
+  }
+ }
+}

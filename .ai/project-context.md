@@ -63,6 +63,26 @@ The first external consumer is the admin panel of
 >   *biome painting*, *tilemap*, *region graph* and *map picture* are four
 >   different objects and two of them are PNGs.
 
+> **Extended by [decisions/0008](decisions/0008-world-specs-for-something2.md)
+> (2026-08-27): world specs, and the first surface something2 can call
+> directly.** This generates their `*.map.json` - the file
+> `make seed-map SPEC=<name>` reads - rather than art. Three things it
+> established are worth knowing before touching anything nearby:
+>
+> - **It is SYNCHRONOUS, and uniquely so.** A spec is arithmetic over a biome
+>   table, so it needs no queue, no GPU and no cache-reader facade. Every other
+>   generation surface here is 202 + poll and something2 cannot poll.
+> - **something2 already has world generation**, and its emptiness is authored
+>   in, not missing. Their `normal` density tier is ~4 creatures per screen and
+>   `biomes.creature_density` halves that for Meadow; their own comment notes
+>   every checked-in spec uses only sparse/normal/dense.
+> - **Their P4 bestiary holds 288 creatures that the starter biomes never
+>   reference.** `spawn_tiles` is empty on all of them, so biome
+>   `creature_types` is the only gate, and the five starter biomes name four
+>   legacy creatures.
+>
+> Contract in [specs/worlds/contract.md](specs/worlds/contract.md).
+
 ## Measured hardware (2026-08-19)
 
 These are measured, not assumed, and several are binding constraints:

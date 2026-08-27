@@ -153,6 +153,100 @@ export interface Asset {
 
 export type ReferenceKind = 'core' | 'sprite' | 'tile' | 'map'
 
+/**
+ * One ground type in a map.
+ *
+ * `color` is not a display hint - it is the colour the biome painting is FORCED
+ * to, so quantising is a lookup rather than a nearest-match. `tile` reuses an
+ * existing tile and costs no GPU; without it, `prompt` generates one.
+ */
+export interface Terrain {
+  name: string
+  color: string
+  prompt?: string | null
+  tile?: string | null
+}
+
+export interface MapSummary {
+  job_id: string
+  name: string | null
+  status: string
+  size: number | null
+  terrains: string[]
+  picture_url: string | null
+  map_url: string | null
+  created_at: string | null
+}
+
+/**
+ * One world's verdict.
+ *
+ * `per_screen` is the only number here a human can feel: something2's canvas is
+ * a fixed 1280x720 and a tile projects to a 128x64 diamond, so a screen is ~225
+ * tiles. Under 3 and the world reads as empty space.
+ */
+export interface WorldRow {
+  key: string
+  name: string
+  biomes: string[]
+  density: string
+  per_screen: number
+  creatures: number
+  area: number
+  biome_multiplier: number
+  flora: string[]
+  creature_types: string[]
+  variety: number
+  leaders: number
+  /** surface | deep — a region descends, so this should ramp outward. */
+  depth: string | null
+  /** Projected JSON per second down ONE socket for a parked player. */
+  socket_kib_s: number
+  verdict: 'ok' | 'EMPTY' | 'CROWDED'
+}
+
+export interface WorldReport {
+  worlds: WorldRow[]
+  problems: string[]
+  ok: boolean
+  totals: {
+    worlds: number
+    creatures: number
+    mean_per_screen: number
+    min_per_screen: number
+    max_per_screen: number
+    empty_worlds: number
+  }
+  notes: string[]
+}
+
+export interface WorldListItem {
+  name: string
+  region?: string
+  worlds?: number
+  creatures?: number
+  mean_per_screen?: number
+  empty_worlds?: number
+  ok?: boolean
+  bytes?: number
+  created_at?: number
+  spec_url?: string
+  preview_url?: string
+  error?: string
+}
+
+export interface NewMap {
+  job_id: string
+  name: string
+  grid: { w: number; h: number }
+  tile: { w: number; h: number; ratio: number }
+  picture: { w: number; h: number }
+  tiles: { reused: number; to_generate: number }
+  projection: string
+  poll: string
+  map: string
+}
+
 export interface Reference {
   id: string
   kind: ReferenceKind
@@ -439,6 +533,68 @@ export const api = {
     const s = qs.toString()
     return request<CoreList>(`/api/cores${s ? `?${s}` : ''}`)
   },
+  createWorld: (body: {
+    name: string
+    worlds: number
+    target_per_screen: number
+    size: number
+    theme?: string | null
+    author: 'rules' | 'llm'
+    overwrite?: boolean
+  }) =>
+    request<{
+      name: string
+      author: string
+      report: WorldReport
+      spec_url: string
+      preview_url: string
+      seed_with: string
+      spec: unknown
+    }>('/api/worlds', { method: 'POST', body: JSON.stringify(body) }),
+  /**
+   * Change one thing about a region and rebuild it.
+   *
+   * Fields not named are carried over, including the biome plan - so raising
+   * the creature target does not re-roll which biomes the region is made of.
+   * `reauthor` is the opt-in that does re-ask the LLM.
+   */
+  editWorld: (
+    name: string,
+    edit: {
+      worlds?: number
+      target_per_screen?: number
+      size?: number
+      theme?: string | null
+      reauthor?: boolean
+    },
+  ) =>
+    request<{
+      name: string
+      author: string
+      params: Record<string, unknown>
+      report: WorldReport
+      changed: string[]
+      spec: unknown
+    }>(`/api/worlds/${name}`, { method: 'PATCH', body: JSON.stringify(edit) }),
+  worlds: () => request<{ items: WorldListItem[]; total: number }>('/api/worlds'),
+  worldReport: (name: string) => request<WorldReport>(`/api/worlds/${name}/report`),
+  deleteWorld: (name: string) =>
+    request<{ deleted: string[] }>(`/api/worlds/${name}`, { method: 'DELETE' }),
+  createMap: (body: {
+    name: string
+    terrains: Terrain[]
+    size: number
+    prompt?: string | null
+    painting_from?: string | null
+    tile_w?: number
+    style_profile?: string | null
+    colors?: number
+    seed?: number
+    llm_name?: string | null
+  }) => request<NewMap>('/api/maps', { method: 'POST', body: JSON.stringify(body) }),
+  maps: () => request<{ items: MapSummary[]; total: number }>('/api/maps'),
+  mapData: (jobId: string) =>
+    request<Record<string, unknown>>(`/api/maps/${jobId}`),
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),
 

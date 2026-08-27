@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { api } from './api'
 import { useAsync } from './hooks'
 import CoreGenerator from './tabs/CoreGenerator'
@@ -8,6 +8,8 @@ import Gallery from './tabs/Gallery'
 import Settings from './tabs/Settings'
 import Training from './tabs/Training'
 import Tiles from './tabs/Tiles'
+import Maps from './tabs/Maps'
+import Worlds from './tabs/Worlds'
 
 const TABS = [
   { id: 'core', label: 'Entity Generation' },
@@ -17,6 +19,8 @@ const TABS = [
   { id: 'ref-tile', label: 'Reference · Tile' },
   { id: 'ref-map', label: 'Reference · Map' },
   { id: 'tiles', label: 'Tiles' },
+  { id: 'maps', label: 'Maps' },
+  { id: 'worlds', label: 'Worlds' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
   { id: 'settings', label: 'Settings & API' },
@@ -24,9 +28,33 @@ const TABS = [
 
 type TabId = (typeof TABS)[number]['id']
 
+const IDS = TABS.map((t) => t.id) as readonly string[]
+
+/** The tab named in the URL hash, or the default. Unknown hashes are ignored. */
+function tabFromHash(): TabId {
+  const h = window.location.hash.replace(/^#/, '')
+  return (IDS.includes(h) ? h : 'core') as TabId
+}
+
 export default function App() {
-  const [tab, setTab] = useState<TabId>('core')
+  // The tab lives in the hash so a tab is linkable: "open the Worlds tab" is a
+  // URL rather than an instruction, a reload keeps your place, and the browser
+  // back button steps between tabs instead of leaving the app.
+  const [tab, setTab] = useState<TabId>(tabFromHash)
   const mode = useAsync(() => api.authMode(), [])
+
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  function open(id: TabId) {
+    setTab(id)
+    // Assigning the hash rather than pushState so the back button works, and
+    // so the hashchange listener above stays the single place tab state is set.
+    window.location.hash = id
+  }
 
   return (
     <>
@@ -60,7 +88,7 @@ export default function App() {
               role="tab"
               aria-selected={tab === t.id}
               className={`tab ${tab === t.id ? 'active' : ''}`}
-              onClick={() => setTab(t.id)}
+              onClick={() => open(t.id)}
             >
               {t.label}
             </button>
@@ -74,6 +102,8 @@ export default function App() {
         {tab === 'ref-tile' && <ReferenceTab kind="tile" />}
         {tab === 'ref-map' && <ReferenceTab kind="map" />}
         {tab === 'tiles' && <Tiles />}
+        {tab === 'maps' && <Maps />}
+        {tab === 'worlds' && <Worlds />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
