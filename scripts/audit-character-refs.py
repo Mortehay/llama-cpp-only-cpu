@@ -456,6 +456,21 @@ def count_subjects(img: Image.Image) -> tuple[int, str, int]:
     fused far enough to be waved through as a single subject. That was the only
     failure that would have changed an answer, and it does not occur here.
 
+    And the check itself covers 139 of 139: none was skipped for sitting
+    outside the foreground band, which would have made the zero a statement
+    about a subset rather than the population. Worth verifying rather than
+    assuming, since a file that cannot be segmented returns 0 subjects and
+    routes to `review`, so the two exclusions could have overlapped invisibly.
+
+    THE ZERO IS EVIDENCE, NOT A CLEARANCE. It says the bug has never fired on
+    these 483 files, for a reason nobody chose: the sheets here happen to have
+    gutters wide enough to survive the closing. A denser sheet would fuse and be
+    reported as one subject on clean alpha, which is a `keep`. Note also that
+    the RULE is wrong far more often than the verdicts are: 123 of 246
+    multi-subject rejections report more subjects than they have components.
+    Counting verdict changes measures the blast radius at the threshold, not at
+    the rule, and understates it.
+
     Removing or shrinking the closing would trade this for the opposite error,
     on the case that is already the shakiest: a single creature with detached
     limbs. `ref_core_93f55ceabeae` is one treant that this function already
