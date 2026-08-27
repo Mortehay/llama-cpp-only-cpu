@@ -482,22 +482,33 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    > used for a question it cannot answer, the same error class as everything
    > else in §6.
    >
-   > **Swept properly: 16 of the 483 are real pixel art.** Two tests are needed
-   > and neither works alone:
-   >
-   > - *block error ≤ 1.0 alone* returns **36**, and 20 are false. At factor 2 a
-   >   large smoothly-shaded render has almost no within-block variance, so it
-   >   passes trivially. `ref_core_ee265a10678a` scores 0.24 — better than a
-   >   confirmed pixel-art file — with 25,402 colours.
-   > - *edge-divisibility alone* (ADR 0009's `pixel_scale`) returns **14**, and
-   >   misses real grids that a lossy re-save has scuffed.
-   >
-   > Together — error ≤ 1.0 **and** palette ≤ 300 — the answer is 16, and the
-   > threshold barely matters because the palette distribution has no middle:
-   > the hits run 4, 4, 4, 4, 4, 5, 5, 5, 9, 11, 16, 18, 19, 20, 241, 246, then
-   > nothing until 4,455. That reproduces ADR 0009's fourteen exactly and adds
-   > two it could not see: `ref_core_ca0070408096` (0.28, damaged grid) and
+   > **Swept: 36 of the 483 score a block error ≤ 1.0**, opaque-only, over
+   > factors 2..12. That reproduces ADR 0009's fourteen exactly and adds two its
+   > edge-divisibility test structurally could not see —
+   > `ref_core_ca0070408096` (0.28, a damaged grid) and
    > `ref_sprite_9e2539f0bbea` (0.01, 241 colours).
+   >
+   > **A `palette ≤ 300` gate was added here and is WITHDRAWN.** It cut 36 to
+   > 16 on the grounds that the palette counts have no middle — 246, then
+   > nothing until 4,455. That gap is real inside the 36 and it is not a
+   > property of the data; 0009's session named seven files above 12,000 colours
+   > that they had opened and confirmed as pixel art. Checked here at 8x
+   > magnification: `ref_core_eabdbd199746` (18,779 colours) and
+   > `ref_core_0b0d7f3217d6` (15,668) show unmistakable flat blocks with hard
+   > edges. **Palette size detects pixel art that was EXPORTED CLEANLY**, which
+   > is a different thing, and it excludes exactly the heavily-shaded and
+   > lossily-saved population the block-error test exists to catch.
+   >
+   > The claim that "20 of the 36 are false" is withdrawn with it. It was an
+   > inference from the palette count and **I opened none of them**. The one
+   > file named as proof, `ref_core_ee265a10678a` — 0.24 error, 25,402 colours —
+   > is pixel art too: magnified, its most detailed region is large flat blocks
+   > with hard edges.
+   >
+   > **Where the boundary actually is has not been established, by either of
+   > us.** The error distribution below 1.24 is continuous, so no threshold in
+   > it is a finding rather than a choice. Treat 36 as an upper bound whose
+   > members are individually checkable, not as a verdict.
    >
    > The 0.28 on `ca0070408096` is not noise in the measurement, it is damage in
    > the file. Its per-factor profile is 5.15 / **0.28** / 10.32 / 11.85 — an 18x
@@ -511,27 +522,30 @@ Ordered by cost-to-benefit, not by how interesting each one is.
    > bar. Judge a grid by the depth of the minimum, not by whether edges land
    > perfectly.
 
-   ### Which of the 16 can actually teach an entity cutout
+   ### Which of the 36 can actually teach an entity cutout
 
    Being pixel art and being a cutout are independent, and crossing the two is
-   what the recommendation actually needs:
+   what the recommendation actually needs. Of the 36:
 
-   | file | px-art | cutout verdict |
-   |---|---|---|
-   | `ref_core_08e39eb3c931` | 0.00, 9 col | **clean** |
-   | `ref_core_ca0070408096` | 0.28, 246 col | strays are its own drips |
-   | `ref_core_93f55ceabeae` | 0.00, 19 col | flat backdrop — **recoverable** |
-   | `ref_core_22e10326d210` | 0.00, 11 col | flat backdrop + strays |
-   | `ref_core_b667f8002995` | 0.00, 18 col | flat backdrop + pedestal |
-   | `ref_core_68076e9e3f53` | 0.00, 20 col | off centre |
-   | 8x `ref_sprite_*` 64x96 | 0.00, 4-5 col | blocked: **too small** |
-   | `ref_core_a0f76603de29` | 0.00, 16 col | blocked: multi-subject |
-   | `ref_sprite_9e2539f0bbea` | 0.01, 241 col | blocked: multi-subject |
+   | | count |
+   |---|---|
+   | **not blocked as a cutout** | **23** — every one `ref_core` |
+   | blocked: too small (the 64x96 sprites) | 8 |
+   | blocked: multi-subject | 5 |
 
-   **Six candidates, one pristine.** Four of the five defects on the others are
-   "flat backdrop, not transparent", which `remove_background` fixes — these are
-   the recoverable population this note has been describing in the abstract, and
-   here they are by name.
+   **23 candidates, and 21 of them are held back only by "background is flat,
+   not transparent"** — the one defect `remove_background` fixes outright. One
+   is already pristine (`ref_core_08e39eb3c931`, 9 colours, error 0.00); the
+   remainder add a pedestal, a stray or an off-centre subject on top of the
+   backdrop.
+
+   That is the recoverable population this note kept describing in the
+   abstract. It is 23 files, it is listed in `images/_audit/grid483.txt`, and
+   the work to make them usable is one pass of an existing function.
+
+   **The `sprite` kind contributes zero.** All 23 are `ref_core`, which is the
+   kind ADR 0009 argues should be split off as painted concept art. Crossing
+   the two audits is what surfaced it, and neither of us saw it alone.
 
    The eight 64x96 sprites are the interesting rejection. They are flawless
    pixel art — 4 colours, error 0.00 — and are blocked only by `MIN_TRAIN_SIDE`
@@ -711,6 +725,14 @@ out backwards (see `c967bed`), and the near-misses are worth keeping:
   `images/recovered/cells` — condemning the repaired copies, the worst direction
   for the error to point. Now every stage of that rule is masked to opaque
   pixels; all 8 genuine core checkerboards survive the change.
+- **`palette <= 300` as a pixel-art test.** Withdrawn the same day it was
+  added. It detects pixel art that was cleanly EXPORTED, and throws out the
+  heavily-shaded and lossily-saved files that are the whole reason a
+  block-error test exists. Worse than the rule was the reasoning: I justified
+  it with a gap in the palette counts that is a property of my own hit list
+  rather than of the data, and declared 20 files false without opening one of
+  them. Three of those, opened at 8x, are unmistakable pixel art — including
+  the one I had named as proof.
 - **Answering "what is in this set" with a sample.** The two grid-locked files
   above came from measuring 20 per set plus the already-flagged ones. That
   answers "what is this set like"; it cannot answer "what is in it", and I used
