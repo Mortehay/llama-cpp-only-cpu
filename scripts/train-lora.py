@@ -127,26 +127,38 @@ CACHE_DIR = os.environ.get("HF_HUB_CACHE", "/models")
 # what the log prints. Comparing across the two is how a run looks like a
 # 1 GiB regression when nothing moved.
 #
-# THE CARD IS NOT ALWAYS 12 GiB FREE, and the shortage is timed, not permanent.
-# llama.cpp shares this GPU and holds ~3.6 GB while a model is resident, which
-# leaves ~8.4 GB. It was reported here as permanent - "idle for hours, still
-# held, --sleep-idle-seconds does not release it" - and that part does not hold
-# up. The engine logged `entering sleeping state` at 14:10:49 UTC and the
-# device read 392 MiB used / 11724 MiB free at 18:53, four and a half hours
-# later. Sleep does release it.
+# THE CARD IS NOT ALWAYS 12 GiB FREE, so read the budget rather than assume it.
+# llama.cpp shares this GPU and holds ~3.6 GB while a model is resident. It
+# WAS reported here as permanent - "idle for hours, still held,
+# --sleep-idle-seconds does not release it" - and that is wrong: the engine
+# logged `entering sleeping state` at 14:10:49 UTC and the device read 392 MiB
+# used / 11724 MiB free at 18:53, four and a half hours later. Sleep releases
+# it, about two minutes after the last request.
 #
-# The timing is what makes it dangerous, and it is worse than a fixed 8.4 GB
-# budget would be. Sleep fires about two minutes after the last request, so the
-# card is short exactly when something has just used the LLM. A map build names
-# its regions with an LLM call IMMEDIATELY before painting, so that path meets
-# the shortage every time, well inside the idle window - which is how it hit
-# three identical OOMs allocating 7.71 GB with a 512 MB VAE decode on top.
+# So a run's budget depends on what ran just before it, which is why `train()`
+# logs `device budget:` from `mem_get_info` at the start instead of trusting a
+# number written here. The peak line at the end reports a percentage of the
+# full 12 GiB and knows nothing about what else is loaded.
 #
-# Training is usually clear of it, and a 6.58 GiB device peak fits in 8.4 GB
-# anyway. But do not read "47% of the card" as headroom: that percentage is
-# computed against the full 12 GiB and does not know what else is loaded. The
-# `device budget:` line logged at the start of each run does - it reads free
-# memory at that moment - and it is the one to check.
+# AN EARLIER VERSION OF THIS NOTE BLAMED THAT RESIDENCY FOR THE MAP PATH'S
+# OOMs. It is withdrawn, and the arithmetic that withdraws it is worth keeping
+# because I repeated the claim without doing it. The failure reported
+#
+#     total 12.00 GiB, 3.18 GiB free, 7.71 GiB allocated by PyTorch
+#
+# which leaves 1.11 GB for everything else - not 3.6 GB. Had llama.cpp been
+# holding 3.6, free would have been ~0.69 GB, not 3.18. It was not resident at
+# the failure. (That 1.11 GB is, incidentally, the same order as the ~1.1 GiB
+# between allocator and device figures above: CUDA context and workspaces.)
+#
+# What replaced it is not settled either, and this file should not pretend
+# otherwise. The successor account - the float32 VAE decode needing several GB
+# of transient at 1024 px - fits `expandable_segments` changing nothing and
+# only 55 MB reserved-but-unallocated, but it does not sit easily with the same
+# error reporting a 512 MB request against 3.18 GB free. The OOM is in no
+# container log, so the raw text cannot be re-read. What IS established is
+# empirical: three decodes failed untiled, three succeeded tiled. Treat the
+# cause as open.
 #
 # The staging holds, and was watched from outside: the device fell to 732 MiB
 # between stages as the VAE and text encoders unloaded, then climbed to 6.7 GB
