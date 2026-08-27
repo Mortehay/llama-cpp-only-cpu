@@ -180,21 +180,38 @@ def subject_mask(img):
 
 
 def pedestal_ratio(mask):
-    """How much wider the bottom band is than the shins. 0.0 when unmeasurable.
+    """(bottom-band width / shin width, shin width / body median).
 
-    This is strip_ground_patch's rule reduced to the single number it turns on.
-    Its documented gap comes with it: on a stocky subject with a limb held out
-    the reference width inflates and a real pedestal scores under threshold.
-    Reported as a number precisely so that gap stays visible rather than hiding
-    behind a boolean.
+    The first number is strip_ground_patch's rule reduced to what it turns on.
+    The second is ITS PRECONDITION, and it is returned because a documented
+    caveat does not fire.
+
+    strip_ground_patch assumes a body whose reference width is dominated by the
+    torso and whose feet are clearly narrower - a humanoid in a rest pose, which
+    is what it was written for. Where that does not hold, the shin reference is
+    inflated, the ratio comes out low, and a real pedestal passes in silence.
+    Reporting only the first number hides exactly the failure the docstring
+    warns about.
+
+    Measured over the 245 single-subject `core` references, the precondition
+    mostly DOES NOT HOLD here: shin/body runs p25 0.92, median **1.00**, p90
+    1.45. Shins are typically as wide as the body, because this set is mostly
+    creatures, props and items rather than standing humanoids. So the pedestal
+    count is a floor, its misses are unquantifiable, and the run-level summary
+    says so with the number recomputed each time rather than trusting this
+    comment to be read.
+
+    A per-image flag was considered and NOT shipped: at any useful cut it fires
+    on 151-210 of 245 images, which is a rule that cries wolf rather than a
+    signal.
     """
     rows = np.where(mask.any(axis=1))[0]
     if rows.size == 0:
-        return 0.0
+        return 0.0, 0.0
     top, bot = int(rows[0]), int(rows[-1])
     height = bot - top + 1
     if height < 8:
-        return 0.0
+        return 0.0, 0.0
 
     widths = mask.sum(axis=1).astype(float)
     lo = bot - int(height * SHIN_BAND[1])
@@ -202,15 +219,20 @@ def pedestal_ratio(mask):
     shins = widths[max(lo, top):max(hi, top + 1)]
     shins = shins[shins > 0]
     if shins.size == 0:
-        return 0.0
+        return 0.0, 0.0
     reference = float(np.median(shins))
     if reference <= 0:
-        return 0.0
+        return 0.0, 0.0
+
+    body = widths[top:bot + 1]
+    body = body[body > 0]
+    body_med = float(np.median(body)) if body.size else 0.0
+    precondition = (reference / body_med) if body_med > 0 else 0.0
 
     band = widths[max(bot - int(height * PEDESTAL_BAND), top):bot + 1]
     if band.size == 0:
-        return 0.0
-    return float(band.max() / reference)
+        return 0.0, precondition
+    return float(band.max() / reference), precondition
 
 
 def subject_count(mask):
@@ -409,7 +431,23 @@ def checkerboard_score(img):
     return 1.0 if agree > 0.88 else 0.0
 
 
-_SIBLING = "unloaded"
+# The loaded `baked_checkerboard`, or None. `_SIBLING_TRIED` is separate so
+# "not loaded yet" and "tried and failed" stay distinguishable - collapsing them
+# into one sentinel is what made the failure silent in the first place.
+_SIBLING = None
+_SIBLING_TRIED = False
+
+
+def sibling_available():
+    """Did the sibling checkerboard detector load? Forces the attempt first.
+
+    Exists so a run can SAY it degraded. `_sibling_checkerboard` returns False
+    when the sibling is missing, which is indistinguishable from "checked, and
+    it is not a checkerboard" - a silent loss of the 3 core + 12 sprite files
+    only the border test catches.
+    """
+    _sibling_checkerboard(Image.new("RGBA", (1, 1)))
+    return _SIBLING is not None
 
 
 def _sibling_checkerboard(img):
@@ -434,9 +472,9 @@ def _sibling_checkerboard(img):
     split-sheets.py, because a hyphenated filename is not importable. Absent or
     broken, this degrades to the local detector alone rather than failing.
     """
-    global _SIBLING
-    if _SIBLING == "unloaded":
-        _SIBLING = None
+    global _SIBLING, _SIBLING_TRIED
+    if not _SIBLING_TRIED:
+        _SIBLING_TRIED = True
         try:
             import importlib.util
             path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -546,7 +584,7 @@ def measure(path):
     if not mask.any():
         m.update(coverage=0.0, border_pct=0.0, subjects=0,
                  pedestal_ratio=0.0, centre_drift=0.0, bbox_frac=0.0,
-                 edges_touched=0, strays=0, stray_frac=0.0)
+                 edges_touched=0, strays=0, stray_frac=0.0, shin_body=0.0)
         return m
 
     ring = np.zeros_like(mask)
@@ -557,12 +595,14 @@ def measure(path):
     y0, y1, x0, x1 = int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())
     cy, cx = (y0 + y1) / 2, (x0 + x1) / 2
     n_strays, stray_frac = stray_blobs(mask)
+    ped, shin_body = pedestal_ratio(mask)
 
     m.update(
         coverage=round(float(mask.mean()), 4),
         border_pct=round(float(mask[ring].mean()), 4),
         subjects=subject_count(mask),
-        pedestal_ratio=round(pedestal_ratio(mask), 2),
+        pedestal_ratio=round(ped, 2),
+        shin_body=round(shin_body, 2),
         strays=n_strays,
         stray_frac=round(stray_frac, 5),
         # Drift measured per axis against that axis's own length, so a tall
@@ -790,6 +830,32 @@ def main():
     print()
     for name, group in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
         print("  {:5d}  {}".format(len(group), name))
+
+    # THE PEDESTAL RULE'S PRECONDITION, recomputed every run.
+    #
+    # strip_ground_patch assumes shins clearly narrower than the body. Where
+    # that fails the shin reference inflates and a real pedestal scores under
+    # threshold in silence - so the pedestal count is a floor, and how much of a
+    # floor depends on THIS set rather than on the comment in pedestal_ratio().
+    # Printed rather than documented because a caveat in a docstring does not
+    # fire when the population changes underneath it.
+    singles = [f for f in findings if f.get("subjects") == 1 and f.get("shin_body")]
+    if singles:
+        holds = sum(1 for f in singles if f["shin_body"] < 0.8)
+        print("\n  pedestal rule precondition (shins < 0.8x body) holds for "
+              "{} of {} single-subject images".format(holds, len(singles)))
+        if holds < 0.5 * len(singles):
+            print("  -> it does NOT hold for most of this set, so the pedestal "
+                  "count above is a floor and its misses are unquantifiable")
+
+    # Degrading to one checkerboard detector is a real loss of coverage, and it
+    # was previously silent by design ("graceful degradation"). Graceful and
+    # invisible are different things.
+    if not sibling_available():
+        print("\n  NOTE: scripts/audit-character-refs.py was not loadable, so "
+              "checkerboard detection ran on this script's rule alone. That "
+              "loses the cases only the border test finds "
+              "(3 core + 12 sprite when last measured).")
 
     if a.json:
         with open(a.json, "w") as fh:

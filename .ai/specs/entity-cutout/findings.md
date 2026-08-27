@@ -123,9 +123,22 @@ precisely because of this — the comment at
 [`tasks.py:376-390`](../../../src/sprite_generator/tasks.py) explains that a
 fused ground patch "is neither background-coloured nor a separate blob, so
 neither `remove_background` nor `_isolate_largest_sprite` can touch it". This
-count is the honest one: the detector is `strip_ground_patch`'s own width rule
-and inherits its documented gap, so it is reported with its number for a human
-to judge rather than acted on blind. Confirmed by eye in the contact sheet:
+count is the detector's own width rule from `strip_ground_patch`, reported with
+its number for a human to judge rather than acted on blind.
+
+**It is a floor, and by more than the docstring's caveat implied.** That rule
+assumes shins clearly narrower than the body — a standing humanoid, which is
+what it was written for. Measured across the 245 single-subject `core`
+references, shin/body runs p25 0.92, **median 1.00**, p90 1.45: shins are
+typically *as wide as* the body, because this set is mostly creatures, props and
+items rather than figures with legs. Where that holds the shin reference is
+inflated, the ratio comes out low, and a real pedestal passes in silence. So the
+misses are unquantifiable, and the run now prints the precondition count every
+time rather than leaving it to this paragraph.
+
+A per-image "precondition failed" flag was measured and **not** shipped: at any
+useful cut it fires on 151–210 of 245 images, which is a rule that cries wolf
+rather than a signal. Confirmed by eye in the contact sheet:
 `3214bbee74f0` (tree on a green ground disc), `f197486c7e9a` (creature standing
 in water), `2ad3524afa1b`, `5121288de0f5`, `02fd319439e9`.
 
