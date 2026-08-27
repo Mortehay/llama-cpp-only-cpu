@@ -33,6 +33,37 @@ export class ApiError extends Error {
   }
 }
 
+/** Turn FastAPI's `detail` into something a person can act on.
+ *
+ * For most errors `detail` is a sentence and this returns it unchanged. For a
+ * 422 it is an ARRAY of validation objects, and the previous `String(detail)`
+ * turned that into the literal text `[object Object]` - so the server said
+ * "name: String should have at least 2 characters" and the user was shown
+ * nothing at all. Measured against the live endpoint:
+ *
+ *   {"detail":[{"type":"string_too_short","loc":["body","name"],
+ *               "msg":"String should have at least 2 characters"}]}
+ *
+ * `loc` starts with "body" (or "query"), which is noise to the person reading
+ * it - they know where they typed it. Dropped, leaving the field name.
+ */
+function describeDetail(detail: unknown): string {
+  if (typeof detail === 'string') return detail
+  if (!Array.isArray(detail)) return JSON.stringify(detail)
+
+  return detail
+    .map((d) => {
+      if (typeof d === 'string') return d
+      const item = d as { loc?: unknown; msg?: unknown }
+      const where = Array.isArray(item.loc)
+        ? item.loc.filter((p) => p !== 'body' && p !== 'query').join('.')
+        : ''
+      const what = typeof item.msg === 'string' ? item.msg : JSON.stringify(d)
+      return where ? `${where}: ${what}` : what
+    })
+    .join('; ')
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   const token = getToken()
@@ -58,7 +89,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // written for exactly this moment. Prefer it over "Request failed".
     const detail =
       (body && typeof body === 'object' && 'detail' in body
-        ? String((body as { detail: unknown }).detail)
+        ? describeDetail((body as { detail: unknown }).detail)
         : typeof body === 'string' && body
           ? body
           : `${res.status} ${res.statusText}`)
