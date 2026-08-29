@@ -237,6 +237,28 @@ def sd_models(authorization: str | None = Header(default=None)):
 # `cutout` and `lora_scale` already use, and for the same reason.
 MAP_PREFIX = "map:"
 
+# The same two-channel addressing for tiles, with one decisive difference in
+# BEHAVIOUR: `map:` is a cache reader that never queues, `tile:` will build.
+#
+# That asymmetry is not an inconsistency, it is the measurement. A map build is
+# minutes to hours and no HTTP budget survives it, so offering to build one
+# synchronously would only convert a clear 404 into an opaque timeout. A tile is
+# one small image: nine finished tile jobs on this hardware ran 21s to 125s,
+# against something2's 300s default and our 240s ceiling. Refusing to build
+# inside that headroom would force an operator to hand-make every tile on this
+# machine before something2 could ask for it - which is most of the value gone.
+#
+# Addressed as `tile:<name> <the rest of the prompt>` - see `_split_tile_prompt`
+# for why the name has to share the prompt field.
+TILE_PREFIX = "tile:"
+
+# What a MISSING tile is allowed to spend. Defaults to the same ceiling as any
+# other generation, and is separable because the two answer different questions:
+# GENERATE_TIMEOUT_S is "how long may one image take", this is "how long may we
+# make something2 wait for ground it did not know was absent".
+TILE_BUILD_BUDGET_S = int(os.environ.get("A1111_TILE_BUILD_BUDGET_S",
+                                         str(GENERATE_TIMEOUT_S)))
+
 
 def _map_request(req: "Txt2ImgRequest") -> str | None:
     """The map name this request is asking for, or None for a normal generate."""
@@ -318,12 +340,212 @@ def _serve_map(name: str, req: "Txt2ImgRequest", started: float) -> dict:
     }
 
 
+def _tile_request(req: "Txt2ImgRequest") -> str | None:
+    """The tile name this request is asking for, or None for a normal generate."""
+    explicit = req.override_settings.get("tile")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    return _split_tile_prompt(req.prompt)[0]
+
+
+def _split_tile_prompt(raw: str | None) -> tuple[str | None, str | None]:
+    """`tile:road_sand cracked red stone` -> ("road_sand", "cracked red stone").
+
+    THE NAME IS THE FIRST TOKEN AND THE REST IS THE PROMPT, which is forced by
+    something2's template system rather than chosen. Their request template
+    substitutes `{{prompt}}`, `{{width}}`, `{{height}}`, `{{seed}}`, `{{frames}}`
+    and `{{model}}` - and nothing that carries a tile's NAME. So the one field
+    that can hold a name is the prompt, alongside the prompt.
+
+    That makes configuring a tile an edit an operator can actually make: put
+    `tile:rocks ` in front of the text already in something2's tile row and
+    change nothing else. No new placeholder, no code on their side, and the
+    prompt still reaches the model intact.
+
+    A bare `tile:rocks` with no remaining text is valid - the name doubles as
+    the prompt, which is what a one-word ground like "sand" wants anyway.
+    """
+    text = (raw or "").strip()
+    if not text.lower().startswith(TILE_PREFIX):
+        return None, None
+
+    rest = text[len(TILE_PREFIX):].strip()
+    if not rest:
+        return None, None
+
+    parts = rest.split(None, 1)
+    name = parts[0]
+    prompt = parts[1].strip() if len(parts) > 1 else ""
+    return name, (prompt or name)
+
+
+def _long_job_ahead() -> str | None:
+    """A non-tile job already on the worker, described, or None.
+
+    The Celery worker is --concurrency=1 and shared with sheet, map and training
+    builds, so a queued tile waits behind whatever holds the card. A sheet is
+    ~2 hours. Submitting a tile behind one and then blocking cannot succeed; it
+    can only spend something2's whole budget and surface as their opaque
+    timeout, with the real reason - "something else is using the GPU" - visible
+    nowhere.
+
+    So we look before we queue. This is advisory, not a lock: a long job can
+    start in the gap between this check and the enqueue. That race costs a slow
+    tile, not a wrong one, and paying for a real lock here would mean holding it
+    across a two-minute GPU build.
+    """
+    try:
+        import psycopg2
+        import psycopg2.extras
+        with psycopg2.connect(os.environ.get("DB_URL")) as conn, conn.cursor(
+                cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT kind, started_at FROM jobs "
+                "WHERE status = 'running' AND kind <> 'tile' AND deleted = false "
+                "ORDER BY started_at LIMIT 1")
+            row = cur.fetchone()
+    except Exception as e:
+        # Never fail a tile because the ADVISORY check could not run. The build
+        # below is the thing that matters and it has its own timeout.
+        logger.warning("tile facade: could not check the queue: %s", e)
+        return None
+
+    if not row:
+        return None
+    return "a {} job has been running since {}".format(row["kind"],
+                                                       row["started_at"])
+
+
+def _tile_payload(name: str, row: dict, req: "Txt2ImgRequest", started: float,
+                  *, generated: bool) -> dict:
+    """One finished tile, in the A1111 response shape."""
+    with open(row["sheet_path"], "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+
+    spec = row.get("spec") or {}
+    elapsed_ms = (time.time() - started) * 1000
+    logger.info("txt2img served TILE %r in %.0fms (%d b64 chars, generated=%s)",
+                name, elapsed_ms, len(encoded), generated)
+
+    return {
+        "images": [encoded],
+        "parameters": req.model_dump(),
+        "info": json.dumps({
+            "tile": name,
+            "job_id": str(row["id"]),
+            "cached": not generated,
+            # A cache read is a file read. A caller measuring model throughput
+            # off this number would be measuring a disk.
+            "generated": generated,
+            # The projection this tile was actually cut at. A consumer that
+            # tessellates it needs the ratio to lay it out, and a tile cut at a
+            # ratio the world does not use looks fine alone and seams in situ.
+            "tile_w": spec.get("tile_w"),
+            "tile_h": spec.get("tile_h"),
+            "ratio": spec.get("ratio"),
+            "colors": spec.get("colors"),
+            "style_profile": spec.get("style_profile"),
+            "tile_url": "/api/tiles/by-name/{}".format(name),
+            "duration_ms": round(elapsed_ms),
+        }),
+    }
+
+
+def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
+    """A named ground tile: served from disk, or BUILT and then served.
+
+    Unlike `_serve_map` this may queue work - see TILE_PREFIX for the
+    measurement that makes blocking honest. The order matters: cache first, so
+    a name that already exists never costs the GPU and never costs the caller
+    the wait.
+    """
+    import tiles
+
+    row = tiles.resolve_name(name)
+    if row:
+        return _tile_payload(name, row, req, started, generated=False)
+
+    # A miss, so we need the text to paint. Two channels, and they differ:
+    #
+    #   override_settings.tile  - the name arrived out of band, so the whole
+    #                             prompt field is something2's own tile-row text
+    #   tile:<name> <prompt>    - the name is the first token; strip it back off
+    #                             or the model paints the word "road_sand"
+    _, from_prefix = _split_tile_prompt(req.prompt)
+    prompt = from_prefix or (req.prompt or "").strip() or name
+
+    busy = _long_job_ahead()
+    if busy:
+        raise HTTPException(
+            status_code=503,
+            detail="tile {!r} is not built yet and cannot be built now: {}. "
+                   "The GPU worker runs one job at a time. Retry when it is "
+                   "free, or build the tile ahead of time with "
+                   "POST /api/tiles.".format(name, busy))
+
+    spec = tiles.TileSpec(
+        prompt=prompt,
+        name=name,
+        # `width` is deliberately NOT read from the request. A tile's size is a
+        # property of the world's projection, not of the caller's template -
+        # something2 sends width=512 from the stock A1111 preset, which would
+        # silently produce a 512px tile for a 64px world.
+        tile_w=int(req.override_settings.get("tile_w") or tiles.DEFAULT_TILE_W),
+        colors=int(req.override_settings.get("colors") or 16),
+        style_profile=(req.override_settings.get("style_profile") or None),
+        seed=req.seed if req.seed and req.seed > 0 else 0,
+    )
+
+    logger.info("tile facade: %r is not built; building it now (budget %ds)",
+                name, TILE_BUILD_BUDGET_S)
+    envelope = tiles.queue_tile(spec)
+    task_id = envelope.get("celery_task_id")
+
+    try:
+        result = celery_app.AsyncResult(task_id).get(timeout=TILE_BUILD_BUDGET_S)
+    except Exception as e:
+        try:
+            celery_app.control.revoke(task_id, terminate=True)
+        except Exception:
+            pass
+        raise HTTPException(
+            status_code=504,
+            detail="tile {!r} did not finish within {}s: {}. It is still queued "
+                   "as job {} - poll /api/jobs/{} and ask again once it is "
+                   "done.".format(name, TILE_BUILD_BUDGET_S, e,
+                                  envelope.get("job_id"),
+                                  envelope.get("job_id")))
+
+    if not result or result.get("error"):
+        raise HTTPException(
+            status_code=500,
+            detail="tile {!r} failed to build: {}".format(
+                name, (result or {}).get("error", "unknown failure")))
+
+    # Re-resolve rather than trusting the task's return path: `resolve_name` is
+    # the one place that checks the row is done AND the file is on disk, and the
+    # facade should serve exactly what a later cache hit would serve.
+    row = tiles.resolve_name(name)
+    if not row:
+        raise HTTPException(
+            status_code=500,
+            detail="tile {!r} reported success but is not readable back".format(
+                name))
+    return _tile_payload(name, row, req, started, generated=True)
+
+
 @router.post("/sdapi/v1/txt2img")
 def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None)):
     """Blocking text2img. Returns base64 PNG at `images[0]`, as A1111 does.
 
     Also the MAP FACADE: a prompt of `map:<name>` returns an already-built map
     picture from disk rather than generating anything. See `_map_request`.
+
+    And the TILE FACADE: `tile:<name> <prompt>` returns a named ground tile,
+    building it first if it does not exist. See `_serve_tile` for why tiles may
+    build where maps may not, and `_split_tile_prompt` for why the name rides
+    in the prompt field.
     """
     _require_auth(authorization)
     started = time.time()
@@ -334,6 +556,13 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     wanted_map = _map_request(req)
     if wanted_map:
         return _serve_map(wanted_map, req, started)
+
+    # THE TILE FACADE. Cache read when the name exists, a real build when it
+    # does not - see `_serve_tile`. Checked after maps so neither prefix can
+    # shadow the other.
+    wanted_tile = _tile_request(req)
+    if wanted_tile:
+        return _serve_tile(wanted_tile, req, started)
 
     model = req.override_settings.get("sd_model_checkpoint") or KNOWN_MODELS[0]
 
