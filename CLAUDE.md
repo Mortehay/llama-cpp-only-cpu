@@ -50,6 +50,16 @@ fragment of it.
   ANSI without a BOM and a curly quote becomes a parse error).
 
 **GPU — 12 GB, and it is the binding constraint**
+- **Generation failing while the API answers 200? Run `make gpu-health` FIRST.**
+  A faulted CUDA context in the worker produces three *different* errors
+  (allocator assert at 1024, a `c10::Half` dtype error at 512, "device not
+  ready"), takes the same wall-clock time as a success, and leaves `/docs`,
+  the models route and `make gpu-check` all green. Only a restart fixes it.
+  The dtype variant invites a `pipe.to(float16)` "fix" that would silently
+  produce **black PNGs**. Full signature in `.ai/project-context.md`.
+- **`nvidia-smi` inside WSL does not see host VRAM** and will tell you the card
+  is nearly empty while it is 94% full — measured 1342 MiB vs 11,601 MiB held.
+  Check `(Get-Counter '\GPU Process Memory(*)\Dedicated Usage')` on Windows.
 - The Qwen3-8B GGUF and a diffusion pipeline **cannot both hold the card**.
   `--sleep-idle-seconds 120` is what lets them share it.
 - Celery runs `--pool=solo`. `tasks.py` must not touch CUDA at import —

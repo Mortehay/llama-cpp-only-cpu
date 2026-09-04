@@ -262,6 +262,86 @@ live in their DB not their .env, tiles have a route but no async path).
 
 ## Known-broken areas
 
+- **A faulted CUDA context is the first thing to check, and `nvidia-smi` will
+  lie to you about it.** Two incidents on 2026-09-04, ~14h apart. Everything
+  below is measured, and it cost two sessions most of a day.
+
+  **The signature.** Generation fails 100% while the API answers 200. The error
+  is *not stable* - one dead context produced three different messages
+  depending on how far the call got:
+
+  | call | error |
+  |---|---|
+  | 1024 txt2img | `!handles_.at(i) INTERNAL ASSERT FAILED` (CUDACachingAllocator.cpp:467) |
+  | 512 txt2img | `Input type (c10::Half) and bias type (float) should be the same` |
+  | first failure | `CUDA driver error: device not ready` |
+
+  Three costumes, one cause. The dtype one is especially misleading: it points
+  at fp16/fp32 and invites a "fix" in the LoRA loader or a `pipe.to(float16)`,
+  and **that cast would drag the SDXL VAE to fp16 and produce silently black
+  PNGs** - trading a loud 500 for a quiet corruption. See the `force_upcast`
+  note in `get_sd_pipeline`.
+
+  **Root cause**, in `dmesg -T` inside WSL, one second before the first failure:
+
+  ```
+  [Fri Sep  4 21:37:00 2026] misc dxg: dxgk: dxgkio_make_resident: Ioctl failed: -12
+  ```
+
+  `-12` is ENOMEM. `dxgkio_make_resident` is the WDDM call that pins an
+  allocation into VRAM - *below* CUDA, which is why the message is "device not
+  ready" and not "CUDA out of memory".
+
+  **It is self-sustaining, which is why it never recovers.** The faulted context
+  keeps its VRAM. Measured before the restart: `pid_0` (the WSL VM aggregate)
+  held **11,601 MB of 12,288**, next consumer 106 MB. So the next load also
+  fails to become resident, forever. A fault leaks the card; the leaked card
+  guarantees the next fault.
+
+  **`nvidia-smi` inside WSL reported 1342 MiB used while the card was 94%
+  full.** The guest sees only its own CUDA accounting, not host residency. Any
+  runbook step of the form "check nvidia-smi before blaming VRAM" is *actively
+  wrong* here. The honest check, on the Windows side:
+
+  ```powershell
+  (Get-Counter '\GPU Process Memory(*)\Dedicated Usage').CounterSamples |
+    Sort-Object CookedValue -Descending | Select-Object -First 5
+  ```
+
+  **Nothing else detects it.** `GET /`, `/docs` and the models route all answer
+  200 - the API process is pinned `COMPUTE_DEVICE=cpu` and has no CUDA context
+  to be broken. `make gpu-check` also passes, because it starts a *fresh*
+  container and a fresh process gets a fresh, healthy context. **Latency is not
+  a signal either**: measured base-SDXL-1024 failed at 12.53s and succeeds at
+  12.66s, because the context completes the whole denoise and dies in the VAE
+  decode at the very end.
+
+  **So: `make gpu-health`.** It dispatches `tasks.gpu_probe` through Celery so
+  the *worker's own process* answers - the only place the fault is visible.
+  Exit 1 means restart the worker:
+
+  ```bash
+  docker compose -f compose/develop/docker-compose.yml \
+    -f compose/develop/docker-compose.cuda.yml \
+    --env-file compose/develop/.env restart sprite-worker
+  ```
+
+  Verified 2026-09-04: after that restart the leaked 11.6 GB was released and
+  four previously-500 probes (base SDXL, +nerijs/pixel-art-xl, +local terrain at
+  1024, +local terrain at 512) all returned 200, with **zero code changed**.
+
+  **The discriminator worth remembering:** the same dtype error string has two
+  completely different causes, and which one you have depends on whether the
+  worker's context is healthy. Check that first. If a dtype error appears on a
+  *healthy* worker, start at the `.to()` calls and the diffusers "modules that
+  should be kept in float32" warning they emit - **not** at the LoRA loader,
+  which is where both sessions wrongly started. Mind which path you are on:
+  `pipe.to(DEVICE)` at `tasks.py:957` is the SDXL loader and is a device move;
+  `p.vae.to(dtype=dtype)` at `tasks.py:1107` is `get_flux_pipeline` and is the
+  only place a VAE dtype is set by hand. The warning observed on 2026-09-04 came
+  from the SDXL path, so it was 957. The reported list was empty, meaning
+  nothing was actually mis-cast - it is a signpost, not a current defect.
+
 - **`remeasure-all` silently reverts the character audit.** Measured
   2026-09-04. `POST /api/references/remeasure-all` recomputes `trainable` from
   `measure.judge_trainable`, which is deliberately permissive; it has no

@@ -2546,6 +2546,65 @@ def describe_device():
     return info
 
 
+@celery_app.task(name="tasks.gpu_probe")
+def gpu_probe():
+    """Prove the worker's CUDA context still works. Cheap, and runs in-process.
+
+    WHY THIS EXISTS, and why it cannot be an HTTP route
+
+    On 2026-09-04 the card filled, `dxgkio_make_resident` returned ENOMEM, and
+    this worker's CUDA context was left permanently faulted. Every generation
+    failed for hours - with a DIFFERENT error each time depending on how far the
+    call got before touching the dead context ("device not ready", a c10::Half
+    dtype mismatch in the VAE at 512, a CUDACachingAllocator INTERNAL ASSERT at
+    1024). Three symptoms, one cause, and two sessions chased the symptoms.
+
+    Nothing caught it. `GET /` and `/docs` answered 200 throughout, because the
+    API process is pinned to COMPUTE_DEVICE=cpu and has no CUDA context to be
+    broken. A health check pointed at the API reports green while the GPU is
+    dead, which is worse than no check at all.
+
+    The trap for anyone writing a replacement: the fault is **process-local to
+    this worker's main process**. A probe that shells out, or that runs in the
+    API, or that `docker exec`s a fresh python, creates a NEW context, finds it
+    healthy, and tells you the GPU is fine. It has to execute here, as a task,
+    in the process that owns the broken context. `--pool=solo` guarantees that
+    is the same process that runs inference.
+
+    Deliberately does NOT load a pipeline. A few KB and one matmul is enough to
+    make the driver hand back a real answer; loading ~7GB of SDXL to answer
+    "is the context alive" would itself be a way to run the card out of memory.
+    """
+    import torch
+    if not torch.cuda.is_available():
+        return {"ok": DEVICE != "cuda", "device": DEVICE,
+                "why": "no CUDA device visible; fine on a CPU worker, "
+                       "a fault on a CUDA one"}
+    try:
+        # Touch the allocator and the compute path, then synchronise. Without
+        # the synchronize() a faulted context can return from the matmul
+        # without having executed it, and the probe passes a dead card.
+        x = torch.randn(64, 64, device="cuda", dtype=torch.float16)
+        y = (x @ x).sum().item()
+        torch.cuda.synchronize()
+        del x
+        free_b, total_b = torch.cuda.mem_get_info()
+        return {
+            "ok": y == y,  # NaN fails this; a faulted matmul often returns NaN
+            "device": DEVICE,
+            "free_mb": round(free_b / 1024 / 1024),
+            "total_mb": round(total_b / 1024 / 1024),
+            # Guest-side only. Under WSL2 this does NOT see host allocations -
+            # it read 1342MB while Windows held 11601MB of the same 12GB card.
+            # Never conclude "there is room" from this number alone; check
+            # (Get-Counter '\GPU Process Memory(*)\Dedicated Usage') on Windows.
+            "note": "free_mb is guest-visible only; see docstring",
+        }
+    except Exception as e:
+        return {"ok": False, "device": DEVICE,
+                "error": f"{e.__class__.__name__}: {e}"}
+
+
 @celery_app.task(name="tasks.warm_model_task", bind=True)
 def warm_model_task(self, llm_name: str, pipeline_type: str = "text2img"):
     """Download and load a model into the worker without generating anything.

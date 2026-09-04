@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
+.PHONY: gpu-health test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -41,6 +41,23 @@ gpu-check:
 		    echo "GPU is NOT visible to Docker. Install nvidia-container-toolkit on the"; \
 		    echo "Docker host (inside WSL2 Ubuntu), then: sudo nvidia-ctk runtime configure"; \
 		    echo "--runtime=docker && sudo service docker restart"; exit 1)
+
+# Ask the WORKER whether its CUDA context still works. Different question from
+# gpu-check above, and the difference is the whole point.
+#
+# `gpu-check` asks "can a container see the card at all", by starting a FRESH
+# container. That answered yes throughout the 2026-09-04 outage, because a new
+# process gets a new CUDA context and the new one was fine. The broken context
+# was the long-lived worker's, and only the worker can report on it - so this
+# goes through Celery and makes the worker answer in its own process.
+#
+# Run this FIRST whenever generation fails and the API still answers 200. On
+# 2026-09-04 a faulted context produced three different errors at three call
+# sites, took the SAME wall-clock time as a success (12.53s failing vs 12.66s
+# succeeding - it completed the denoise and died in the VAE decode at the end),
+# and left /docs and the models route answering 200. Nothing else caught it.
+gpu-health:
+	@docker exec sprite_generator python /app/scripts/check-gpu-health.py
 
 # Load models into VRAM out-of-band. A cold checkpoint takes minutes to fetch
 # and load, which blows past any HTTP client's timeout -- including something2's
