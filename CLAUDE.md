@@ -62,8 +62,8 @@ fragment of it.
   `lcm`) runs at guidance 0, which makes **every negative prompt a silent
   no-op**. Prefer non-distilled checkpoints.
 - Family detection reads `model_index.json` (`_is_sdxl_checkpoint`,
-  `tasks.py`), **not** the repo name. `.ai/project-context.md` and `0002` still
-  describe the old name heuristic in places — that constraint is gone, and
+  `tasks.py`), **not** the repo name. `0002` still describes the old name
+  heuristic in places — that constraint is gone, and
   `stable-diffusion-xl-base-1.0` loads because of it.
 - `"<base>+<lora>"` is a valid model string. A LoRA only fuses onto the base it
   was trained against — check `base_model` in the repo card first.
@@ -84,21 +84,34 @@ fragment of it.
   anything 202-and-poll is not connectable today. The A1111 facade must stay a
   blocking read. World specs are the one surface that is genuinely sync.
 
-**Auth — partial, and enforcement is a cliff**
+**Training data — two flags, and one of them gets silently reverted**
+- `usable` and `trainable` are **different verdicts** and `training.py` filters
+  on `trainable` only. `measure.judge_trainable` is deliberately permissive
+  (blank, tiny, extreme-strip); `scripts/audit-character-refs.py --apply` writes
+  a much stricter verdict over the top for `sprite` and `core`.
+- **`POST /api/references/remeasure-all` reverts that audit.** It recomputes
+  `trainable` from the permissive gate with no knowledge that `--apply` ran.
+  Measured 2026-09-04: one call un-rejected 131 core and 84 sprite references.
+  **Always follow it with `make audit-refs-apply`**, and check the counts.
+- The gates for the other two kinds do not discriminate: `tile` marks
+  2001 of 2001 `usable`, `map` rejects 112 of 114. For tiles, `trainable` is the
+  only number that means anything; for maps, see the terrain-separation note in
+  `.ai/specs/maps/`.
+
+**Auth — enforcement is ON, and this is no longer a future cliff**
 - **Enforcement is already ON.** `GET /api/auth/mode` returned
-  `{"enforced": true, "active_keys": 2}` on 2026-09-04. `project-context.md`
-  still describes this as a future cliff and reports `active_keys: 0`; it is
-  past tense. Anything unauthenticated is 401 **now**, not "the moment a key
-  exists" — plain `<img src="/api/jobs/{id}/sheet">` tags and every helper
-  script without a bearer included.
+  `{"enforced": true, "active_keys": 2}` on 2026-09-04. Anything
+  unauthenticated is 401 **now**, not "the moment a key exists" — plain
+  `<img src="/api/jobs/{id}/sheet">` tags and every helper script without a
+  bearer included. Mint and revoke out-of-band with `scripts/mint-key.py`.
 - So a bare `curl` against the API fails, and that is the expected answer, not a
   broken service. `.ai/specs/api-auth-lockdown/plan.md` has the background, but
-  **recount before trusting any figure in it**: its route counts and
-  `project-context.md`'s predate `auth.py` gaining coverage.
+  **recount before trusting any figure in it**: its route counts predate
+  `auth.py` gaining coverage.
 - `a1111.py` no longer reads the legacy shared secret; `auth.py` owns it, and an
-  unset `SPRITE_API_TOKEN` no longer means "no auth". The silent-open bug that
-  `project-context.md` still describes is fixed — do not reintroduce the
-  `if not API_TOKEN: return` shortcut.
+  unset `SPRITE_API_TOKEN` no longer means "no auth". The `if not API_TOKEN:
+  return` silent-open bug is fixed — the constant was deleted so the shortcut
+  cannot be reinstated by accident. Do not reintroduce it.
 
 ## Conventions
 

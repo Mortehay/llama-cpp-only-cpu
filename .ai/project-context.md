@@ -143,16 +143,31 @@ needs admin and must be redone when the WSL IP changes.
 
 **The exposure arrived before the authentication did.** That same probe returned
 `{"enforced": false, "active_keys": 0, "legacy_token": false}` - i.e. anyone on
-the Wi-Fi could queue GPU work. `auth.py` is written and good, but coverage is
-partial: `main.py` has 18 routes with no auth at all (including
-`/api/generate_core`, `/api/edit`, `/api/generate_sheet`, `/api/crop`,
-`POST /api/settings`), and `a1111.py` still uses the legacy `SPRITE_API_TOKEN`
-with the `if not API_TOKEN: return` silent-open bug that `auth.py` exists to
-replace.
+the Wi-Fi could queue GPU work.
 
-**Bearer tokens cannot cover browser-loaded resources.** Worth knowing before
-minting the first key, because minting flips `is_enforced()` globally and
-instantly:
+> **Corrected 2026-09-04, and the tense is the point: this is done.**
+> `GET /api/auth/mode` now returns
+> `{"enforced": true, "active_keys": 2, "legacy_token": false}`. Everything
+> below that reads as a warning about a future cliff is describing the present.
+>
+> - **Enforcement is ON.** An unauthenticated request gets 401 *now*. A bare
+>   `curl` against this API failing is the expected answer, not a broken
+>   service - that cost one debugging detour already.
+> - **`a1111.py` no longer reads the legacy shared secret.** `auth.py` owns it,
+>   an unset `SPRITE_API_TOKEN` no longer means "no auth", and the
+>   `if not API_TOKEN: return` silent-open bug is fixed. The constant was
+>   deleted deliberately so the shortcut cannot be reinstated by accident -
+>   see the comment above `KNOWN_MODELS`.
+> - **The route count is wrong.** `main.py` has 17 routes total, not 18 with no
+>   auth. Recount before quoting any figure here or in
+>   `specs/api-auth-lockdown/plan.md`; both predate `auth.py` gaining coverage.
+> - Out-of-band key management is `scripts/mint-key.py` (`--list`, `--name`,
+>   `--revoke`). It bypasses HTTP auth by design, because revoking your only
+>   admin key otherwise locks you out permanently.
+
+**Bearer tokens cannot cover browser-loaded resources.** This is now live, not
+prospective - the first key has been minted and `is_enforced()` is global and
+instant:
 
 - `/`, `/legacy`, `/gallery`, `/static` must stay open - a browser sends no
   `Authorization` header on a navigation, and locking them means you cannot
@@ -247,6 +262,47 @@ live in their DB not their .env, tiles have a route but no async path).
 
 ## Known-broken areas
 
+- **`remeasure-all` silently reverts the character audit.** Measured
+  2026-09-04. `POST /api/references/remeasure-all` recomputes `trainable` from
+  `measure.judge_trainable`, which is deliberately permissive; it has no
+  knowledge that `audit-character-refs.py --apply` wrote a stricter verdict over
+  the top. One call un-rejected **131 core and 84 sprite** references - the same
+  class of failure as the "missing verdicts file silently un-rejected three bad
+  references" fix, at seventy times the scale. `make audit-refs-apply` restores
+  it (237 marked not trainable). Until the endpoint preserves auditor verdicts,
+  **always run the apply step after a remeasure** and check the counts.
+- **The map reference gate rejects almost everything, and the gate is the
+  problem.** 112 of 114 live map references fail `measure_map` on terrain
+  separation. `measure_map` median-cuts every image into exactly
+  `TERRAIN_PALETTE_N = 12` candidates and rejects if any pair is closer than
+  `TERRAIN_MIN_LAB_SEPARATION = 12.0` - but median-cut splits by pixel
+  *population*, not perceptual distance, so forcing 12 buckets out of painted
+  art nearly always lands two of them close together. The distribution is the
+  tell: mode at 2-4 Lab, decaying smoothly, and the only two passes sit at 13.1
+  and 13.2. A gate that discriminates produces a spread straddling its
+  threshold; this one has a threshold nothing can reach.
+  `measure_map`'s own docstring warns about this exact pattern ("gating on
+  colour count is the mistake migration 014 had to undo for sprites, where it
+  rejected 100 of 106 real references") and then reproduces it with a different
+  metric. Likely fix: **derive** the terrain count - extract candidates, merge
+  any pair closer than the threshold, report how many distinct terrains survive
+  - rather than forcing 12 and failing when they are not all distinct. Not yet
+  done; changing a measurement threshold needs its own before/after.
+- **The `tile` gate does not discriminate either, in the opposite direction**:
+  after the 2026-09-04 remeasure it marks **2001 of 2001** references `usable`.
+  `trainable` (311) is the only tile number that carries information.
+- (fixed 2026-09-04) **1,859 tile cells had never been measured at all.**
+  `split-sheets.py` registers extracted cells with `usable = NULL`,
+  `trainable = false` and `why = "extracted cell - not measured"`, and nothing
+  ever went back for them - so the entire yield of the contact-sheet split was
+  inert, and only 24 tile references were trainable. The remeasure measured all
+  2,001 and **trainable tiles went 24 -> 311**. Worth knowing for the next
+  bulk import: registering a row is not the same as measuring it, and the
+  `trainable = false` it lands with looks identical to a considered rejection.
+
+Live reference counts after that pass, for orientation (`trainable`, live rows):
+**core 213, sprite 0, tile 311, map 114.** Sprite is 0 by the audit's own
+verdict, not by accident - see [decisions/0009](decisions/0009-character-training-dataset.md).
 - (historical) **Step 2 produced no usable output** after four rewrites, because
   the model's row/stack/grid layout was not stable and no fixed slicing rule
   held. Fixed by no longer asking for a layout at all: each frame is generated
@@ -292,19 +348,36 @@ parts worth having in context before touching model choice:
   `generate_raw_task` — a *single* txt2img, 240s budget.
   `generate_spritesheet_task` is not exposed through the façade at all and runs
   async through the browser UI with no cap.
-- **`is_sdxl` is a name heuristic, not a config read.** `get_sd_pipeline` picks
-  the pipeline class from whether the repo name contains `sdxl` or `turbo`. An
-  SDXL repo named otherwise (`…-diffusion-xl`,
-  `stabilityai/stable-diffusion-xl-base-1.0`) gets an SD1.5 pipeline class and
-  fails to load.
-- **No model-discovery endpoint exists.** A new checkpoint must be added to three
-  hardcoded lists: both dropdowns in `templates/index.html` and `KNOWN_MODELS`
-  in `a1111.py`.
-- **Trigger words are attached to the wrong models.** `generate_core_task`
-  injects `PixelartFSS` — Onodofthenorth's SD1.5 trigger — into prompts going to
-  SDXL-Turbo, where it is inert; step 2 strips it and runs Onodofthenorth
-  *without* its trigger. Comparing checkpoints without moving each model's own
-  trigger with it is not a fair test.
+- **Family detection reads the config, not the name** (corrected 2026-09-04;
+  this said "`is_sdxl` is a name heuristic" and that is no longer true).
+  `_is_sdxl_checkpoint` in `tasks.py` reads `model_index.json` for the pipeline
+  class the checkpoint was saved as. That is *why*
+  `stabilityai/stable-diffusion-xl-base-1.0` is in the roster at all - the old
+  name heuristic ruled it out entirely.
+- **Model discovery exists, and the roster is one list** (corrected 2026-09-04;
+  this said no endpoint existed and named three hardcoded lists).
+  `GET /api/core-models` and `GET /sdapi/v1/sd-models` both answer it. Options
+  come from `core_models.CORE_MODELS`; `templates/index.html` iterates it rather
+  than hardcoding `<option>` tags, and `a1111.py` imports the same module. Two
+  lists remain in practice: the roster, and `a1111.KNOWN_MODELS` for what the
+  facade advertises to something2.
+  `core_models.py` also reports whether a checkpoint is actually **on disk**,
+  which matters because `archive-all-models.sh` moves weights to cold storage
+  and `HF_HUB_OFFLINE=1` means a missing one can never be recovered by retrying.
+- **Each checkpoint gets its own trigger, and that bug is fixed** (corrected
+  2026-09-04; this said `generate_core_task` injects `PixelartFSS` into prompts
+  going to SDXL-Turbo, where it was inert). `CORE_TRIGGERS` is now keyed by
+  lowercased model name and `generate_core_task` looks up the trigger for the
+  model it is actually running, logging which one it used. A checkpoint absent
+  from the dict correctly gets no trigger - SDXL base relies on its LoRA's own
+  (`"pixel art"`, recorded in `core_models.CORE_MODELS`). The underlying warning
+  still stands: comparing checkpoints without moving each model's own trigger
+  with it is not a fair test.
+- **Triggers now live in two places that nothing keeps in sync**:
+  `tasks.CORE_TRIGGERS` and `core_models.trigger_for()` / `apply_trigger()`,
+  the latter being what `a1111.py` calls. Adding a checkpoint's trigger to one
+  and not the other means the browser UI and the something2 facade prompt it
+  differently, and nothing warns.
 
 ### Disk space: `df` inside WSL is not free disk space
 
