@@ -26,7 +26,7 @@
   "w": 383,
   "h": 255,
   "subjects": 0,
-  "subject_count": "unverifiable",
+  "subject_count": "fused-from-10",
   "minor_marks": 0,
   "colors": 47752,
   "pixel_scale": 1,
@@ -174,7 +174,7 @@
   "w": 384,
   "h": 256,
   "subjects": 0,
-  "subject_count": "unverifiable",
+  "subject_count": "fused-from-96",
   "minor_marks": 0,
   "colors": 26760,
   "pixel_scale": 1,
@@ -211,7 +211,7 @@
   "w": 414,
   "h": 627,
   "subjects": 2,
-  "subject_count": "counted",
+  "subject_count": "fused-from-146",
   "minor_marks": 0,
   "colors": 29441,
   "pixel_scale": 1,
@@ -1515,7 +1515,7 @@
   "w": 384,
   "h": 384,
   "subjects": 2,
-  "subject_count": "counted",
+  "subject_count": "fused-from-35",
   "minor_marks": 2,
   "colors": 51303,
   "pixel_scale": 1,
@@ -1571,7 +1571,7 @@
   "w": 384,
   "h": 384,
   "subjects": 2,
-  "subject_count": "counted",
+  "subject_count": "fused-from-35",
   "minor_marks": 2,
   "colors": 51303,
   "pixel_scale": 1,
@@ -1800,7 +1800,7 @@
   "w": 510,
   "h": 1370,
   "subjects": 2,
-  "subject_count": "counted",
+  "subject_count": "fused-from-7",
   "minor_marks": 1,
   "colors": 89627,
   "pixel_scale": 1,
@@ -3247,6 +3247,24 @@
   ]
  },
  {
+  "file": "ref_core_0f93fce3f76f.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 312,
+  "h": 273,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 11,
+  "pixel_scale": 3,
+  "checker_px": 0,
+  "transparent_pct": 84.7,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
   "file": "ref_core_10eeaca303dd.png",
   "kind": "core",
   "verdict": "reject",
@@ -3608,6 +3626,24 @@
   ]
  },
  {
+  "file": "ref_core_218485c64f6c.png",
+  "kind": "core",
+  "verdict": "reject",
+  "w": 336,
+  "h": 336,
+  "subjects": 2,
+  "subject_count": "counted",
+  "minor_marks": 1,
+  "colors": 13334,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 77.2,
+  "border_flat": 1.0,
+  "why": [
+   "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it"
+  ]
+ },
+ {
   "file": "ref_core_223fb3e3aef7.png",
   "kind": "core",
   "verdict": "keep",
@@ -3650,7 +3686,7 @@
   "w": 789,
   "h": 920,
   "subjects": 0,
-  "subject_count": "unverifiable",
+  "subject_count": "fused-from-42",
   "minor_marks": 0,
   "colors": 28009,
   "pixel_scale": 1,
@@ -3658,7 +3694,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.996,
   "why": [
-   "foreground could not be told from background, so the subject count is unknown - look at it before trusting it"
+   "42 separate pieces merged into 0 subject(s) when the mask was closed, so the count is a FLOOR, not a total. If this is a packed sheet it will read as one or two subjects and pass tests it should fail - look before trusting the number"
   ]
  },
  {
@@ -3814,7 +3850,7 @@
   "w": 736,
   "h": 772,
   "subjects": 1,
-  "subject_count": "counted",
+  "subject_count": "fused-from-6",
   "minor_marks": 0,
   "colors": 42535,
   "pixel_scale": 1,
@@ -3822,6 +3858,7 @@
   "transparent_pct": 0.0,
   "border_flat": 0.258,
   "why": [
+   "6 separate pieces merged into 1 subject(s) when the mask was closed, so the count is a FLOOR, not a total. If this is a packed sheet it will read as one or two subjects and pass tests it should fail - look before trusting the number",
    "only 26% of the border is one colour - the subject sits in a scene, so the backdrop trains too"
   ]
  },
@@ -5799,6 +5836,24 @@
   ]
  },
  {
+  "file": "ref_core_7a0cf0c56f30.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 640,
+  "h": 640,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 15626,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 63.0,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
   "file": "ref_core_7a5170852699.png",
   "kind": "core",
   "verdict": "reject",
@@ -5877,7 +5932,7 @@
   "w": 736,
   "h": 1040,
   "subjects": 2,
-  "subject_count": "counted",
+  "subject_count": "fused-from-3",
   "minor_marks": 1,
   "colors": 37109,
   "pixel_scale": 1,
@@ -7246,6 +7301,24 @@
   ]
  },
  {
+  "file": "ref_core_bb7fe974b992.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 500,
+  "h": 500,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 22207,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 68.8,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
   "file": "ref_core_bba9e371f7fa.png",
   "kind": "core",
   "verdict": "keep",
@@ -7279,6 +7352,24 @@
   "border_flat": 1.0,
   "why": [
    "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
+  "file": "ref_core_bc0d32d1cacb.png",
+  "kind": "core",
+  "verdict": "reject",
+  "w": 540,
+  "h": 762,
+  "subjects": 2,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 19,
+  "pixel_scale": 3,
+  "checker_px": 0,
+  "transparent_pct": 73.9,
+  "border_flat": 1.0,
+  "why": [
+   "2 separable subjects - a contact sheet. Training on it teaches a grid of framed cells, which is exactly what both earlier adapters produced. Run split-sheets.py on it rather than dropping it"
   ]
  },
  {
@@ -7331,6 +7422,24 @@
   "pixel_scale": 1,
   "checker_px": 0,
   "transparent_pct": 0.0,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
+  "file": "ref_core_be0dd639a7d3.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 1280,
+  "h": 1280,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 20,
+  "pixel_scale": 5,
+  "checker_px": 0,
+  "transparent_pct": 88.3,
   "border_flat": 1.0,
   "why": [
    "single subject, flat backdrop, sane size"
@@ -7404,6 +7513,24 @@
   "pixel_scale": 1,
   "checker_px": 0,
   "transparent_pct": 0.0,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
+  "file": "ref_core_c36be481a357.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 1024,
+  "h": 1024,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 27157,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 79.8,
   "border_flat": 1.0,
   "why": [
    "single subject, flat backdrop, sane size"
@@ -7828,6 +7955,24 @@
   ]
  },
  {
+  "file": "ref_core_d8137d288df5.png",
+  "kind": "core",
+  "verdict": "reject",
+  "w": 500,
+  "h": 500,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 7818,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 91.7,
+  "border_flat": 1.0,
+  "why": [
+   "near-duplicate of ref_core_725e455776b2.png - a repeat is extra weight on one example, not extra data"
+  ]
+ },
+ {
   "file": "ref_core_d81a70a495f1.png",
   "kind": "core",
   "verdict": "keep",
@@ -7858,6 +8003,24 @@
   "pixel_scale": 1,
   "checker_px": 0,
   "transparent_pct": 0.0,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
+  "file": "ref_core_d9690cb0ca66.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 520,
+  "h": 440,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 15157,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 71.0,
   "border_flat": 1.0,
   "why": [
    "single subject, flat backdrop, sane size"
@@ -8076,6 +8239,24 @@
   "pixel_scale": 1,
   "checker_px": 0,
   "transparent_pct": 0.0,
+  "border_flat": 1.0,
+  "why": [
+   "single subject, flat backdrop, sane size"
+  ]
+ },
+ {
+  "file": "ref_core_e37a025717aa.png",
+  "kind": "core",
+  "verdict": "keep",
+  "w": 1200,
+  "h": 1200,
+  "subjects": 1,
+  "subject_count": "counted",
+  "minor_marks": 0,
+  "colors": 38785,
+  "pixel_scale": 1,
+  "checker_px": 0,
+  "transparent_pct": 64.7,
   "border_flat": 1.0,
   "why": [
    "single subject, flat backdrop, sane size"
