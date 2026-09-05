@@ -162,3 +162,38 @@ placeholder art standing in.
 enough to walk on and will improve without being re-requested. A caller that
 treats it as an error abandons a usable map; a caller that treats it as final
 caches a placeholder forever.
+
+## "Finding" is already taken - use *claim* for the cross-agent log
+
+Reserved before the cross-agent log is built, because this repo has lost this
+argument three times already ("core", "task", "map").
+
+**"Finding" currently means three different things here**, none of them the new
+one:
+
+| Sense | Where |
+|---|---|
+| A discovery recorded in prose | `decisions/0004`, `0005`, `0006`, `0008` - "### The finding", "the real finding" |
+| One row of an audit verdict | `audit-character-refs.py` - "40 finding(s) matched no live row" |
+| A whole document | `.ai/specs/entity-cutout/findings.md` |
+
+So the shared cross-agent record is a **claim**, never a finding. A claim is an
+assertion *with provenance* - author, timestamp, and a status - not an
+established fact, and the vocabulary should keep saying so:
+
+- **`measured`** - carries evidence: a command and its output, a log line with a
+  timestamp, or a `file:line`. **Evidence is required to write this status.**
+- **`believed`** - a lead. Reasonable, unverified, and to be treated as
+  something to check rather than something to build on.
+- **`retracted`** - withdrawn, superseding an earlier claim by id.
+
+**Why the distinction is load-bearing, and not bureaucracy.** On 2026-09-04 two
+sessions debugging the same GPU fault produced four wrong theories between them,
+each stated confidently. What made the investigation converge was that claims
+arrived with their evidence attached and wrong ones were retracted explicitly -
+including two of this project's own, recorded in `project-context.md`. A shared
+log without that distinction just distributes confident guesses faster, and one
+of the intended writers is an 8B local model.
+
+**Do not say "the claim log found X".** A claim log holds claims; people and
+measurements find things.

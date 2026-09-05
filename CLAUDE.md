@@ -79,9 +79,11 @@ fragment of it.
   `lcm`) runs at guidance 0, which makes **every negative prompt a silent
   no-op**. Prefer non-distilled checkpoints.
 - Family detection reads `model_index.json` (`_is_sdxl_checkpoint`,
-  `tasks.py`), **not** the repo name. `0002` still describes the old name
-  heuristic in places — that constraint is gone, and
-  `stable-diffusion-xl-base-1.0` loads because of it.
+  `tasks.py`), **not** the repo name — which is why
+  `stable-diffusion-xl-base-1.0` loads at all. The name heuristic survives only
+  as a *fallback* for an unreadable config (offline, cold cache), so it is not
+  dead code. `0002` states the old rule at line ~95 and corrects itself at
+  ~199; read both before quoting either.
 - `"<base>+<lora>"` is a valid model string. A LoRA only fuses onto the base it
   was trained against — check `base_model` in the repo card first.
 - Each checkpoint needs **its own** trigger word. A foreign trigger is inert at

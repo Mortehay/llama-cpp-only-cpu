@@ -387,6 +387,28 @@ live in their DB not their .env, tiles have a route but no async path).
   references" fix, at seventy times the scale. `make audit-refs-apply` restores
   it (237 marked not trainable). Until the endpoint preserves auditor verdicts,
   **always run the apply step after a remeasure** and check the counts.
+- **Measured 2026-09-05, and it settles the map question: the references are
+  fine, the gate is not.** Taking each map's stored `metrics.terrain_palette`
+  and merging any pair closer than 12.0 Lab, **all 114 live maps yield between
+  3 and 12 genuinely distinguishable terrains** — median 7, mean 7.0:
+
+  | distinct terrains | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+  |---|---|---|---|---|---|---|---|---|---|---|
+  | maps | 3 | 9 | 15 | 25 | 17 | 18 | 16 | 6 | 3 | 2 |
+
+  So the gate rejects 112 references that each carry a usable terrain set. It
+  was never measuring the art.
+
+  **Deliberately NOT fixed.** Swapping in a derived count with a floor of 4, or
+  5, would pass 111 or 102 of 114 — but every one of those floors is picked off
+  the histogram's shape, which is exactly how `TERRAIN_MIN_LAB_SEPARATION = 12.0`
+  was arrived at in the first place. **Nobody has defined what makes a map
+  reference unusable**, and the contract says the caller *declares* the terrain
+  set anyway (`.ai/specs/maps/contract.md`: "the declared terrain set forces the
+  palette"), so a reference can barely fail at supplying candidate colours.
+  Define "bad" first, then gate against it. The mechanism below is the finding;
+  the threshold is not.
+
 - **The map reference gate rejects almost everything, and the gate is the
   problem.** 112 of 114 live map references fail `measure_map` on terrain
   separation. `measure_map` median-cuts every image into exactly
