@@ -2589,16 +2589,44 @@ def gpu_probe():
         torch.cuda.synchronize()
         del x
         free_b, total_b = torch.cuda.mem_get_info()
+        reserved_b = torch.cuda.memory_reserved()
+        allocated_b = torch.cuda.memory_allocated()
+        mb = lambda b: round(b / 1024 / 1024)  # noqa: E731
+
+        # `free` alone is NOT the headroom, and reading it as such is how the
+        # first version of this probe reported OK at the edge of a cliff.
+        #
+        # Measured 2026-09-04 22:34, with the box healthy and serving: free was
+        # **0 MB**. That is the NORMAL warm state - PyTorch's caching allocator
+        # holds essentially the whole card and `expandable_segments:True` means
+        # it does not hand it back to the driver. So warning on "free is low"
+        # would fire constantly and mean nothing.
+        #
+        # What actually matters is what the next allocation can draw on: what
+        # the driver still has, PLUS what torch has reserved but is not using
+        # and can therefore reuse without asking the driver. When THAT figure
+        # is small, the next pipeline load has to ask WDDM for memory it does
+        # not have, and `dxgkio_make_resident` returns ENOMEM - which is the
+        # trigger behind all three faults on 2026-09-04.
+        headroom_b = free_b + (reserved_b - allocated_b)
         return {
             "ok": y == y,  # NaN fails this; a faulted matmul often returns NaN
             "device": DEVICE,
-            "free_mb": round(free_b / 1024 / 1024),
-            "total_mb": round(total_b / 1024 / 1024),
-            # Guest-side only. Under WSL2 this does NOT see host allocations -
-            # it read 1342MB while Windows held 11601MB of the same 12GB card.
-            # Never conclude "there is room" from this number alone; check
+            "free_mb": mb(free_b),
+            "total_mb": mb(total_b),
+            "reserved_mb": mb(reserved_b),
+            "allocated_mb": mb(allocated_b),
+            "headroom_mb": mb(headroom_b),
+            # An SDXL fp16 pipeline is ~7GB. Below roughly that, the next load
+            # is a coin flip rather than a certainty, so say so instead of
+            # reporting a bare OK.
+            "headroom_tight": mb(headroom_b) < 7000,
+            # Every figure above is GUEST-side. Under WSL2 none of it sees host
+            # allocations: this read 1342MB used while Windows showed 11601MB of
+            # the same 12GB card. Note that 11.6GB is NOT a leak signature - a
+            # healthy warm worker holds about the same. Check
             # (Get-Counter '\GPU Process Memory(*)\Dedicated Usage') on Windows.
-            "note": "free_mb is guest-visible only; see docstring",
+            "note": "all figures guest-visible only; see docstring",
         }
     except Exception as e:
         return {"ok": False, "device": DEVICE,

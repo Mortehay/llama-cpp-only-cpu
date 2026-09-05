@@ -84,15 +84,31 @@ def main():
         return 3
 
     if result.get("ok"):
-        free, total = result.get("free_mb"), result.get("total_mb")
-        where = f" ({free}/{total} MB free, guest-visible)" if free else ""
-        print(f"OK - worker CUDA context is alive on {result.get('device')}{where}")
-        if free is not None:
-            print("  NOTE: that figure does NOT include host-side allocations. "
-                  "Under WSL2 it read 1342MB while Windows held 11601MB of the "
-                  "same 12GB card. To see the truth, on Windows run:")
-            print("    (Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage')"
-                  ".CounterSamples")
+        print(f"OK - worker CUDA context is alive on {result.get('device')}")
+        head = result.get("headroom_mb")
+        if head is not None:
+            print(f"  free {result['free_mb']} MB | torch reserved "
+                  f"{result['reserved_mb']} MB, of which "
+                  f"{result['reserved_mb'] - result['allocated_mb']} MB is "
+                  f"reusable | effective headroom ~{head} MB "
+                  f"of {result['total_mb']} MB")
+            # `free` on its own is normally 0 here and means nothing: the
+            # caching allocator holds the card and does not give it back.
+            # Headroom is free plus what torch can reuse without asking the
+            # driver, and that is what the next ~7GB pipeline load draws on.
+            if result.get("headroom_tight"):
+                print("  TIGHT: under ~7GB, which is one SDXL pipeline. The "
+                      "next load may have to ask WDDM for memory it does not "
+                      "have; that returns ENOMEM and faults the context. This "
+                      "is the state that preceded all three faults on "
+                      "2026-09-04. Not an error - the context is alive - but "
+                      "do not start a batch here.")
+        print("  NOTE: all figures are GUEST-side. Under WSL2 none of them see "
+              "host allocations - this read 1342MB used while Windows showed "
+              "11601MB of the same 12GB card. That 11.6GB is NOT a leak: a "
+              "healthy warm worker holds about the same. On Windows run:")
+        print("    (Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage')"
+              ".CounterSamples")
         return 0
 
     print(f"FAULTED - {result.get('error') or result.get('why') or result}")

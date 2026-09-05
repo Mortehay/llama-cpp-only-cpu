@@ -54,9 +54,16 @@ fragment of it.
   A faulted CUDA context in the worker produces three *different* errors
   (allocator assert at 1024, a `c10::Half` dtype error at 512, "device not
   ready"), takes the same wall-clock time as a success, and leaves `/docs`,
-  the models route and `make gpu-check` all green. Only a restart fixes it.
-  The dtype variant invites a `pipe.to(float16)` "fix" that would silently
-  produce **black PNGs**. Full signature in `.ai/project-context.md`.
+  the models route and `make gpu-check` all green. **Stop sending traffic and
+  re-probe before restarting** — measured 2026-09-04, one fault cleared on its
+  own in under two minutes once a retry storm stopped. Restart only if the
+  probe still says FAULTED with the card quiet. The dtype variant invites a
+  `pipe.to(float16)` "fix" that would silently produce **black PNGs**. Full
+  signature in `.ai/project-context.md`.
+- **This card has no spare VRAM in normal operation** — measured 0 MB free
+  guest-side while healthy, because the caching allocator holds the whole card.
+  Any extra residency demand faults it, so callers need backoff; a retry storm
+  is a plausible trigger, not just noise.
 - **`nvidia-smi` inside WSL does not see host VRAM** and will tell you the card
   is nearly empty while it is 94% full — measured 1342 MiB vs 11,601 MiB held.
   Check `(Get-Counter '\GPU Process Memory(*)\Dedicated Usage')` on Windows.

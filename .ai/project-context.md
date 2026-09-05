@@ -292,11 +292,39 @@ live in their DB not their .env, tiles have a route but no async path).
   allocation into VRAM - *below* CUDA, which is why the message is "device not
   ready" and not "CUDA out of memory".
 
-  **It is self-sustaining, which is why it never recovers.** The faulted context
-  keeps its VRAM. Measured before the restart: `pid_0` (the WSL VM aggregate)
-  held **11,601 MB of 12,288**, next consumer 106 MB. So the next load also
-  fails to become resident, forever. A fault leaks the card; the leaked card
-  guarantees the next fault.
+  **The precondition: this card runs at zero headroom in normal operation.**
+  Measured 22:34 with the box healthy and serving, via `make gpu-health`:
+  guest-visible **free VRAM was 0 MB**, and host-side `pid_0` held
+  **11,610 MB of 12,288**. PyTorch's caching allocator takes essentially the
+  whole card once the worker is warm, and `expandable_segments:True` means it
+  does not hand it back. So there is no spare capacity at all, and *any*
+  additional residency request - the Windows desktop, a browser tab, an
+  evict/reload window where two pipelines briefly overlap - has nothing to draw
+  on and gets ENOMEM. That is the trigger behind all three faults.
+
+  > **Corrected 2026-09-04 22:35. Two claims written here earlier today were
+  > wrong, and both were over-reads of a single before/after pair.**
+  >
+  > 1. **"It is self-sustaining and never recovers" - not established.** The
+  >    only failures observed that morning ran 21:37-21:46 and were *entirely*
+  >    under a caller's no-backoff retry storm. There was zero traffic between
+  >    17:00 and 21:37 and none between 21:47 and the restart, so the fault was
+  >    never once observed failing to recover while idle - there was no control.
+  >    A third fault at **22:28:28** then cleared **on its own within two
+  >    minutes** once the burst stopped, with no restart. The fault can clear.
+  > 2. **The 11,601 MB was not "leaked VRAM".** A healthy warm worker holds
+  >    almost exactly the same (11,610 MB, measured while serving). The restart
+  >    dropped it to ~0 because it *unloaded the pipeline*, not because it cured
+  >    a leak.
+  >
+  > Observed failure spans are **~9 minutes** and **~24 seconds**, not hours.
+  > The commit message on `1fb51bc` says "six hours"; the box was idle, not
+  > failing, for nearly all of that window.
+
+  **A retry storm is a plausible trigger, not just an amplifier.** The 22:28
+  incident followed 50 subjects x 3 attempts = ~150 calls in 24s, against a card
+  with no headroom, each retry re-entering the load path. Unproven, but any
+  caller hitting this API needs backoff and a circuit breaker.
 
   **`nvidia-smi` inside WSL reported 1342 MiB used while the card was 94%
   full.** The guest sees only its own CUDA accounting, not host residency. Any
@@ -326,9 +354,17 @@ live in their DB not their .env, tiles have a route but no async path).
     --env-file compose/develop/.env restart sprite-worker
   ```
 
-  Verified 2026-09-04: after that restart the leaked 11.6 GB was released and
-  four previously-500 probes (base SDXL, +nerijs/pixel-art-xl, +local terrain at
-  1024, +local terrain at 512) all returned 200, with **zero code changed**.
+  Verified 2026-09-04: after that restart four previously-500 probes (base SDXL,
+  +nerijs/pixel-art-xl, +local terrain at 1024, +local terrain at 512) all
+  returned 200, with **zero code changed** - which is what retires any
+  model-loading or LoRA explanation. The 11.6 GB dropping to ~0 across the
+  restart is *not* evidence of a leak being cured; it is the pipeline being
+  unloaded. See the correction above.
+
+  **A restart is not the only cure, and may not be needed.** Since the fault can
+  clear once traffic stops, the first move on a fresh incident is to stop
+  sending and re-run `make gpu-health` - not to restart. Restart when the probe
+  still reports FAULTED with the card quiet.
 
   **The discriminator worth remembering:** the same dtype error string has two
   completely different causes, and which one you have depends on whether the
