@@ -378,7 +378,27 @@ live in their DB not their .env, tiles have a route but no async path).
   from the SDXL path, so it was 957. The reported list was empty, meaning
   nothing was actually mis-cast - it is a signpost, not a current defect.
 
-- **`remeasure-all` silently reverts the character audit.** Measured
+- **(fixed 2026-09-05) `remeasure-all` no longer reverts the audit** — migration
+  016 gives each judge its own column (`trainable` for the permissive
+  `measure.judge_trainable`, `audit_trainable` for
+  `audit-character-refs.py --apply`) and training reads
+  `trainable AND audit_trainable IS NOT FALSE`. Verified by re-running the exact
+  call that caused the incident: the permissive column widened as before
+  (sprite 0→102, core 213→265) while **training's input did not move a single
+  row** (core 213, sprite 0, tile 311, map 114). Fixing it by making remeasure
+  "not widen" was rejected — `--apply` only ever writes false, so nothing could
+  ever re-enable a reference again. The entry below is kept because it explains
+  why the columns are split.
+- **`remeasure-all` outruns any client, and looks like a failure when it does.**
+  Measured 2026-09-05: a full pass over 2,565 live references ran past **900
+  seconds**; curl returned `HTTP 000` and **the handler kept going** — row
+  counts were still climbing minutes later. Its docstring's "227 references take
+  a few seconds" is stale by an order of magnitude. So the UI button appears to
+  fail while the work continues invisibly, and clicking twice starts a second
+  concurrent pass over the same rows. Scope it with `?kind=` and read a timeout
+  as "still running".
+- **(historical, and the reason for the split) `remeasure-all` silently reverted
+  the character audit.** Measured
   2026-09-04. `POST /api/references/remeasure-all` recomputes `trainable` from
   `measure.judge_trainable`, which is deliberately permissive; it has no
   knowledge that `audit-character-refs.py --apply` wrote a stricter verdict over

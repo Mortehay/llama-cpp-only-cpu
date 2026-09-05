@@ -871,9 +871,16 @@ def main():
             # single-character wildcards. Neither would have failed loudly;
             # `right(...)` compares bytes and has no pattern semantics.
             needle = "/" + r["file"]
+            # Writes `audit_trainable`, NOT `trainable` - see migration 016.
+            #
+            # This used to write `trainable`, which `measure.judge_trainable`
+            # also owns. Whichever ran last won: one remeasure-all on
+            # 2026-09-04 un-rejected 131 core and 84 sprite references this
+            # audit had rejected, silently. The two verdicts answer different
+            # questions and now live in different columns; training reads both.
             cur.execute(
-                "UPDATE reference_assets SET trainable = false, "
-                "trainable_why = %s "
+                "UPDATE reference_assets SET audit_trainable = false, "
+                "audit_trainable_why = %s "
                 "WHERE deleted = false "
                 "  AND (file_path = %s OR right(file_path, %s) = %s)",
                 ("; ".join(r["why"]), r["file"], len(needle), needle))

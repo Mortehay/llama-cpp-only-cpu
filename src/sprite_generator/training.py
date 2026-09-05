@@ -133,6 +133,7 @@ def untrained_refs(kinds) -> list[tuple[str, str, str | None]]:
         cur.execute(
             "SELECT ra.id, ra.file_path, ra.label FROM reference_assets ra "
             "WHERE ra.deleted = false AND ra.trainable = true "
+            "  AND ra.audit_trainable IS NOT FALSE "
             "  AND ra.kind = ANY(%s) "
             "  AND NOT EXISTS ("
             "     SELECT 1 FROM training_run_refs trr "
@@ -150,7 +151,8 @@ def all_trainable_refs(kinds) -> list[tuple[str, str, str | None]]:
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT id, file_path, label FROM reference_assets "
-            "WHERE deleted = false AND trainable = true AND kind = ANY(%s) "
+            "WHERE deleted = false AND trainable = true "
+            "  AND audit_trainable IS NOT FALSE AND kind = ANY(%s) "
             "ORDER BY created_at", (kinds,))
         return [(str(r[0]), r[1], r[2]) for r in cur.fetchall()]
 
@@ -204,7 +206,8 @@ def trainable_files(kinds) -> list[str]:
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT file_path FROM reference_assets "
-            "WHERE deleted = false AND trainable = true AND kind = ANY(%s) "
+            "WHERE deleted = false AND trainable = true "
+            "  AND audit_trainable IS NOT FALSE AND kind = ANY(%s) "
             "ORDER BY created_at", (kinds,))
         return [r[0] for r in cur.fetchall()]
 
@@ -224,7 +227,8 @@ def _trainable_reference_count(kinds) -> int:
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*) FROM reference_assets "
-            "WHERE deleted = false AND trainable = true AND kind = ANY(%s)",
+            "WHERE deleted = false AND trainable = true "
+            "  AND audit_trainable IS NOT FALSE AND kind = ANY(%s)",
             (kinds,))
         return int(cur.fetchone()[0])
 

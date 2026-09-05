@@ -192,19 +192,26 @@ def list_references(kind: str | None = None,
             cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             f"SELECT id, kind, file_path, label, metrics, usable, why, "
-            f"       trainable, trainable_why, created_at FROM reference_assets "
+            f"       trainable, trainable_why, audit_trainable, audit_trainable_why, "
+            f"       created_at FROM reference_assets "
             f"WHERE deleted = false {clause} ORDER BY created_at DESC", params)
         items = [_row(dict(r)) for r in cur.fetchall()]
 
     usable = sum(1 for i in items if i["usable"])
     trainable = sum(1 for i in items if i["trainable"])
+    # What training will ACTUALLY read: both judges must agree. Reported
+    # separately so a divergence between them is visible in the UI rather than
+    # only showing up as a training run with fewer images than expected.
+    trainable_audited = sum(1 for i in items
+                            if i["trainable"] and i.get("audit_trainable") is not False)
     return {"items": items, "total": len(items),
             # TWO different counts, because they answer two different
             # questions. `usable` is measurement-grade - palette-locked, hard
             # alpha, isolated subject - and is what a style profile needs.
             # `trainable` is nearly everything, and is what training needs.
             "usable": usable, "trainable": trainable,
-            "enough_to_train": trainable >= 20,
+            "trainable_audited": trainable_audited,
+            "enough_to_train": trainable_audited >= 20,
             "enough_to_measure": usable >= 1}
 
 
@@ -412,7 +419,29 @@ def remeasure_all(kind: str | None = None,
     is not a reasonable thing to ask.
 
     Synchronous: measurement is numpy over an already-decoded image, not GPU
-    work. 227 references take a few seconds.
+    work. 227 references took a few seconds.
+
+    THAT SIZING IS NOW STALE, and the failure mode is ugly. The set is 2,565
+    live references (2,001 of them tiles) and a full pass measured
+    2026-09-05 ran past **900 seconds** - longer than any client will wait. The
+    request 500s or times out, but **the handler keeps running**: row counts
+    were still climbing minutes after curl gave up. So the UI button looks like
+    it failed while the work continues invisibly, and a user who clicks twice
+    gets two concurrent passes over the same rows. Pass `kind=` to scope it, and
+    treat a timeout as "still running", not "did not happen".
+
+    THIS NO LONGER REVERTS THE CHARACTER AUDIT - see migration 016.
+
+    It used to. `trainable` was written by this endpoint AND by
+    `audit-character-refs.py --apply`, which asks a much stricter question, and
+    whichever ran last won. Measured 2026-09-04: one call here un-rejected 131
+    core and 84 sprite references the audit had rejected, with no warning and no
+    visible symptom - `usable` was untouched and the UI looked identical.
+
+    The audit now owns `audit_trainable` and this owns `trainable`; training
+    requires both. So this endpoint can still be run freely, which is the point:
+    it exists because the measurement rules change, and it should not need a
+    follow-up step to be safe.
     """
     auth.require(authorization, "generate")
     if kind and kind not in KINDS:

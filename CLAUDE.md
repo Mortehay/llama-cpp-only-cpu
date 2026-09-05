@@ -103,15 +103,20 @@ fragment of it.
   anything 202-and-poll is not connectable today. The A1111 facade must stay a
   blocking read. World specs are the one surface that is genuinely sync.
 
-**Training data — two flags, and one of them gets silently reverted**
-- `usable` and `trainable` are **different verdicts** and `training.py` filters
-  on `trainable` only. `measure.judge_trainable` is deliberately permissive
-  (blank, tiny, extreme-strip); `scripts/audit-character-refs.py --apply` writes
-  a much stricter verdict over the top for `sprite` and `core`.
-- **`POST /api/references/remeasure-all` reverts that audit.** It recomputes
-  `trainable` from the permissive gate with no knowledge that `--apply` ran.
-  Measured 2026-09-04: one call un-rejected 131 core and 84 sprite references.
-  **Always follow it with `make audit-refs-apply`**, and check the counts.
+**Training data — three verdict columns, and they answer different questions**
+- `usable` gates style-profile derivation (measurement-grade). `trainable` is
+  `measure.judge_trainable`, deliberately permissive (blank, tiny,
+  extreme-strip). `audit_trainable` is `audit-character-refs.py --apply`,
+  deliberately strict (contact sheets, baked checkers, near-duplicates), and
+  covers `sprite`/`core` only — NULL elsewhere means "not judged", not "failed".
+- **Training reads `trainable AND audit_trainable IS NOT FALSE`.** Filtering on
+  `trainable` alone silently re-admits everything 0009 rejected.
+- Those were **one column until migration 016**, and whichever writer ran last
+  won: on 2026-09-04 a single `remeasure-all` un-rejected 131 core and 84 sprite
+  references with no warning. Split now, so remeasure is safe to run.
+- **`remeasure-all` outruns its client.** A full pass over 2,565 references
+  exceeds 900s; curl returns `HTTP 000` and **the handler keeps running**. Read
+  a timeout as "still going", scope with `?kind=`, and don't click twice.
 - The gates for the other two kinds do not discriminate: `tile` marks
   2001 of 2001 `usable`, `map` rejects 112 of 114. For tiles, `trainable` is the
   only number that means anything; for maps, see the terrain-separation note in
