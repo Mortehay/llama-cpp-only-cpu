@@ -390,10 +390,12 @@ live in their DB not their .env, tiles have a route but no async path).
   ever re-enable a reference again. The entry below is kept because it explains
   why the columns are split.
 - **`remeasure-all` outruns any client, and looks like a failure when it does.**
-  Measured 2026-09-05: a full pass over 2,565 live references ran past **900
-  seconds**; curl returned `HTTP 000` and **the handler kept going** — row
-  counts were still climbing minutes later. Its docstring's "227 references take
-  a few seconds" is stale by an order of magnitude. So the UI button appears to
+  Measured 2026-09-05: curl gave up at **900 seconds** with `HTTP 000` while the
+  handler kept going — still processing **40 minutes later**, at roughly
+  **0.4 rows/second**, which puts a full pass over 2,565 live references at
+  **well over an hour**. Its docstring's "227 references take a few seconds" is
+  stale by two orders of magnitude; the cost is dominated by thumbnail backfill
+  over 2,001 tiles. So the UI button appears to
   fail while the work continues invisibly, and clicking twice starts a second
   concurrent pass over the same rows. Scope it with `?kind=` and read a timeout
   as "still running".
