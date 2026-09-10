@@ -128,6 +128,26 @@ fragment of it.
   changed 3/12 → 3/12, and dropping `lora_scale` to 0.7 made it markedly worse
   (2/12 → 5/12). The pixel-art adapter at full strength holds the subject
   together; it is not what imposes the grid. Do not reach for that dial.
+- **A contact sheet is a property of the SEED, not the prompt** — so the cutout
+  path regenerates on a new seed instead of refusing (`ENTITY_CUTOUT_ATTEMPTS`,
+  default 3). Measured on the exact prompt+negative+seed something2 kept
+  resending: 1 of 7 seeds rejected, 6 clean. something2 pins its seed and
+  retries the *same* one — six times per item — so identical input gave
+  identical rejection forever, ~108s of GPU each. Replaying all 8 stuck
+  requests after the change: **8/8 succeeded**, ~29s average.
+  - A retry deliberately **overrides a caller-pinned seed**; the seed actually
+    used is returned, and the facade forwards it in `info`. A pinned seed that
+    yields an item sheet can never yield anything else.
+  - Only `cutout_failed` is retried. A `gpu_faulted` result must NOT be —
+    that is the storm the breaker exists to stop.
+  - `ENTITY_CUTOUT_BUDGET_S` (180s) bounds the loop by wall clock, not just by
+    attempt count, and refuses to *start* an attempt it expects to overshoot.
+    Attempts are not the same size: two warm ones measured 31.3s, but the same
+    two after a cold load measured 242.2s — past something2's 240s ceiling.
+  - Still imperfect: an accepted cutout can be the largest item *of* a sheet
+    (measured 24.6–53.8% kept on some passes), so a subject can be the wrong
+    item. Retrying toward a higher kept-target would trade latency for asset
+    quality; the guard's own floor stays at the measured 20%.
 
 **The something2 contract**
 - **Synchronous only.** Submit/poll is explicitly unsupported on their side, so

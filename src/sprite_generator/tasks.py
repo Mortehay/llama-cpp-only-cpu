@@ -2676,12 +2676,35 @@ def build_sheet_job(self, job_id: str):
     return {"status": "done", "sheet": sheet_path}
 
 
+# How many times a cutout request may be regenerated on a fresh seed before
+# giving up. Each attempt is a full generation (~18s at 1024 on this card), and
+# the something2 contract is synchronous with a 240s ceiling, so three attempts
+# is roughly 54s - comfortable - while four would start crowding a slow load.
+ENTITY_CUTOUT_ATTEMPTS = int(os.environ.get("ENTITY_CUTOUT_ATTEMPTS", "3"))
+
+# Wall-clock ceiling on the retry loop, independent of the attempt count.
+#
+# The attempt count alone is not a safe bound, because attempts are not the
+# same size. A warm worker regenerates in ~16s - two attempts measured 31.3s -
+# but the FIRST request after a restart or a model switch also pays the load,
+# and that measured 242.2s for the same two attempts. something2's ceiling is
+# 240s (A1111_GENERATE_TIMEOUT_S), so that run would have come back as their
+# opaque timeout instead of an image, and the facade would have revoked a task
+# that was about to succeed.
+#
+# 180s leaves room for the cutout stages and the response inside a 240s
+# budget. The check is predictive rather than reactive - it will not START an
+# attempt it expects to overshoot - because discovering the overrun afterwards
+# is exactly the failure it exists to prevent.
+ENTITY_CUTOUT_BUDGET_S = int(os.environ.get("ENTITY_CUTOUT_BUDGET_S", "180"))
+
+
 @celery_app.task(name="tasks.generate_raw_task", bind=True)
 def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
                       width: int, height: int, steps: int, cfg_scale: float,
                       seed: int, strip_background: bool = False,
                       lora_scale: float = None):
-    """Plain text2img with no prompt rewriting.
+    """Plain text2img with no prompt rewriting, retried on an unusable cutout.
 
     Deliberately separate from generate_core_task, which prepends sprite-specific
     styling ("solo individual", "lone character", "centered"). That styling is
@@ -2690,10 +2713,116 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     through generate_core_task; callers that want exactly what they asked for
     come here.
 
+    WHY A CUTOUT FAILURE IS RETRIED RATHER THAN RETURNED
+
+    A contact sheet is a property of the SEED, not of the prompt, and the
+    ledger proves both halves of that.
+
+    Measured 2026-09-11 on "only a tempered boots, a fantasy armor...", the
+    exact prompt and negative something2 sends, at the exact seed it kept
+    resending:
+
+        seed 752636216   kept 17.9%   REJECTED   <- the seed being retried
+        seed 752636217   kept  100%   fine
+        seed 752636218   kept  100%   fine
+        seed 12345 / 999 / 4242 / 77777   100 / 100 / 63.6 / 100%
+
+    Six of seven seeds are clean. Meanwhile the caller pins its seed and
+    retries the SAME one - six times for that item, six for "a runed band",
+    six for "a stone of flame staff". Identical input, identical image,
+    identical rejection, about 108s of GPU each, forever. Refusing was
+    technically correct and operationally useless.
+
+    Prompt wording cannot fix it, and that was measured too rather than
+    assumed: something2's own negative already carries "sprite sheet, tileset,
+    grid, panels, collage, multiple objects, duplicate, row of objects" and
+    survives CLIP's 77-token truncation intact (96 tokens, but everything
+    dropped is duplicated text); adding NEGATIVE_SINGLE moved 3/12 to 3/12;
+    lowering lora_scale made it worse. The dial that works is the seed.
+
+    So the detector that used to refuse now drives a retry instead. It only
+    fires on a cutout request, because only that caller has asserted the frame
+    holds one object - a plain raw generation gets exactly what it asked for,
+    once.
+
+    NOTE ON THE SEED CONTRACT: a retry deliberately overrides a caller-pinned
+    seed, because a pinned seed that yields an item sheet can never yield
+    anything else. The seed actually used comes back in the result, and the
+    A1111 facade already forwards it in `info`.
+
     Returns the saved file path rather than image bytes: the result travels
     through the Redis result backend, and sheets can approach the 32MB cap.
     """
     task_id = self.request.id
+    attempts = max(1, ENTITY_CUTOUT_ATTEMPTS) if strip_background else 1
+    result = None
+
+    loop_started = time.time()
+    used = 0
+    out_of_time = False
+
+    for attempt in range(1, attempts + 1):
+        attempt_started = time.time()
+        result = _generate_raw_once(
+            task_id, prompt, negative_prompt, llm_name, width, height, steps,
+            cfg_scale, seed, strip_background, lora_scale)
+        used = attempt
+        attempt_took = time.time() - attempt_started
+
+        # Anything that is not an unusable cutout is returned as-is: a success,
+        # a faulted context (retrying that is exactly the storm the breaker
+        # exists to stop), a model that would not load.
+        if result.get("error_kind") != "cutout_failed":
+            break
+        if attempt >= attempts:
+            break
+
+        # Do not START an attempt that is expected to overshoot. The previous
+        # attempt is the best available estimate of the next one - and after a
+        # cold load the first is far larger than the rest, which is precisely
+        # the case that would otherwise run past the caller's ceiling.
+        elapsed = time.time() - loop_started
+        if elapsed + attempt_took > ENTITY_CUTOUT_BUDGET_S:
+            out_of_time = True
+            logger.warning(
+                "cutout unusable after %d attempt(s) and %.0fs; not starting "
+                "another (last took %.0fs, budget %ds). Returning the refusal "
+                "rather than risking the caller's timeout.",
+                attempt, elapsed, attempt_took, ENTITY_CUTOUT_BUDGET_S)
+            break
+
+        seed = random.randint(0, 10**9)
+        logger.info("cutout unusable on attempt %d/%d (%s); regenerating "
+                    "on seed %d", attempt, attempts,
+                    str(result.get("error"))[:90], seed)
+
+    # `or out_of_time`, because a slow first attempt can exhaust the budget on
+    # its own - a cold load plus one generation already does. Without this the
+    # single-attempt budget stop was indistinguishable from "retries are off",
+    # which is the one reading that would send someone rewriting the prompt.
+    if result and result.get("error_kind") == "cutout_failed" and (used > 1
+                                                                  or out_of_time):
+        # Say which of the two it was. "Tried 3 seeds" and "stopped after 2
+        # because time ran out" call for different responses from whoever
+        # reads it, and conflating them is how a budget stop gets mistaken for
+        # a prompt that cannot work.
+        tail = ("Stopped after %d seed(s) on the %ds time budget, so an "
+                "untried seed may still work." % (used, ENTITY_CUTOUT_BUDGET_S)
+                if out_of_time else
+                "Tried %d seeds; every one came back unusable, so this is the "
+                "prompt rather than the seed." % used)
+        result = dict(result)
+        result["error"] = f"{result['error']} {tail}"
+        result["attempts"] = used
+    return result
+
+
+def _generate_raw_once(task_id, prompt: str, negative_prompt: str,
+                       llm_name: str, width: int, height: int, steps: int,
+                       cfg_scale: float, seed: int,
+                       strip_background: bool = False,
+                       lora_scale: float = None):
+    """One generation attempt. See `generate_raw_task` for the retry policy."""
 
     # Refuse BEFORE loading a pipeline, not after failing to use one.
     #
