@@ -96,24 +96,52 @@ def main():
             # caching allocator holds the card and does not give it back.
             # Headroom is free plus what torch can reuse without asking the
             # driver, and that is what the next ~7GB pipeline load draws on.
+            resident = result.get("pipeline_resident")
+            need = result.get("headroom_needed_mb", 7000)
             if result.get("headroom_tight"):
-                print("  TIGHT: under ~7GB, which is one SDXL pipeline. The "
-                      "next load may have to ask WDDM for memory it does not "
-                      "have; that returns ENOMEM and faults the context. This "
-                      "is the state that preceded all three faults on "
-                      "2026-09-04. Not an error - the context is alive - but "
-                      "do not start a batch here.")
+                if resident:
+                    print(f"  TIGHT: under ~{need}MB with a pipeline already "
+                          "resident, which is the INFERENCE peak (~1.3GB for a "
+                          "tiled 1024 decode) plus margin. The next request may "
+                          "have to ask WDDM for memory it does not have; that "
+                          "returns ENOMEM and faults the context.")
+                else:
+                    print(f"  TIGHT: under ~{need}MB and NO pipeline is "
+                          "resident, so the next request must load one (~7GB "
+                          "for SDXL). That load may ask WDDM for memory it does "
+                          "not have; ENOMEM there faults the context. This is "
+                          "the state that preceded all three faults on "
+                          "2026-09-04. Not an error - the context is alive - "
+                          "but do not start a batch here.")
+            elif resident:
+                # Say the quiet part out loud, because the old flat rule called
+                # this state TIGHT and told people not to run. It is the normal
+                # warm steady state now that cached VRAM is released after each
+                # generation, and a 12-image batch runs clean in it.
+                print(f"  Pipeline resident; headroom covers the ~{need}MB an "
+                      "inference needs. Normal warm state.")
         print("  NOTE: all figures are GUEST-side. Under WSL2 none of them see "
-              "host allocations - this read 1342MB used while Windows showed "
-              "11601MB of the same 12GB card. That 11.6GB is NOT a leak: a "
-              "healthy warm worker holds about the same. On Windows run:")
+              "host allocations, so guest and host readings diverge - this "
+              "once read 1342MB used while Windows showed 11601MB of the same "
+              "12GB card. A high host figure is not automatically a leak. But "
+              "11.6GB is no longer the warm baseline: since cached VRAM is "
+              "released after each generation, a healthy warm worker measures "
+              "~7GB host-side (6,966MB on 2026-09-10). On Windows run:")
         print("    (Get-Counter '\\GPU Process Memory(*)\\Dedicated Usage')"
               ".CounterSamples")
         return 0
 
     print(f"FAULTED - {result.get('error') or result.get('why') or result}")
-    print("  A faulted context does not recover on its own, and it holds its "
-          "VRAM, so the next load fails too. Restart the worker:")
+    # This used to say a faulted context "does not recover on its own". Two
+    # measurements since say that is too strong: one cleared in under two
+    # minutes on 2026-09-04 once a retry storm stopped, and the ledger shows
+    # the same on 2026-09-10 - a burst of ten failures at ~91ms each, then
+    # clean 44s generations hours later with no restart in between. The worker
+    # now enforces that quiet window itself (GPU_FAULT_COOLDOWN_S), so the
+    # first move is to stop sending traffic, not to restart.
+    print("  STOP SENDING TRAFFIC FIRST and re-run this probe. A fault often "
+          "clears once the card goes quiet; a retry storm is what prevents "
+          "it. Restart only if it still reports FAULTED with the card idle:")
     print("    docker compose -f compose/develop/docker-compose.yml "
           "-f compose/develop/docker-compose.cuda.yml \\")
     print("      --env-file compose/develop/.env restart sprite-worker")

@@ -60,12 +60,29 @@ fragment of it.
   probe still says FAULTED with the card quiet. The dtype variant invites a
   `pipe.to(float16)` "fix" that would silently produce **black PNGs**. Full
   signature in `.ai/project-context.md`.
-- **This card has no spare VRAM in normal operation** — measured 0 MB free
-  guest-side while healthy, because the caching allocator holds the whole card.
-  Any extra residency demand faults it, so callers need backoff; a retry storm
-  is a plausible trigger, not just noise.
-- **`nvidia-smi` inside WSL does not see host VRAM** and will tell you the card
-  is nearly empty while it is 94% full — measured 1342 MiB vs 11,601 MiB held.
+- **This card used to have no spare VRAM in normal operation — that is fixed,
+  and the old numbers are no longer the baseline.** It was 0 MB free guest-side
+  while healthy, because the caching allocator held the whole card and
+  `empty_cache()` ran only on pipeline *eviction*, so a run of same-model
+  requests never released anything. Two changes closed it (2026-09-10):
+  `release_vram_cache()` after each generation, and VAE **tiling** for the
+  decode. Steady state now measures ~6.8 GB reserved / ~4.4 GB headroom
+  guest-side and ~7.0 GB host-side, down from 11.6 GB.
+  - **`enable_vae_slicing` was never the mitigation it was documented as.**
+    Slicing splits the *batch*; this service decodes one image per call, so it
+    saved nothing. Tiling is the spatial one. Enabling it is not enough on its
+    own: the guard is `latent > tile_latent_min_size` and SDXL ships 128,
+    exactly a 1024² latent, so **both** thresholds must be lowered. Measured
+    peak 11,588 MB → 8,148 MB, no seams, no slowdown. `VAE_TILING=0` disables.
+  - Callers still need backoff, but the worker no longer depends on their
+    manners: a CUDA fault trips a breaker (`GPU_FAULT_COOLDOWN_S`, default 90s)
+    that refuses work in ~0.2 ms and re-probes in-process before resuming. The
+    API turns that into **503 + `Retry-After`**, not 500.
+- **`nvidia-smi` inside WSL does not see host VRAM**, so guest and host
+  readings diverge — once measured 1342 MiB guest against 11,601 MiB host on
+  the same 12 GB card. Still true; but a high host figure is no longer the
+  normal warm state (see above), so treat ~11.6 GB as worth investigating
+  rather than as the healthy baseline.
   Check `(Get-Counter '\GPU Process Memory(*)\Dedicated Usage')` on Windows.
 - The Qwen3-8B GGUF and a diffusion pipeline **cannot both hold the card**.
   `--sleep-idle-seconds 120` is what lets them share it.
@@ -97,6 +114,20 @@ fragment of it.
   checkpoint is actually on disk, which archiving to cold storage makes matter.
 - `POSED_STRENGTH` below ~0.75 silently disables pose conditioning while every
   log line still says "pose-conditioned".
+- **"no frame, no border, no card" in a POSITIVE prompt asks for a frame.** A
+  CLIP text encoder has no negation operator, so each of those nouns lands in
+  the conditioning. something2's entity prompts arrive carrying nine of them;
+  `split_negations()` moves them to the negative prompt on the cutout path,
+  where classifier-free guidance can actually subtract (SDXL base at guidance
+  7 — not a distilled checkpoint at 0). Measured on 12 fixed seeds: 3/12
+  multi-object → 2/12, with every affected case improving. It reduces the
+  problem, it does not solve it — some subjects still come back as item sheets
+  and `_isolate_largest_sprite` keeps the largest, so "obsidian boots" can
+  return a knight.
+- Two fixes for that were measured and **rejected**: adding `NEGATIVE_SINGLE`
+  changed 3/12 → 3/12, and dropping `lora_scale` to 0.7 made it markedly worse
+  (2/12 → 5/12). The pixel-art adapter at full strength holds the subject
+  together; it is not what imposes the grid. Do not reach for that dial.
 
 **The something2 contract**
 - **Synchronous only.** Submit/poll is explicitly unsupported on their side, so

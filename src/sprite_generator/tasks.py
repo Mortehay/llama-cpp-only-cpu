@@ -217,6 +217,131 @@ _CUDA_FAULT_MARKERS = (
 )
 
 
+# "no frame, no border, no card" in a POSITIVE prompt asks for a frame.
+#
+# A CLIP text encoder has no operator for negation. The codebase already
+# learned this once, in generate_core_task: "A text encoder cannot apply 'no';
+# the token 'duplicates' simply lands in the conditioning." something2's entity
+# prompts are built from its own rows and arrive carrying exactly that - "no
+# frame, no border, no picture frame, no card, no ground, no floor, no shadow,
+# no scenery, no other objects" - so every one of those nouns is being fed to
+# the model as something to draw, on the request that can least afford it.
+#
+# Classifier-free guidance is the mechanism that CAN subtract, and it is live
+# on this path: the entity route runs SDXL base at guidance 7, not a distilled
+# checkpoint at 0. So the terms work if they are moved to where subtraction
+# happens - which the caller cannot do, because their template has one prompt
+# field.
+#
+# MEASURED, same 12 subjects on fixed seeds 1001-1012, share of opaque pixels
+# surviving `_isolate_largest_sprite` (a proxy for "the model drew one thing"):
+#
+#   prompt as-is              3/12 multi-object   worst cases 15.0 / 88.3 / 8.0 %
+#   negations moved           2/12 multi-object   same cases  26.3 / 100  / 35.1 %
+#
+# Every affected case improved, which is the part worth trusting - a 3-to-2
+# count on twelve samples would not be. It REDUCES the problem, it does not
+# solve it: two subjects still come back as item sheets, and no prompt wording
+# tried here fixes those. See the note in generate_raw_task.
+#
+# Two other levers were measured and rejected. Adding NEGATIVE_SINGLE on top
+# changed 3/12 to 3/12. Dropping lora_scale to 0.7 made it markedly WORSE,
+# 2/12 to 5/12 - the pixel-art adapter at full strength is holding the subject
+# together, not imposing the grid, so do not reach for that dial.
+_NEGATION_PHRASE = re.compile(r"\b(?:no|without)\s+([^,]+)", re.IGNORECASE)
+
+# A captured phrase runs to the next comma, so a caller writing "no ground
+# tiles and a golden sword" would move the sword into the negative and delete
+# the subject. Anything longer than a short noun phrase is left alone: the
+# terms this exists for ("no frame", "no other objects") are one to three
+# words, and a silent subject deletion is far worse than a missed exclusion.
+_NEGATION_MAX_WORDS = 4
+
+
+def split_negations(prompt: str, negative: str = ""):
+    """Move "no X" / "without X" out of the positive prompt into the negative.
+
+    Returns (positive, negative). A prompt with no such phrases comes back
+    unchanged, so this is inert for callers who already word things correctly.
+    """
+    moved = []
+
+    def take(m):
+        phrase = m.group(1).strip()
+        if not phrase or len(phrase.split()) > _NEGATION_MAX_WORDS:
+            return m.group(0)          # too long to be safe - leave it in place
+        moved.append(phrase)
+        return ""
+
+    cleaned = _NEGATION_PHRASE.sub(take, prompt)
+    if not moved:
+        return prompt, negative
+
+    # Tidy the commas the excisions left behind.
+    cleaned = re.sub(r",\s*(?=,)", "", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip().strip(",").strip()
+
+    merged = ", ".join([t for t in [negative.strip().strip(",")] if t] + moved)
+    logger.info("moved %d negation(s) from the positive prompt to the "
+                "negative: %s", len(moved), ", ".join(moved))
+    return cleaned, merged
+
+
+def release_vram_cache(reason: str = "", floor_mb: int = 1024) -> int:
+    """Hand torch's unused cached VRAM back to the driver. Returns MB released.
+
+    WHY A GENERATION MUST NOT LEAVE THE CARD FULL
+
+    PyTorch's caching allocator keeps every block it has ever grown into, so
+    after a generation the worker holds far more of the card than it is using.
+    Measured 2026-09-10, worker idle with one SDXL pipeline resident: reserved
+    11,590 MB of a 12,287 MB card, allocated only ~6,928 MB. **4,662 MB of pure
+    cache**, and driver-visible free memory of 0 MB.
+
+    CLAUDE.md records that state as normal-for-a-warm-worker, and it is - but it
+    is also, in the same breath, the documented hazard: "this card has no spare
+    VRAM in normal operation ... any extra residency demand faults it." Both
+    halves are true, and nothing was closing the gap. `empty_cache` was called
+    only when a pipeline was EVICTED, so a run of same-model requests - exactly
+    what a bulk entity batch is - never released anything between images.
+
+    That is the residency squeeze behind "CUDA driver error: device not ready"
+    arriving 18s INTO an inference rather than at load: under WDDM the driver
+    has to make allocations resident as it goes, and with ~640 MB left for the
+    rest of the machine there is nothing to make them resident into.
+
+    Cheap because of `expandable_segments:True` (set in
+    docker-compose.cuda.yml): segments are unmapped rather than abandoned, so
+    what is given back is genuinely given back, and re-growing costs a page
+    walk rather than a reload. The weights are untouched either way - this
+    frees CACHE, not the resident pipeline, so the next request does not reload
+    the model.
+
+    `floor_mb` keeps it from being pointless churn: below ~1GB of reusable
+    cache there is nothing worth reclaiming and the call is skipped.
+    """
+    if DEVICE != "cuda":
+        return 0
+    try:
+        reusable_mb = round((torch.cuda.memory_reserved()
+                             - torch.cuda.memory_allocated()) / 1024 / 1024)
+        if reusable_mb < floor_mb:
+            return 0
+        torch.cuda.empty_cache()
+        after_mb = round((torch.cuda.memory_reserved()
+                          - torch.cuda.memory_allocated()) / 1024 / 1024)
+        freed = reusable_mb - after_mb
+        logger.info("released %d MB of cached VRAM back to the driver%s "
+                    "(reserved-unused %d MB -> %d MB)",
+                    freed, f" after {reason}" if reason else "",
+                    reusable_mb, after_mb)
+        return freed
+    except Exception as e:
+        # Never allow a housekeeping call to fail a generation that worked.
+        logger.warning("could not release cached VRAM: %s", e)
+        return 0
+
+
 def is_cuda_fault(exc: BaseException) -> bool:
     """Is this the faulted-context signature, rather than one bad job?
 
@@ -1163,6 +1288,72 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
                     f"{slicing_err}); continuing without it. Peak VRAM on decode "
                     "will be higher."
                 )
+
+            # SLICING IS NOT WHAT KEEPS THE 1024 DECODE FLAT. The comment above
+            # used to say it was, and it is wrong in a way that reads as right.
+            #
+            # `enable_slicing` splits the **batch** - diffusers' own docstring
+            # says "allow larger batch sizes". This service decodes ONE image
+            # per call, so at batch size 1 it splits nothing and saves nothing.
+            # `enable_tiling` is the spatial one: "allow processing larger
+            # images". Only the second addresses a 1024x1024 decode.
+            #
+            # It matters here because the decode runs in fp32 - `force_upcast`
+            # is asserted just below, and must stay, because the SDXL VAE
+            # overflows in fp16 and returns BLACK PNGs. fp32 doubles the
+            # decoder's activations, and a 1024x1024x128 fp32 intermediate is
+            # 512MB on its own. Measured 2026-09-10 across a five-image batch:
+            # reserved sat at 6,846 MB between images and spiked to 8,812 MB
+            # during one, and that ~2GB step is this decode.
+            #
+            # Enabling it is NOT enough on its own, which is the trap. The
+            # guard in `AutoencoderKL._decode` is
+            # `z.shape[-1] > tile_latent_min_size`, and SDXL ships
+            # tile_latent_min_size=128 - exactly the latent size of a 1024x1024
+            # image. `128 > 128` is false, so the flag alone leaves the decode
+            # untiled at the one resolution that needs it. Both thresholds have
+            # to come down, and `tile_latent_min_size` is computed in __init__
+            # rather than derived from the sample size on read, so setting only
+            # the sample-size half silently does nothing.
+            #
+            # ON by default, and the seam worry was measured rather than
+            # assumed. Tiled decode blends overlapping tiles, so the fear is a
+            # visible seam on flat-palette pixel art. A/B on the same seed and
+            # pipeline, 1024x1024, 2026-09-10:
+            #
+            #   tiling off  peak reserved 11,588 MB  (decode spike 4,790 MB)  16.9s
+            #   tiling on   peak reserved  8,148 MB  (decode spike 1,346 MB)  15.5s
+            #
+            # 11,588 MB of a 12,287 MB card leaves ~700 MB for the Windows
+            # desktop and everything else, which IS the fault this box keeps
+            # hitting. And the seam did not appear: mean absolute difference
+            # 0.50/255, only 0.19% of pixels differing by more than 8, and -
+            # the part that matters - the error at the tile boundary was LOWER
+            # than the frame average (0.61 vs 0.93), so it is diffuse numerical
+            # noise and not a blend line. A flat grey background is the most
+            # revealing case there is for seams, and this frame has one.
+            #
+            # Set VAE_TILING=0 to turn it off if a future checkpoint does seam.
+            # Below 512px output it is inert anyway: the latent never exceeds
+            # tile_latent_min_size, so `_decode` takes the untiled path.
+            if os.environ.get("VAE_TILING", "1").strip().lower() in ("1", "true", "yes"):
+                try:
+                    vae = getattr(pipe, "vae", None)
+                    if vae is not None:
+                        tile_px = int(os.environ.get("VAE_TILE_PX", "512"))
+                        vae.tile_sample_min_size = tile_px
+                        vae.tile_latent_min_size = max(
+                            1, tile_px // (2 ** (len(vae.config.block_out_channels) - 1)))
+                        vae.enable_tiling()
+                        logger.info("VAE tiling enabled (tile %dpx, latent %d): "
+                                    "lower decode peak, at the cost of possible "
+                                    "blend seams on flat colour.",
+                                    tile_px, vae.tile_latent_min_size)
+                except Exception as tiling_err:
+                    logger.warning(
+                        f"Could not enable VAE tiling ({tiling_err.__class__.__name__}: "
+                        f"{tiling_err}); continuing without it."
+                    )
 
             if is_sdxl:
                 # The original SDXL VAE overflows in fp16 and decodes to pure
@@ -2525,12 +2716,25 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
 
+    # Gated on `strip_background` for the same reason the pedestal strip is: a
+    # caller asking for a cutout has asserted the frame contains ONE object, so
+    # rewriting their wording to serve that is in scope. A plain raw
+    # generation has made no such promise and is left exactly as written.
+    if strip_background:
+        prompt, negative_prompt = split_negations(prompt, negative_prompt)
+
     # Callers reach this task with A1111 conventions (20 steps / cfg 7), which
     # are wrong for distilled checkpoints. Reconcile here so every entry point
     # gets it, not just the ones that remembered to.
     steps, cfg_scale, negative_prompt = resolve_sampling_params(
         llm_name, steps, cfg_scale, negative_prompt
     )
+
+    # Both halves, because this moved text between them: a negative that
+    # overflows 77 tokens loses its tail silently, which is the exact failure
+    # `check_prompt_length` was written for.
+    check_prompt_length(p, prompt, "entity prompt")
+    check_prompt_length(p, negative_prompt, "entity negative prompt")
 
     start_time = time.time()
     try:
@@ -2557,12 +2761,25 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         # time it reaches the API it is a string with the cause worn off.
         if is_cuda_fault(e):
             trip_gpu_breaker(e)
+            # Give the card back whatever this process can still let go of. On
+            # a faulted context the call usually fails, which is why it is
+            # inside `release_vram_cache`'s try - but when the fault is a
+            # residency squeeze rather than a dead context, this is the thing
+            # that makes the 90s quiet window recoverable instead of decorative.
+            release_vram_cache("a CUDA fault", floor_mb=0)
             logger.error("CUDA context faulted; refusing new work for %ds. "
                          "Do not restart the worker yet - let it go quiet and "
                          "re-probe (see CLAUDE.md).", GPU_FAULT_COOLDOWN_S)
             return {"error": str(e), "error_kind": "gpu_faulted",
                     "retry_after_s": GPU_FAULT_COOLDOWN_S}
         return {"error": str(e)}
+
+    # The image is a PIL object on the CPU from here on, so the card's working
+    # set is dead weight until the next request. Release before the cutout
+    # stages rather than after: they are numpy/scipy on the host and take a
+    # noticeable fraction of a second, which is free time for the driver to
+    # reclaim in.
+    release_vram_cache("generation")
 
     duration_ms = (time.time() - start_time) * 1000
 
@@ -2906,10 +3123,30 @@ def gpu_probe():
             "reserved_mb": mb(reserved_b),
             "allocated_mb": mb(allocated_b),
             "headroom_mb": mb(headroom_b),
-            # An SDXL fp16 pipeline is ~7GB. Below roughly that, the next load
-            # is a coin flip rather than a certainty, so say so instead of
-            # reporting a bare OK.
-            "headroom_tight": mb(headroom_b) < 7000,
+            # WHAT "TIGHT" HAS TO MEAN DEPENDS ON WHETHER A LOAD IS COMING.
+            #
+            # This was a flat `headroom < 7000`, on the reasoning that an SDXL
+            # fp16 pipeline is ~7GB and the next load is a coin flip below
+            # that. True - but only when there is a next load. Once a pipeline
+            # is resident and the caller keeps asking for the same model,
+            # nothing is loaded again; the next request needs the INFERENCE
+            # peak, not the load.
+            #
+            # That gap became a live wrong answer once cached VRAM started
+            # being released after each generation (`release_vram_cache`). The
+            # steady state is now reserved ~6.8GB with ~4.4GB headroom, and the
+            # flat rule called that TIGHT and said "do not start a batch here"
+            # - immediately after a 12-image batch ran clean in exactly that
+            # state, with zero faults.
+            #
+            # So ask the question that matters: is there room for what happens
+            # NEXT. With tiled decode the measured inference peak is ~1,346MB
+            # above the resident baseline (2026-09-10); 2GB carries that with
+            # margin. With no pipeline resident the old ~7GB figure stands,
+            # because a load really is coming.
+            "pipeline_resident": bool(pipes),
+            "headroom_needed_mb": 2000 if pipes else 7000,
+            "headroom_tight": mb(headroom_b) < (2000 if pipes else 7000),
             # Every figure above is GUEST-side. Under WSL2 none of it sees host
             # allocations: this read 1342MB used while Windows showed 11601MB of
             # the same 12GB card. Note that 11.6GB is NOT a leak signature - a
