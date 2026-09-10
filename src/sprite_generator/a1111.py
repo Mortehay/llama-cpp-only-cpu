@@ -34,11 +34,12 @@ import os
 import time
 import logging
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 
 import auth
 import core_models
+import generations
 from tasks import celery_app, generate_raw_task
 
 logger = logging.getLogger(__name__)
@@ -119,8 +120,14 @@ def _require_auth(authorization: str | None, scope: str = "generate"):
     GPU work. Discovery passes `read`, so a read-only key can answer "what
     models do you have?" without being able to spend the card - which is what
     something2's reachability check needs and nothing more.
+
+    RETURNS THE PRINCIPAL, which it used to discard. That discard is why the
+    ledger could not exist: `auth.require` has always known which key made the
+    call, and this was the one place that knew it for the facade something2
+    uses. See generations.describe_caller for why the key - not the source
+    address - is the identity that separates callers on this network.
     """
-    auth.require(authorization, scope)
+    return auth.require(authorization, scope)
 
 
 # Per-field fallbacks for when a {{placeholder}} arrives unsubstituted as "" or
@@ -259,6 +266,22 @@ TILE_PREFIX = "tile:"
 TILE_BUILD_BUDGET_S = int(os.environ.get("A1111_TILE_BUILD_BUDGET_S",
                                          str(GENERATE_TIMEOUT_S)))
 
+# THE ENTITY FACADE. Same addressing as tiles, and the same cache-then-build
+# behaviour, but the storage underneath it is different and deliberately so.
+#
+# A tile is a JOB because building one is a pipeline - paint, quantise, cut to
+# the world's rhombus - and `jobs` already carried the spec that pipeline needs.
+# An entity is one `generate_raw_task` call, measured in seconds; wrapping it in
+# a job row would mean a queue, a poll contract and a stage machine for work
+# that finishes before the response is written. So an entity is a row in
+# `generations`, the ledger every API call now writes anyway, and the NAME on
+# that row is what makes it addressable.
+#
+# The behaviour that matters to the caller is identical to tiles: ask twice and
+# the second answer is a file read. Before this, 731 raw generations had been
+# written to disk and forgotten, so asking twice cost the GPU twice.
+ENTITY_PREFIX = "entity:"
+
 
 def _map_request(req: "Txt2ImgRequest") -> str | None:
     """The map name this request is asking for, or None for a normal generate."""
@@ -272,7 +295,8 @@ def _map_request(req: "Txt2ImgRequest") -> str | None:
     return None
 
 
-def _serve_map(name: str, req: "Txt2ImgRequest", started: float) -> dict:
+def _serve_map(name: str, req: "Txt2ImgRequest", started: float,
+               caller: dict | None = None) -> dict:
     """An already-built map picture, in the A1111 response shape.
 
     A CACHE READ. It never queues anything: a map build is minutes to hours and
@@ -320,6 +344,14 @@ def _serve_map(name: str, req: "Txt2ImgRequest", started: float) -> dict:
     logger.info("txt2img served MAP %r from cache in %.0fms (%d b64 chars, "
                 "complete=%s)", name, elapsed_ms, len(encoded), complete)
 
+    # `job_id` and not `file_path`: the map job already owns this picture, and
+    # a ledger row that also claimed it would put the same PNG in the gallery
+    # twice. See migration 017.
+    generations.record(kind="map", name=name, served_from="cache",
+                       prompt=(req.prompt or ""), job_id=str(row["id"]),
+                       duration_ms=elapsed_ms, caller=caller,
+                       params={"complete": complete})
+
     return {
         "images": [encoded],
         "parameters": req.model_dump(),
@@ -349,28 +381,30 @@ def _tile_request(req: "Txt2ImgRequest") -> str | None:
     return _split_tile_prompt(req.prompt)[0]
 
 
-def _split_tile_prompt(raw: str | None) -> tuple[str | None, str | None]:
+def _split_prefixed(raw: str | None, prefix: str) -> tuple[str | None, str | None]:
     """`tile:road_sand cracked red stone` -> ("road_sand", "cracked red stone").
 
     THE NAME IS THE FIRST TOKEN AND THE REST IS THE PROMPT, which is forced by
     something2's template system rather than chosen. Their request template
     substitutes `{{prompt}}`, `{{width}}`, `{{height}}`, `{{seed}}`, `{{frames}}`
-    and `{{model}}` - and nothing that carries a tile's NAME. So the one field
-    that can hold a name is the prompt, alongside the prompt.
+    and `{{model}}` - and nothing that carries a NAME. So the one field that can
+    hold a name is the prompt, alongside the prompt.
 
     That makes configuring a tile an edit an operator can actually make: put
     `tile:rocks ` in front of the text already in something2's tile row and
     change nothing else. No new placeholder, no code on their side, and the
-    prompt still reaches the model intact.
+    prompt still reaches the model intact. `entity:goblin_scout ` in front of an
+    entity row is the identical edit, which is the whole reason entities reuse
+    this shape rather than inventing a second one.
 
     A bare `tile:rocks` with no remaining text is valid - the name doubles as
     the prompt, which is what a one-word ground like "sand" wants anyway.
     """
     text = (raw or "").strip()
-    if not text.lower().startswith(TILE_PREFIX):
+    if not text.lower().startswith(prefix):
         return None, None
 
-    rest = text[len(TILE_PREFIX):].strip()
+    rest = text[len(prefix):].strip()
     if not rest:
         return None, None
 
@@ -378,6 +412,114 @@ def _split_tile_prompt(raw: str | None) -> tuple[str | None, str | None]:
     name = parts[0]
     prompt = parts[1].strip() if len(parts) > 1 else ""
     return name, (prompt or name)
+
+
+def _split_tile_prompt(raw: str | None) -> tuple[str | None, str | None]:
+    """`tile:<name> <prompt>` -> (name, prompt). See `_split_prefixed`."""
+    return _split_prefixed(raw, TILE_PREFIX)
+
+
+def _split_entity_prompt(raw: str | None) -> tuple[str | None, str | None]:
+    """`entity:<name> <prompt>` -> (name, prompt). See `_split_prefixed`."""
+    return _split_prefixed(raw, ENTITY_PREFIX)
+
+
+def _entity_request(req: "Txt2ImgRequest") -> tuple[str | None, str | None]:
+    """The entity name and the prompt to paint, or (None, None).
+
+    Two channels, as for tiles. `override_settings.entity` carries the name out
+    of band and leaves the whole prompt field as something2's own entity-row
+    text; `entity:<name> <prompt>` puts the name in front, and the name is then
+    stripped back off or the model paints the words "goblin_scout".
+    """
+    explicit = req.override_settings.get("entity")
+    if isinstance(explicit, str) and explicit.strip():
+        name = explicit.strip()
+        # The prefix may ALSO be present - an operator who set both should not
+        # get the name painted into the picture.
+        _, stripped = _split_entity_prompt(req.prompt)
+        return name, (stripped or (req.prompt or "").strip() or name)
+
+    return _split_entity_prompt(req.prompt)
+
+
+def _declared_kind(req: "Txt2ImgRequest", cutout: bool,
+                   entity_name: str | None) -> str:
+    """What this txt2img call produced: entity | tile | map | raw.
+
+    THIS SERVICE CANNOT TELL A BARREL FROM A PATCH OF GRASS by looking at the
+    pixels, and something2 asks for both down this one route. So it does not
+    guess from the prompt text - the same reason `cutout` is an explicit flag
+    and not inferred from the words "transparent background".
+
+    Three honest signals, in this order:
+
+      entity_name              the caller ADDRESSED it as an entity, which is
+                               the strongest declaration available
+      override_settings.kind   the caller said so outright
+      cutout                   only an object composited over terrain needs
+                               one; a ground texture is supposed to be opaque
+
+    Everything else is `raw`, which is what the file on disk has always been
+    called and is the one label that claims nothing.
+
+    THE NAME HAS TO WIN, and this function got it wrong first time round. With
+    the cutout heuristic ranked above it, `entity:test_probe a mushroom` with
+    no cutout stored `kind='raw'` WITH a name attached - a row the entity
+    resolver (which filters on kind) could never find. Measured: the second
+    identical request regenerated instead of cache-reading, and
+    `GET /api/entities` reported zero while two named rows sat in the table.
+    Naming and kind are one decision, so they are made in one place.
+    """
+    if entity_name:
+        return "entity"
+    declared = req.override_settings.get("kind")
+    if isinstance(declared, str) and declared.strip().lower() in generations.KINDS:
+        return declared.strip().lower()
+    return "entity" if cutout else "raw"
+
+
+def _entity_payload(name: str, row: dict, req: "Txt2ImgRequest", started: float,
+                    caller: dict | None = None) -> dict:
+    """A named entity served from the ledger, in the A1111 response shape.
+
+    The counterpart of `_tile_payload`, and the reason the entity facade is
+    worth having at all: this path never touches the GPU. Before it existed,
+    something2 asking for the same entity twice paid for it twice, and on a
+    card with no spare VRAM the second request was also a chance to fault the
+    context.
+    """
+    with open(row["file_path"], "rb") as fh:
+        encoded = base64.b64encode(fh.read()).decode("ascii")
+
+    elapsed_ms = (time.time() - started) * 1000
+    logger.info("txt2img served ENTITY %r from cache in %.0fms (%d b64 chars)",
+                name, elapsed_ms, len(encoded))
+
+    generations.record(kind="entity", name=name, served_from="cache",
+                       prompt=(row.get("prompt") or ""),
+                       model=row.get("model"),
+                       job_id=None, duration_ms=elapsed_ms, caller=caller,
+                       params={"cache_of": str(row["id"])})
+
+    params = row.get("params") or {}
+    return {
+        "images": [encoded],
+        "parameters": req.model_dump(),
+        "info": json.dumps({
+            "entity": name,
+            "generation_id": str(row["id"]),
+            "cached": True,
+            # A cache read is a file read. A caller measuring model throughput
+            # off this number would be measuring a disk.
+            "generated": False,
+            "seed": row.get("seed"),
+            "model": row.get("model"),
+            "cutout": bool(params.get("cutout")),
+            "entity_url": "/api/entities/by-name/{}".format(name),
+            "duration_ms": round(elapsed_ms),
+        }),
+    }
 
 
 def _long_job_ahead() -> str | None:
@@ -452,7 +594,8 @@ def _tile_payload(name: str, row: dict, req: "Txt2ImgRequest", started: float,
     }
 
 
-def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
+def _serve_tile(name: str, req: "Txt2ImgRequest", started: float,
+                caller: dict | None = None) -> dict:
     """A named ground tile: served from disk, or BUILT and then served.
 
     Unlike `_serve_map` this may queue work - see TILE_PREFIX for the
@@ -464,6 +607,10 @@ def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
 
     row = tiles.resolve_name(name)
     if row:
+        generations.record(kind="tile", name=name, served_from="cache",
+                           prompt=(req.prompt or ""), job_id=str(row["id"]),
+                           duration_ms=(time.time() - started) * 1000,
+                           caller=caller)
         return _tile_payload(name, row, req, started, generated=False)
 
     # A miss, so we need the text to paint. Two channels, and they differ:
@@ -477,12 +624,19 @@ def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
 
     busy = _long_job_ahead()
     if busy:
-        raise HTTPException(
-            status_code=503,
-            detail="tile {!r} is not built yet and cannot be built now: {}. "
-                   "The GPU worker runs one job at a time. Retry when it is "
-                   "free, or build the tile ahead of time with "
-                   "POST /api/tiles.".format(name, busy))
+        detail = ("tile {!r} is not built yet and cannot be built now: {}. "
+                  "The GPU worker runs one job at a time. Retry when it is "
+                  "free, or build the tile ahead of time with "
+                  "POST /api/tiles.".format(name, busy))
+        # A REFUSAL IS ACTIVITY. Left unrecorded, the Activity tab shows a
+        # quiet API and something2's operator sees only a 503 - and the two
+        # facts that explain each other (a sheet holds the card, tile requests
+        # are bouncing off it) never appear in the same place.
+        generations.record(kind="tile", name=name, status="failed",
+                           served_from="generated", prompt=(req.prompt or ""),
+                           error=detail, caller=caller,
+                           duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=503, detail=detail)
 
     spec = tiles.TileSpec(
         prompt=prompt,
@@ -502,6 +656,17 @@ def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
     envelope = tiles.queue_tile(spec)
     task_id = envelope.get("celery_task_id")
 
+    # The job is already in `jobs`; this row is who ASKED for it. Opened with
+    # the job id attached so the Activity tab shows one pending item rather
+    # than two - see generations.begin.
+    gen = generations.begin(kind="tile", name=name, prompt=prompt,
+                            job_id=envelope.get("job_id"),
+                            params={"tile_w": spec.tile_w,
+                                    "colors": spec.colors,
+                                    "style_profile": spec.style_profile},
+                            caller=caller)
+    generations.attach_task(gen, task_id)
+
     try:
         result = celery_app.AsyncResult(task_id).get(timeout=TILE_BUILD_BUDGET_S)
     except Exception as e:
@@ -509,45 +674,61 @@ def _serve_tile(name: str, req: "Txt2ImgRequest", started: float) -> dict:
             celery_app.control.revoke(task_id, terminate=True)
         except Exception:
             pass
-        raise HTTPException(
-            status_code=504,
-            detail="tile {!r} did not finish within {}s: {}. It is still queued "
-                   "as job {} - poll /api/jobs/{} and ask again once it is "
-                   "done.".format(name, TILE_BUILD_BUDGET_S, e,
-                                  envelope.get("job_id"),
-                                  envelope.get("job_id")))
+        detail = ("tile {!r} did not finish within {}s: {}. It is still queued "
+                  "as job {} - poll /api/jobs/{} and ask again once it is "
+                  "done.".format(name, TILE_BUILD_BUDGET_S, e,
+                                 envelope.get("job_id"),
+                                 envelope.get("job_id")))
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=504, detail=detail)
 
     if not result or result.get("error"):
-        raise HTTPException(
-            status_code=500,
-            detail="tile {!r} failed to build: {}".format(
-                name, (result or {}).get("error", "unknown failure")))
+        detail = "tile {!r} failed to build: {}".format(
+            name, (result or {}).get("error", "unknown failure"))
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=500, detail=detail)
 
     # Re-resolve rather than trusting the task's return path: `resolve_name` is
     # the one place that checks the row is done AND the file is on disk, and the
     # facade should serve exactly what a later cache hit would serve.
     row = tiles.resolve_name(name)
     if not row:
-        raise HTTPException(
-            status_code=500,
-            detail="tile {!r} reported success but is not readable back".format(
-                name))
+        detail = "tile {!r} reported success but is not readable back".format(
+            name)
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=500, detail=detail)
+
+    generations.finish(gen, job_id=str(row["id"]), served_from="generated",
+                       duration_ms=(time.time() - started) * 1000)
     return _tile_payload(name, row, req, started, generated=True)
 
 
 @router.post("/sdapi/v1/txt2img")
-def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None)):
+def txt2img(req: Txt2ImgRequest, request: Request,
+            authorization: str | None = Header(default=None)):
     """Blocking text2img. Returns base64 PNG at `images[0]`, as A1111 does.
 
     Also the MAP FACADE: a prompt of `map:<name>` returns an already-built map
     picture from disk rather than generating anything. See `_map_request`.
 
-    And the TILE FACADE: `tile:<name> <prompt>` returns a named ground tile,
+    The TILE FACADE: `tile:<name> <prompt>` returns a named ground tile,
     building it first if it does not exist. See `_serve_tile` for why tiles may
-    build where maps may not, and `_split_tile_prompt` for why the name rides
-    in the prompt field.
+    build where maps may not, and `_split_prefixed` for why the name rides in
+    the prompt field.
+
+    And the ENTITY FACADE: `entity:<name> <prompt>` does the same for a single
+    entity image, cached in `generations` rather than `jobs` - see
+    ENTITY_PREFIX.
+
+    EVERY PATH THROUGH HERE NOW WRITES A LEDGER ROW. It did not, and the cost
+    was measured on 2026-09-10: 731 `raw_*.png` on disk against zero database
+    rows that knew about any of them.
     """
-    _require_auth(authorization)
+    principal = _require_auth(authorization)
+    caller = generations.describe_caller(principal, request)
     started = time.time()
 
     # THE MAP FACADE. A map that already exists is served from disk instead of
@@ -555,14 +736,27 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     # prompt.
     wanted_map = _map_request(req)
     if wanted_map:
-        return _serve_map(wanted_map, req, started)
+        return _serve_map(wanted_map, req, started, caller)
 
     # THE TILE FACADE. Cache read when the name exists, a real build when it
     # does not - see `_serve_tile`. Checked after maps so neither prefix can
     # shadow the other.
     wanted_tile = _tile_request(req)
     if wanted_tile:
-        return _serve_tile(wanted_tile, req, started)
+        return _serve_tile(wanted_tile, req, started, caller)
+
+    # THE ENTITY FACADE. Checked last of the three, so a name that happens to
+    # begin with another prefix cannot be captured here.
+    #
+    # An unnamed request falls through with `entity_name = None`: it still gets
+    # a ledger row and still lands in the gallery, it just cannot be asked for
+    # again by name. That is the honest outcome - there is nothing to address
+    # it BY - and it is why naming is worth an operator's one-line edit.
+    entity_name, entity_prompt = _entity_request(req)
+    if entity_name:
+        hit = generations.resolve_name(entity_name, "entity")
+        if hit:
+            return _entity_payload(entity_name, hit, req, started, caller)
 
     model = req.override_settings.get("sd_model_checkpoint") or KNOWN_MODELS[0]
 
@@ -587,8 +781,14 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     except (TypeError, ValueError):
         lora_scale = None
 
-    prompt = core_models.apply_trigger(model, req.prompt)
-    if prompt != req.prompt:
+    # `entity:goblin_scout a small green raider` must reach the model as "a
+    # small green raider". Painting the handle into the picture is the exact
+    # failure `_split_prefixed` exists to prevent, and it is silent - the image
+    # comes back looking almost right, with lettering in it.
+    asked = (entity_prompt if entity_name else req.prompt) or ""
+
+    prompt = core_models.apply_trigger(model, asked)
+    if prompt != asked:
         logger.info("txt2img: injected trigger for %s", model)
 
     width = req.width or 512
@@ -608,6 +808,28 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
     cfg = req.cfg_scale
 
     started = time.time()
+
+    # The ledger row, opened BEFORE the task is queued.
+    #
+    # Two things depend on the order. A row written only on success cannot
+    # appear in the pending list, which is the one moment anyone wants to look
+    # at it; and a request that dies mid-generation - the timeout below, a
+    # faulted CUDA context, a worker restart - would leave no trace of having
+    # arrived at all. That is precisely the six-hour outage recorded in
+    # `.ai/project-context.md`, where the API answered 200 and nothing
+    # generated.
+    gen = generations.begin(
+        kind=_declared_kind(req, cutout, entity_name),
+        name=entity_name,
+        prompt=asked,
+        negative_prompt=req.negative_prompt or "",
+        model=model,
+        seed=(req.seed if req.seed and req.seed > 0 else None),
+        params={"width": width, "height": height, "steps": steps,
+                "cfg_scale": cfg, "frames": frames, "cutout": cutout,
+                "lora_scale": lora_scale},
+        caller=caller)
+
     task = generate_raw_task.delay(
         prompt,
         req.negative_prompt,
@@ -620,6 +842,7 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
         cutout,
         lora_scale,
     )
+    generations.attach_task(gen, task.id)
 
     try:
         result = task.get(timeout=GENERATE_TIMEOUT_S)
@@ -630,10 +853,10 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
         except Exception:
             pass
         logger.error(f"txt2img task {task.id} did not complete: {e}")
-        raise HTTPException(
-            status_code=504,
-            detail=f"Generation did not finish within {GENERATE_TIMEOUT_S}s: {e}",
-        )
+        detail = f"Generation did not finish within {GENERATE_TIMEOUT_S}s: {e}"
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=504, detail=detail)
 
     if not result or result.get("error"):
         detail = (result or {}).get("error", "unknown generation failure")
@@ -643,17 +866,27 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
         # "retry later". Returning an opaque image instead would be worse than
         # either - it stores clean-looking data that is wrong.
         status = 422 if (result or {}).get("error_kind") == "cutout_failed" else 500
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=status, detail=detail)
 
     file_path = result.get("file_path")
     if not file_path or not os.path.exists(file_path):
-        raise HTTPException(status_code=500, detail="Generation reported success but produced no file")
+        detail = "Generation reported success but produced no file"
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=500, detail=detail)
 
     with open(file_path, "rb") as fh:
         encoded = base64.b64encode(fh.read()).decode("ascii")
 
     elapsed_ms = (time.time() - started) * 1000
     logger.info(f"txt2img served {model} in {elapsed_ms:.0f}ms ({len(encoded)} b64 chars)")
+
+    # `file_path` and no job_id: this request owns the PNG, so assets_v shows
+    # it and the gallery stops under-reporting what this machine has made.
+    generations.finish(gen, file_path=file_path, seed=result.get("seed"),
+                       duration_ms=result.get("duration_ms") or elapsed_ms)
 
     return {
         "images": [encoded],
@@ -667,6 +900,14 @@ def txt2img(req: Txt2ImgRequest, authorization: str | None = Header(default=None
             "height": height,
             "steps": req.steps,
             "duration_ms": result.get("duration_ms"),
+            # The handle this image can be asked for by from now on, and the
+            # flag that says the next identical request will be free. Absent on
+            # an unnamed call, because there would be nothing to address.
+            **({"entity": entity_name,
+                "cached": False,
+                "generated": True,
+                "entity_url": f"/api/entities/by-name/{entity_name}"}
+               if entity_name else {}),
             # Present only when a cutout was requested. The caller knows
             # whether it asked for an object or a texture; this service only
             # knows the pixels, so it reports them rather than guessing.

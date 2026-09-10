@@ -485,6 +485,65 @@ export interface CoreList {
   suggestions: string[]
 }
 
+/**
+ * One entry in the activity feed: an API call, a queued job, or a UI task.
+ *
+ * `requested_by` is the API KEY's name, not a person and not a machine. On this
+ * network it is the only identity that separates callers - see `client_addr`.
+ */
+export interface ActivityItem {
+  source: 'api' | 'job' | 'ui'
+  id: string
+  kind: string
+  name: string | null
+  status: string
+  served_from: string
+  title: string
+  model: string | null
+  url: string | null
+  job_id: string | null
+  error: string | null
+  duration_ms: number | null
+  requested_by: string
+  /**
+   * The address this process SAW, which is the docker bridge gateway
+   * (172.18.0.1) for every external caller - there is no reverse proxy, and LAN
+   * traffic crosses `netsh interface portproxy` first, which rewrites the
+   * source again. Rendered with that caveat attached rather than as an IP.
+   */
+  client_addr: string | null
+  /**
+   * Whatever the caller put in `X-Forwarded-For`. Nothing sits in front of this
+   * service to set it, so it is volunteered, not verified — useful when a
+   * script identifies itself, worthless as proof of origin.
+   */
+  forwarded_for: string | null
+  created_at: string | null
+  finished_at: string | null
+}
+
+export interface ActivityFeed {
+  total: number
+  limit: number
+  offset: number
+  items: ActivityItem[]
+  /** Still queued or running, OLDEST FIRST - the order the GPU will reach them. */
+  active: ActivityItem[]
+  counts: { source: string; status: string; n: number }[]
+}
+
+export interface NamedEntity {
+  name: string
+  id: string
+  prompt: string
+  model: string | null
+  seed: number | null
+  cutout: boolean
+  url: string | null
+  on_disk: boolean
+  finished_at: string | null
+}
+
 // --- calls ----------------------------------------------------------------
 
 export const api = {
@@ -509,6 +568,32 @@ export const api = {
   },
   assetKinds: () =>
     request<{ groups: { source: string; kind: string; n: number }[] }>('/api/assets/kinds'),
+
+  /**
+   * The generation feed and the pending list, in one response.
+   *
+   * Deliberately one call: two would let the pending panel show an item that
+   * the history below it already reports as finished, and at a 4s poll that
+   * window is frequent rather than theoretical.
+   */
+  activity: (params: {
+    source?: string
+    status?: string
+    kind?: string
+    q?: string
+    limit?: number
+    offset?: number
+  } = {}) => {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    })
+    const s = qs.toString()
+    return request<ActivityFeed>(`/api/activity${s ? `?${s}` : ''}`)
+  },
+
+  /** Named entities the facade can serve from cache, newest first. */
+  entities: () => request<{ entities: NamedEntity[]; count: number }>('/api/entities'),
   /**
    * Hide an asset, or with `purge` delete its file from disk too.
    *

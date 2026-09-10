@@ -38,7 +38,7 @@ IMAGES_DIR = "/app/images"
 # Anything the UI is allowed to filter on. A whitelist because these values
 # reach an SQL WHERE clause; the value itself is still parameterised, but a
 # typo should be a 400 rather than an empty list the user has to explain.
-SOURCES = {"image", "job"}
+SOURCES = {"image", "job", "generation"}
 
 
 def _db():
@@ -193,6 +193,19 @@ def delete_asset(source: str, asset_id: str,
             paths = list(row) if row else []
             cur.execute("UPDATE sprite_images SET deleted = true "
                         "WHERE id = %s AND deleted = false", (int(asset_id),))
+        elif source == "generation":
+            # Only the ledger row is hidden, and only its OWN file is purged.
+            # A row with a job_id does not reach this branch - assets_v never
+            # surfaces one, because the job owns that PNG and deleting it from
+            # under the job is the tile facade's cache silently rotting.
+            cur.execute("SELECT file_path FROM generations "
+                        "WHERE id = %s::uuid AND deleted = false "
+                        "  AND job_id IS NULL", (asset_id,))
+            row = cur.fetchone()
+            paths = list(row) if row else []
+            cur.execute("UPDATE generations SET deleted = true "
+                        "WHERE id = %s::uuid AND deleted = false "
+                        "  AND job_id IS NULL", (asset_id,))
         else:
             cur.execute("SELECT sheet_path, atlas_path FROM jobs "
                         "WHERE id = %s::uuid AND deleted = false", (asset_id,))

@@ -62,6 +62,19 @@ app.include_router(auth_router)
 from assets import router as assets_router
 app.include_router(assets_router)
 
+# The API request ledger, and the entity registry it carries. Until this
+# existed, 731 images generated through the A1111 facade were on disk with no
+# database row of any kind - unlisted, unaddressable and re-generated on every
+# repeat request. It also owns /api/activity, which is the only place that
+# answers "who asked this machine to spend the GPU".
+#
+# The module itself is imported alongside its router, because the three
+# generation endpoints defined in THIS file write ledger rows too - see
+# `_ledger`.
+import generations
+from generations import router as generations_router
+app.include_router(generations_router)
+
 # Reference examples and the style profiles measured from them. A tile upload
 # is how the camera angle stops being a guess.
 from references import router as references_router
@@ -372,11 +385,38 @@ def core_models(authorization: str | None = Header(None)):
     return JSONResponse({"models": core_model_roster()})
 
 
+def _ledger(request, principal, row, kind, route, prompt, model):
+    """Record who asked for a browser-side generation, beside its image row.
+
+    The three endpoints below spend GPU time and, until migration 018, were the
+    only generation paths with no attribution at all: they wrote a
+    `sprite_images` row and the Activity tab could say nothing about them
+    except "browser (local UI)" - true of every one of them, including calls
+    made with a key from another machine.
+
+    `row` is the `RETURNING id` result. It is passed in rather than fetched
+    here so this stays inside the caller's transaction: the ledger row and the
+    image row are one fact, and a ledger row pointing at an image that was
+    rolled back would be worse than no ledger row.
+
+    NOTE THIS NEVER CALLS `finish`. The worker owns the outcome and writes it to
+    `sprite_images`; `activity_v` resolves the status through `image_id`. Adding
+    a ledger write to `tasks.py` would mean restarting the GPU worker for a
+    bookkeeping change, which is a bad trade on a card with no spare VRAM.
+    """
+    if not row:
+        return
+    generations.begin(kind=kind, route=route, prompt=prompt or "",
+                      model=model, image_id=row[0],
+                      caller=generations.describe_caller(principal, request))
+
+
 @app.post("/api/generate_core")
-def generate_core(prompt: str = Form(...),
+def generate_core(request: Request,
+                  prompt: str = Form(...),
                   llm_name: str = Form("stabilityai/sdxl-turbo"),
                   authorization: str | None = Header(None)):
-    auth.require(authorization, "generate")
+    principal = auth.require(authorization, "generate")
     # Refuse a model that is not on disk instead of queueing work that cannot
     # succeed. Offline, a missing checkpoint is not a transient failure: the
     # worker would log a load error, write "Model failed to load on worker" to
@@ -394,9 +434,11 @@ def generate_core(prompt: str = Form(...),
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                         (prompt, task.id, "Waiting in queue...", "core", llm_name, 1)
                     )
+                    _ledger(request, principal, cur.fetchone(), "core",
+                            "/api/generate_core", prompt, llm_name)
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
@@ -425,7 +467,8 @@ def edit_capabilities(authorization: str | None = Header(None)):
 
 
 @app.post("/api/edit")
-def edit_image(source: str = Form(...), instruction: str = Form(...),
+def edit_image(request: Request,
+               source: str = Form(...), instruction: str = Form(...),
                capability: str = Form(None), steps: int = Form(20),
                cfg_scale: float = Form(4.0), seed: int = Form(-1),
                authorization: str | None = Header(None)):
@@ -434,7 +477,7 @@ def edit_image(source: str = Form(...), instruction: str = Form(...),
     `source` is a filename, not a path: joining a caller-supplied path would let
     any file on the worker be opened. Only the images directory is reachable.
     """
-    auth.require(authorization, "generate")
+    principal = auth.require(authorization, "generate")
     if not EDIT_ENABLED:
         # 503, not 500: the service is fine, this capability is not
         # available on this hardware. Refuse before queueing, because
@@ -458,7 +501,7 @@ def edit_image(source: str = Form(...), instruction: str = Form(...),
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                         # Record the model that actually runs. This said
                         # "qwen-image-edit-2511/..." long after the editor moved
                         # to FLUX Kontext NF4, so the queue and the gallery
@@ -467,18 +510,22 @@ def edit_image(source: str = Form(...), instruction: str = Form(...),
                         (instruction, task.id, "Waiting in queue...", "edit",
                          f"{EDIT_BASE}/{capability or 'base'}", 1)
                     )
+                    _ledger(request, principal, cur.fetchone(), "edit",
+                            "/api/edit", instruction,
+                            f"{EDIT_BASE}/{capability or 'base'}")
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
 
 
 @app.post("/api/generate_sheet")
-def generate_sheet(parent_id: int = Form(...), actions: str = Form(...),
+def generate_sheet(request: Request,
+                   parent_id: int = Form(...), actions: str = Form(...),
                    llm_name: str = Form("stabilityai/sdxl-turbo"),
                    width: int = Form(128), height: int = Form(128),
                    motion_steps: int = Form(4),
                    authorization: str | None = Header(None)):
-    auth.require(authorization, "generate")
+    principal = auth.require(authorization, "generate")
     actions_list = json.loads(actions)
     task = generate_spritesheet_task.delay(parent_id, actions_list, llm_name, width, height, motion_steps)
     conn = get_db()
@@ -487,13 +534,15 @@ def generate_sheet(parent_id: int = Form(...), actions: str = Form(...),
             with conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                         (str(actions_list), task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(actions_list), llm_name, 2)
                     )
+                    _ledger(request, principal, cur.fetchone(), "spritesheet",
+                            "/api/generate_sheet", str(actions_list), llm_name)
         except Exception as e: print(f"Record error: {e}")
         finally: conn.close()
     return JSONResponse({"status": "queued", "task_id": task.id})
-    
+
 @app.post("/api/crop")
 async def crop_sprite(request: Request,
                       authorization: str | None = Header(None)):
@@ -686,8 +735,9 @@ def delete_task(id: int, authorization: str | None = Header(None)):
     finally: conn.close()
 
 @app.post("/api/task/{id}/retry")
-def retry_task(id: int, authorization: str | None = Header(None)):
-    auth.require(authorization, "generate")
+def retry_task(id: int, request: Request,
+               authorization: str | None = Header(None)):
+    principal = auth.require(authorization, "generate")
     conn = get_db()
     if not conn: raise HTTPException(status_code=500, detail="DB Connection failed")
     try:
@@ -705,15 +755,21 @@ def retry_task(id: int, authorization: str | None = Header(None)):
                 if image_type == "core":
                     task = generate_core_task.delay(prompt, llm_actual)
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                         (prompt, task.id, "Waiting in queue...", "core", llm_actual, step_number)
                     )
+                    # A retry spends the card exactly as the original did, so
+                    # it is attributed exactly as the original is.
+                    _ledger(request, principal, cur.fetchone(), "core",
+                            "/api/task/{}/retry".format(id), prompt, llm_actual)
                 elif image_type == "spritesheet":
                     task = generate_spritesheet_task.delay(parent_id, requested_actions, llm_actual, 128, 128, 4)
                     cur.execute(
-                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                        "INSERT INTO sprite_images (prompt, task_id, progress_msg, image_type, parent_id, requested_actions, llm_name, step_number) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                         (prompt, task.id, "Waiting in queue...", "spritesheet", parent_id, json.dumps(requested_actions), llm_actual, step_number)
                     )
+                    _ledger(request, principal, cur.fetchone(), "spritesheet",
+                            "/api/task/{}/retry".format(id), prompt, llm_actual)
                 else:
                     # Reads the retryable types off the front, so an "edit" row
                     # lands here. It used to answer by putting `task.id` in the

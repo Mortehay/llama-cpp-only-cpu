@@ -11,6 +11,7 @@ import Tiles from './tabs/Tiles'
 import Maps from './tabs/Maps'
 import Worlds from './tabs/Worlds'
 import Commands from './tabs/Commands'
+import Activity from './tabs/Activity'
 
 const TABS = [
   { id: 'core', label: 'Entity Generation' },
@@ -24,6 +25,10 @@ const TABS = [
   { id: 'worlds', label: 'Worlds' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
+  // "Activity", never "Actions": `actions.py` already means animation actions
+  // (walk, idle, attack) and domain.md records three words this codebase has
+  // already overloaded. See tabs/Activity.tsx.
+  { id: 'activity', label: 'Activity' },
   { id: 'commands', label: 'Commands' },
   { id: 'settings', label: 'Settings & API' },
 ] as const
@@ -108,6 +113,7 @@ export default function App() {
         {tab === 'worlds' && <Worlds />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
+        {tab === 'activity' && <Activity />}
         {tab === 'commands' && <Commands />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
       </div>
