@@ -152,6 +152,178 @@ def clear_cancel_flag(task_id: str):
     """Remove the cancellation flag."""
     _redis_client.delete(f"cancel:{task_id}")
 
+
+# ---------------------------------------------------------------------------
+# The CUDA-fault circuit breaker
+#
+# WHAT IT IS FOR, measured rather than assumed
+#
+# On 2026-09-10 this box logged 46 failed entity generations. 42 of them were
+# the faulted-context signature, and they did not arrive spread out - they
+# arrived in bursts, TEN IN ONE MINUTE, each returning in ~91ms. A healthy
+# generation on this card takes 20-45s. So a 91ms "failure" is not a generation
+# that went wrong; it is a request that reached an already-dead context,
+# bounced instantly, and told the caller to try again straight away.
+#
+# That is the retry storm named in CLAUDE.md, and the storm is not merely noise
+# downstream of the fault - it is what PREVENTS the recovery. The same file
+# records the other half of the measurement: on 2026-09-04 a faulted context
+# cleared ON ITS OWN in under two minutes once traffic stopped. The ledger here
+# shows it from the other side - after the 11:56 burst of ten, generations from
+# 17:52 onward succeeded at ~44s with no worker restart in between.
+#
+# (`scripts/check-gpu-health.py` still prints "a faulted context does not
+# recover on its own". That line predates both measurements and is now known to
+# be too strong. It is left alone because this change does not touch the probe,
+# but do not read it as a reason to skip the cooldown.)
+#
+# So the fix is not to retry better. It is to STOP TOUCHING THE CARD and let
+# the quiet window happen - which is exactly what the tripwire prescribes by
+# hand: "Stop sending traffic and re-probe before restarting."
+#
+# WHY THE STATE LIVES IN REDIS
+#
+# The fault is process-local to the worker's main process - that is the trap
+# `gpu_probe` exists to document, and nothing here changes it. Only the worker
+# may DECIDE whether the context is alive. But the API is where a storm is
+# absorbed most cheaply, before a task is ever queued, and the API is pinned to
+# COMPUTE_DEVICE=cpu so it cannot ask CUDA anything at all. Redis is how the
+# one process that knows tells the one process being shouted at.
+#
+# Hence the split, and it matters:
+#   gpu_fault_block_reason()  reads the flag only. Safe in ANY process.
+#   _gpu_breaker_admit()      may probe the context. Worker-only.
+_CUDA_FAULT_KEY = "gpu:cuda_fault"
+
+# How long to refuse work after a fault before re-probing. 90s because the one
+# measured self-recovery took "under two minutes" - long enough to be a real
+# quiet window, short enough that a card which did recover is not held out of
+# service much longer than it needed.
+GPU_FAULT_COOLDOWN_S = int(os.environ.get("GPU_FAULT_COOLDOWN_S", "90"))
+
+# Substrings of the faulted-context symptoms, which are ONE cause wearing
+# several costumes - see the `gpu_probe` docstring and CLAUDE.md. Matching on
+# text is unlovely, but the exception TYPES are no help (a RuntimeError from
+# the allocator and a RuntimeError from a bad argument are the same class), and
+# these strings come from the C++ layer, not from user input.
+_CUDA_FAULT_MARKERS = (
+    "cudacachingallocator",      # !handles_.at(i) INTERNAL ASSERT FAILED
+    "handles_.at",
+    "device not ready",          # CUDA driver error: an OOM in driver clothing
+    "cuda error",
+    "cuda driver error",
+    "meta tensor",               # the third-request symptom after a fault
+    "cublas",
+)
+
+
+def is_cuda_fault(exc: BaseException) -> bool:
+    """Is this the faulted-context signature, rather than one bad job?
+
+    Deliberately NOT a catch-all for "something went wrong on the GPU". A
+    genuine OOM on one oversized request is a per-request failure and the next
+    request may well succeed; tripping the breaker on it would take the card
+    out of service for 90s for no reason. Only signatures that mean the CONTEXT
+    itself is unusable belong here.
+    """
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    # `c10::Half` is a fault symptom only in the dtype-mismatch form, and a
+    # bare "half" shows up in innocent messages, so it is matched in context.
+    if "c10::half" in text and "expected" in text:
+        return True
+    return any(m in text for m in _CUDA_FAULT_MARKERS)
+
+
+def trip_gpu_breaker(exc: BaseException) -> None:
+    """Record that the worker's CUDA context faulted, and when."""
+    try:
+        _redis_client.setex(
+            _CUDA_FAULT_KEY,
+            # Outlives the cooldown, so a fault stays legible while it is being
+            # investigated - but expires, so it cannot wedge the box shut
+            # forever if the worker that set it never comes back.
+            max(GPU_FAULT_COOLDOWN_S * 10, 600),
+            json.dumps({"at": time.time(),
+                        "error": f"{exc.__class__.__name__}: {exc}"[:500]}),
+        )
+    except Exception as e:  # bookkeeping must never mask the real failure
+        logger.error("could not record CUDA fault: %s", e)
+
+
+def _read_gpu_fault():
+    try:
+        raw = _redis_client.get(_CUDA_FAULT_KEY)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def gpu_fault_block_reason():
+    """Why new GPU work should be refused right now, or None to proceed.
+
+    READ-ONLY and CUDA-free, so the API may call it. Returns the seconds still
+    to wait, which the caller turns into `Retry-After`: a bulk runner that is
+    told when to come back stops hammering, and that quiet is the thing the
+    card actually needs.
+    """
+    fault = _read_gpu_fault()
+    if not fault:
+        return None
+    waited = time.time() - float(fault.get("at", 0))
+    remaining = GPU_FAULT_COOLDOWN_S - waited
+    if remaining <= 0:
+        # Cooldown served. The API does not get to declare the card healthy -
+        # only the worker can prove that - so it stops blocking here and lets
+        # the task through to `_gpu_breaker_admit`, which probes in the right
+        # process.
+        return None
+    return {"retry_after_s": int(remaining) + 1,
+            "faulted_for_s": int(waited),
+            "error": fault.get("error", "")}
+
+
+def _gpu_breaker_admit():
+    """Worker-side gate. Returns an error dict to refuse with, or None to run.
+
+    Half-open by PROBE, not by hope. When the cooldown has elapsed this does
+    not assume the card came back - it runs the same in-process matmul
+    `gpu_probe` uses, in the process that owns the context, and clears the flag
+    only if that answers. A failed probe re-arms the cooldown, so a card that
+    is genuinely dead keeps refusing in about a millisecond instead of failing
+    ten generations a minute at 91ms each.
+    """
+    if not _read_gpu_fault():
+        return None
+
+    blocked = gpu_fault_block_reason()
+    if blocked:
+        return {"error": (
+                    "GPU context faulted %ds ago and is cooling down; retry in "
+                    "%ds. Sending more work now is what stops it recovering."
+                    % (blocked["faulted_for_s"], blocked["retry_after_s"])),
+                "error_kind": "gpu_faulted",
+                "retry_after_s": blocked["retry_after_s"]}
+
+    probe = gpu_probe()
+    if probe.get("ok"):
+        logger.info("CUDA context recovered after fault; resuming work.")
+        try:
+            _redis_client.delete(_CUDA_FAULT_KEY)
+        except Exception:
+            pass
+        return None
+
+    logger.warning("CUDA context still faulted after cooldown: %s",
+                   probe.get("error") or probe.get("why"))
+    trip_gpu_breaker(RuntimeError(probe.get("error")
+                                  or probe.get("why") or "probe failed"))
+    return {"error": ("GPU context is still faulted after a %ds cooldown. It "
+                      "needs a worker restart; see `make gpu-health`."
+                      % GPU_FAULT_COOLDOWN_S),
+            "error_kind": "gpu_faulted",
+            "retry_after_s": GPU_FAULT_COOLDOWN_S}
+
+
 pipes = {}
 PipelineOutput = namedtuple("PipelineOutput", ["images"])
 
@@ -2331,6 +2503,20 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     through the Redis result backend, and sheets can approach the 32MB cap.
     """
     task_id = self.request.id
+
+    # Refuse BEFORE loading a pipeline, not after failing to use one.
+    #
+    # A faulted context does not decline politely - it accepts the call and
+    # dies partway through, which is how one fault became 39 allocator asserts
+    # and 3 "device not ready"s in a single day. Every one of those touched the
+    # card. The gate has to come before `get_sd_pipeline`, because the load
+    # itself is the largest residency demand in the process and is the most
+    # likely thing to fault a context that is merely tight.
+    refusal = _gpu_breaker_admit()
+    if refusal:
+        logger.warning("refusing generation %s: %s", task_id, refusal["error"])
+        return refusal
+
     p = get_sd_pipeline(llm_name, lora_scale=lora_scale)
     if not p:
         return {"error": f"Model '{llm_name}' failed to load"}
@@ -2365,6 +2551,17 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         ).images[0]
     except Exception as e:
         logger.error(f"Raw generation {task_id} failed: {e}", exc_info=True)
+        # Trip the breaker on the way out, so the NEXT caller is turned away in
+        # a millisecond instead of driving another 7GB load into a dead
+        # context. This is the only place that can classify the failure: by the
+        # time it reaches the API it is a string with the cause worn off.
+        if is_cuda_fault(e):
+            trip_gpu_breaker(e)
+            logger.error("CUDA context faulted; refusing new work for %ds. "
+                         "Do not restart the worker yet - let it go quiet and "
+                         "re-probe (see CLAUDE.md).", GPU_FAULT_COOLDOWN_S)
+            return {"error": str(e), "error_kind": "gpu_faulted",
+                    "retry_after_s": GPU_FAULT_COOLDOWN_S}
         return {"error": str(e)}
 
     duration_ms = (time.time() - start_time) * 1000
@@ -2382,7 +2579,24 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         # sparks off a torch, or leaves detached from a tree, are dropped with
         # the duplicates. That trade is the one the rest of the file already
         # makes, and a stray copy of the subject is the worse artefact.
-        img = remove_background(img, keep_largest=True)
+        #
+        # Run as two explicit stages rather than one `keep_largest=True` call.
+        # Identical pixels out - `remove_background(keep_largest=True)` IS
+        # flood-fill-then-isolate - but the count in between is what lets the
+        # refusal below name which stage ate the subject. Without it the guard
+        # can only see the total and has to guess at the cause, which is what
+        # it used to do, and it guessed wrong. See the refusal block.
+        import numpy as _np
+
+        def _opaque_frac(im):
+            return float((_np.asarray(im.convert("RGBA"))[..., 3] >= 128).mean())
+
+        img = remove_background(img, keep_largest=False)
+        opaque_after_fill = _opaque_frac(img)
+
+        _arr = _np.asarray(img.convert("RGBA")).copy()
+        img = Image.fromarray(_isolate_largest_sprite(_arr), mode="RGBA")
+        opaque_after_isolate = _opaque_frac(img)
 
         # A PEDESTAL IS NOT BACKGROUND, so remove_background cannot touch it.
         #
@@ -2411,7 +2625,6 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
         # perfectly good picture of a tree and a field of grey blocks in the
         # game, and nobody notices until a player looks at it. So measure the
         # result and refuse rather than return it.
-        import numpy as _np
         alpha = _np.asarray(img.convert("RGBA"))[..., 3]
         clear = float((alpha < 128).mean())
 
@@ -2446,17 +2659,93 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
                 "Reword to isolate the subject on a flat background, or request "
                 "without cutout." % (clear * 100)),
                 "error_kind": "cutout_failed"}
-        if clear > 0.97:
+
+        # AND THAT WAS A THIRD CONFIDENT WRONG ANSWER - it was `clear > 0.97`.
+        #
+        # Measured 2026-09-10 over the 27 entity cutouts this box has actually
+        # served, all 1024x1024. They run from 66.9% clear (a gear shift) up to
+        # **96.95%** (a crude band) and 96.94% (obsidian greaves), with an iron
+        # spear at 95.25% and an arrow at 94.74%. The four refusals in the same
+        # window were a wand at 97.7%, two blades at 97.8% and a helm at 98.5%.
+        #
+        # There is no gap. The threshold ran straight through the middle of a
+        # continuous distribution, and every case it caught was a THIN OBJECT -
+        # wand, blade, helm - sitting next to accepted thin objects a hair's
+        # width below the line. A ring passed at 96.95% and a helm was refused
+        # at 98.5% for the same reason: at 1024x1024 a small pixel-art object
+        # is simply a small fraction of the frame. 97.7% clear is still ~24,000
+        # opaque pixels, which is a wand, not a wiped image.
+        #
+        # The message was wrong about the cause too, and that is the more
+        # useful half. "The background flood fill consumed the subject" is a
+        # thing `remove_background` CANNOT do: its mask is
+        # `colour_match & border_connected`, so it only ever clears pixels
+        # within `tolerance` (22) of the sampled corner colour. A subject that
+        # differs from the background by more than that is unreachable by the
+        # fill, no matter how much of the frame is background. Callers were
+        # being told to reword a prompt against a mechanism that was not
+        # running.
+        #
+        # What CAN eat a subject is the stage after it. `_isolate_largest_sprite`
+        # keeps exactly one connected blob and deletes the rest - and a thin
+        # object is precisely the thing that fragments, so a wand broken into
+        # three segments by antialiasing loses two of them silently. That is a
+        # real failure with a real signature, so THAT is what is measured now:
+        # not how much of the frame is empty, but how much of the subject a
+        # later stage threw away.
+        #
+        # 0.20 SITS IN A MEASURED GAP, and the gap is narrow, so do not nudge
+        # this without re-measuring. Run over all 297 cutouts on disk
+        # (2026-09-10), the kept-fraction lands at 8.9%, 12.0%, 32.8%, 32.8%,
+        # 75.9% and then a long tail at 99-100%. Both sides of the gap were
+        # looked at rather than assumed:
+        #
+        #   8.9%  - noise confetti, no subject anywhere in the frame. Broken.
+        #   12.0% - a 12-item contact sheet, which is a known reject class
+        #           (CLAUDE.md, the audit_trainable gate) and not one object.
+        #   32.8% - SIX PINE TREES, and keeping one is precisely what this
+        #           stage is for. Refusing it would break the case the stage
+        #           was written to handle.
+        #
+        # That last one is why the threshold is not higher. The first draft of
+        # this rule used 0.35 on the reasoning that "one figure ringed by five
+        # small copies leaves the subject far above it" - the docstring case in
+        # `_isolate_largest_sprite`. Measured, that is false: the copies are
+        # often the SAME SIZE as the subject, so six equal trees put the
+        # survivor at 1/6 of the ink and just under 0.35. The rule would have
+        # rejected the thing it was meant to protect.
+        kept = (opaque_after_isolate / opaque_after_fill
+                if opaque_after_fill > 0 else 1.0)
+        if kept < 0.20:
+            return {"error": (
+                "cutout kept only %.0f%% of the subject: isolating the largest "
+                "connected shape discarded the rest. The generation was a "
+                "contact sheet or noise rather than one object. Reword to ask "
+                "for a single centered subject, or request without cutout."
+                % (kept * 100)),
+                "error_kind": "cutout_failed"}
+
+        # The floor that remains is an ABSURDITY check, not a quality one. The
+        # closest legitimate cutout measured is 96.95% clear, so 99.5% sits a
+        # factor of six away from anything real - at 1024x1024 it means under
+        # ~1,300 opaque pixels left, which is no longer an object of any kind.
+        if clear > 0.995:
             return {"error": (
                 "cutout removed %.1f%% of the image - there is essentially no "
-                "subject left. The background flood fill consumed the subject, "
-                "which happens when subject and background share a colour."
-                % (clear * 100)),
+                "subject left (%d opaque pixels). The generation was probably "
+                "near-empty before the cutout ran."
+                % (clear * 100, int((alpha >= 128).sum()))),
                 "error_kind": "cutout_failed"}
-        logger.info("cutout: %.1f%% transparent, border %.0f%% clear",
-                    clear * 100, border_clear * 100)
+
+        logger.info("cutout: %.1f%% transparent, border %.0f%% clear, "
+                    "isolate kept %.0f%% of subject",
+                    clear * 100, border_clear * 100, kept * 100)
         cutout_stats = {"transparent_pct": round(clear * 100, 1),
-                        "border_clear_pct": round(border_clear * 100, 1)}
+                        "border_clear_pct": round(border_clear * 100, 1),
+                        # Surfaced for the same reason as the rest: a caller
+                        # tracking these can see a subject starting to fragment
+                        # long before it crosses the refusal line.
+                        "isolate_kept_pct": round(kept * 100, 1)}
 
     filename = f"raw_{uuid.uuid4().hex[:12]}.png"
     filepath = os.path.join(IMAGES_DIR, filename)

@@ -40,7 +40,7 @@ from pydantic import BaseModel, Field, field_validator
 import auth
 import core_models
 import generations
-from tasks import celery_app, generate_raw_task
+from tasks import celery_app, generate_raw_task, gpu_fault_block_reason
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -830,6 +830,25 @@ def txt2img(req: Txt2ImgRequest, request: Request,
                 "lora_scale": lora_scale},
         caller=caller)
 
+    # Turn the storm away HERE, before a task is queued.
+    #
+    # The worker gate in `_gpu_breaker_admit` is the authoritative one - only
+    # the process that owns the context may decide it is alive. This is the
+    # cheap one, and it is placed after `generations.begin` on purpose: a
+    # refusal is still a request that arrived, and the activity dashboard is
+    # where anyone looking at "why is nothing generating" will be. Refusals
+    # that leave no trace are how the six-hour silent outage happened.
+    blocked = gpu_fault_block_reason()
+    if blocked:
+        detail = ("GPU context faulted %ds ago and is cooling down; retry in "
+                  "%ds. (%s)" % (blocked["faulted_for_s"],
+                                 blocked["retry_after_s"], blocked["error"]))
+        logger.warning("txt2img refused: %s", detail)
+        generations.fail(gen, detail,
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=503, detail=detail,
+                            headers={"Retry-After": str(blocked["retry_after_s"])})
+
     task = generate_raw_task.delay(
         prompt,
         req.negative_prompt,
@@ -860,15 +879,27 @@ def txt2img(req: Txt2ImgRequest, request: Request,
 
     if not result or result.get("error"):
         detail = (result or {}).get("error", "unknown generation failure")
+        kind = (result or {}).get("error_kind")
         # A failed cutout is the CALLER's request being unsatisfiable, not this
         # service breaking, and the distinction matters to a bulk runner: 422
         # means "this subject will not cut out, skip or reword it", 500 means
         # "retry later". Returning an opaque image instead would be worse than
         # either - it stores clean-looking data that is wrong.
-        status = 422 if (result or {}).get("error_kind") == "cutout_failed" else 500
+        status = 422 if kind == "cutout_failed" else 500
+        headers = None
+        if kind == "gpu_faulted":
+            # 503 + Retry-After, and the header is the point of the whole
+            # exercise. Under 500 a bulk runner reasonably retries at once, and
+            # the ledger shows what that costs: ten requests in one minute,
+            # each bouncing off a dead context in ~91ms, for hours. The card
+            # recovers in a quiet window and cannot get one while it is being
+            # asked. This names the length of that window in the one place a
+            # generic HTTP client will actually obey.
+            status = 503
+            headers = {"Retry-After": str(result.get("retry_after_s") or 90)}
         generations.fail(gen, detail,
                          duration_ms=(time.time() - started) * 1000)
-        raise HTTPException(status_code=status, detail=detail)
+        raise HTTPException(status_code=status, detail=detail, headers=headers)
 
     file_path = result.get("file_path")
     if not file_path or not os.path.exists(file_path):
