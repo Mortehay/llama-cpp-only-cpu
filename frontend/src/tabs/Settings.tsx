@@ -259,6 +259,19 @@ function ApiKeys({ nonce, onChange }: { nonce: number; onChange: () => void }) {
         always gets the <code>admin</code> scope, because a first key that cannot
         manage keys locks you out of your own API.
       </p>
+      <p className="hint">
+        {/* The actionable half of a measured limitation. Every caller reaches
+            this service through a NAT relay - the Windows portproxy forwards
+            0.0.0.0:8001 to the WSL guest and opens its own connection, so all
+            LAN machines arrive as one address. Mirrored WSL networking would
+            fix it and needs Windows 11; this host is Windows 10. The key is
+            therefore the only identity that separates callers, which makes
+            "one key per consumer" an operational requirement, not tidiness. */}
+        <strong>Mint one key per consumer.</strong> Every caller reaches this
+        machine through a NAT relay, so the Activity tab cannot tell two LAN
+        machines apart by address — the key name is the only thing that
+        distinguishes them.
+      </p>
 
       {error && <div className="note err">{error}</div>}
 

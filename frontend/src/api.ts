@@ -606,6 +606,32 @@ export const api = {
       { method: 'DELETE' },
     ),
 
+  /**
+   * File an already-generated image as a reference. EXPLICIT and one at a time.
+   *
+   * Never call this in a loop over a listing. References are what style
+   * profiles and LoRA training read, so bulk-admitting model output makes the
+   * model its own yardstick — see the endpoint's docstring and ADR 0009.
+   */
+  promoteAsset: (body: {
+    source: string
+    id: string
+    kind: ReferenceKind
+    label?: string
+  }) =>
+    request<{
+      id: string
+      kind: string
+      url: string | null
+      label: string
+      usable: boolean | null
+      why: string
+      trainable?: boolean | null
+    }>('/api/references/from-asset', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
   references: (kind?: ReferenceKind) =>
     request<ReferenceList>(`/api/references${kind ? `?kind=${kind}` : ''}`),
   uploadReference: (kind: ReferenceKind, file: File, label?: string) => {

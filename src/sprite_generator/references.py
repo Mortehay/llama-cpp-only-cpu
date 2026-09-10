@@ -177,6 +177,123 @@ async def upload_reference(kind: str = Form(...),
             "label": label or file.filename, **verdict}
 
 
+class PromoteRequest(BaseModel):
+    source: str = Field(..., description="generation | image | job, from assets_v")
+    id: str = Field(..., description="the asset id in that source")
+    kind: str = Field(..., description="which reference set to file it under")
+    label: str | None = None
+
+
+@router.post("/api/references/from-asset", status_code=201)
+def promote_asset(req: PromoteRequest, authorization: str | None = Header(None)):
+    """File one already-generated image as a reference. EXPLICIT, one at a time.
+
+    WHY THIS IS A BUTTON AND NOT A PIPELINE STEP
+
+    The obvious version of this feature is "every generated image becomes a
+    reference automatically", and it is a trap. References are what style
+    profiles are derived from and what LoRA training reads, so admitting model
+    output wholesale creates a loop in which the model's own drift becomes the
+    thing it is measured against - and nothing in the UI would say so.
+    `.ai/decisions/0009` and `.ai/specs/entity-cutout/findings.md` are both
+    records of that reference set being the fragile part of this system; it is
+    not the place for unattended writes.
+
+    So: a person picks the image, a person picks the kind, and the verdict comes
+    straight back in the response so they can see immediately whether the thing
+    they promoted is even measurable.
+
+    THE FILE IS COPIED, NOT LINKED, for two reasons that are both load-bearing:
+
+      - `DELETE /api/assets/...?purge=true` unlinks the generated PNG. A
+        reference pointing at it would survive as a row with no image, and the
+        trainer would fail on a path that used to work.
+      - The trainer globs `ref_<kind>_*.png`. A reference living under its
+        original `raw_*.png` name is invisible to it, so promoting would appear
+        to work and change nothing about the next training run.
+
+    PROVENANCE IS RECORDED, and that is the part not to remove. `metrics.source`
+    marks the row as generated art rather than authored reference art, so a
+    later question of "how much of this profile is the model quoting itself?"
+    has an answer that does not require guessing from filenames.
+    """
+    auth.require(authorization, "generate")
+
+    if req.kind not in KINDS:
+        raise HTTPException(status_code=400,
+                            detail=f"kind must be one of {', '.join(KINDS)}")
+    if req.source not in ("generation", "image", "job"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown source {req.source!r}; expected generation, image "
+                   f"or job")
+
+    # Resolved through assets_v rather than each producer table: it is already
+    # the one place that knows which rows are visible and have a file, and a
+    # second copy of those rules here would be a second place to get them wrong.
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT file_path, title, kind AS asset_kind, model "
+                    "FROM assets_v WHERE source = %s AND id = %s",
+                    (req.source, req.id))
+        asset = cur.fetchone()
+
+    if not asset:
+        raise HTTPException(status_code=404,
+                            detail=f"no visible {req.source} asset {req.id!r}")
+    src_path = asset["file_path"]
+    if not src_path or not os.path.exists(src_path):
+        raise HTTPException(
+            status_code=409,
+            detail=f"asset {req.id!r} is listed but its file is gone from disk")
+
+    ref_id = uuid.uuid4()
+    path = os.path.join(IMAGES_DIR, f"ref_{req.kind}_{ref_id.hex[:12]}.png")
+
+    # Same RGBA-PNG normalisation as an upload. A promoted sheet or tile is
+    # measured by exactly the same code as an uploaded one, so it has to arrive
+    # in exactly the same shape.
+    try:
+        with Image.open(src_path) as img:
+            img.convert("RGBA").save(path, "PNG")
+    except Exception as e:
+        raise HTTPException(status_code=400,
+                            detail=f"could not read {os.path.basename(src_path)}: {e}")
+
+    make_thumb(path)
+
+    try:
+        verdict = measure.measure(req.kind, path)
+    except Exception as e:
+        logger.exception("measurement failed for %s", path)
+        verdict = {"usable": None, "why": f"measurement failed: {e}",
+                   "metrics": {}}
+
+    metrics = dict(verdict.get("metrics") or {})
+    metrics["source"] = "generated"
+    metrics["promoted_from"] = {"source": req.source, "id": req.id,
+                                "model": asset.get("model")}
+
+    label = req.label or f"promoted: {(asset['title'] or '')[:80]}"
+
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO reference_assets "
+            "  (id, kind, file_path, label, metrics, usable, why, "
+            "   trainable, trainable_why) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (str(ref_id), req.kind, path, label,
+             json.dumps(metrics), verdict["usable"], verdict["why"],
+             verdict.get("trainable"), verdict.get("trainable_why")))
+
+    logger.info("promoted %s %s -> reference %s (%s), usable=%s",
+                req.source, req.id, ref_id, req.kind, verdict["usable"])
+
+    return {"id": str(ref_id), "kind": req.kind, "url": _url(path),
+            "label": label, "promoted_from": metrics["promoted_from"],
+            **verdict, "metrics": metrics}
+
+
 @router.get("/api/references")
 def list_references(kind: str | None = None,
                     authorization: str | None = Header(None)):

@@ -546,7 +546,7 @@ def generate_sheet(request: Request,
 @app.post("/api/crop")
 async def crop_sprite(request: Request,
                       authorization: str | None = Header(None)):
-    auth.require(authorization, "generate")
+    principal = auth.require(authorization, "generate")
     try:
         data = await request.json()
         source_id = data.get('source_id')
@@ -587,7 +587,16 @@ async def crop_sprite(request: Request,
                             "INSERT INTO sprite_images (prompt, file_path, image_type, parent_id, cropped_from, progress_pct, progress_msg, llm_name, duration_ms) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
                             (f"Cropped: {prompt}", filepath, "core", source_id, source_id, 100, "Cropped & Saved", llm_name, 0)
                         )
-                        new_id = cur.fetchone()[0]
+                        new_row = cur.fetchone()
+                        # A crop spends no GPU, so it was left out of the ledger
+                        # at first. That was the wrong line to draw: the
+                        # Activity tab is a record of what changed the image
+                        # library, and a crop creates a new core that the
+                        # spritesheet step can then be pointed at. Cheap is not
+                        # the same as invisible.
+                        _ledger(request, principal, new_row, "core",
+                                "/api/crop", f"Cropped: {prompt}", llm_name)
+                        new_id = new_row[0]
                         return {"status": "success", "id": new_id, "url": f"/images/{filename}"}
         finally: conn.close()
     except Exception as e:

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api } from '../api'
+import type { ReferenceKind } from '../api'
 import { useAsync } from '../hooks'
 
 const PAGE = 48
@@ -171,6 +172,7 @@ export default function Gallery() {
                 >
                   Delete
                 </button>
+                {a.url && <Promote source={a.source} id={a.id} />}
               </div>
             </div>
           </div>
@@ -199,5 +201,72 @@ export default function Gallery() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * File this image into a reference set — one image, one deliberate click.
+ *
+ * DELIBERATELY NOT A BULK ACTION, and not automatic on generation. References
+ * are what style profiles are derived from and what LoRA training reads, so
+ * admitting model output wholesale would make the model its own yardstick and
+ * nothing here would say so. `.ai/decisions/0009` and the entity-cutout
+ * findings are both records of that set being the fragile part of this system.
+ *
+ * The verdict is shown inline rather than swallowed, because "promoted" and
+ * "promoted and it measures as unusable" are different outcomes and only one
+ * of them is worth repeating.
+ */
+function Promote({ source, id }: { source: string; id: string }) {
+  const [kind, setKind] = useState<ReferenceKind | ''>('')
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<string | null>(null)
+
+  async function go(k: ReferenceKind) {
+    setBusy(true)
+    setResult(null)
+    try {
+      const r = await api.promoteAsset({ source, id, kind: k })
+      setResult(
+        r.usable === null
+          ? 'filed — could not be measured'
+          : r.usable
+            ? `filed as ${k} · usable`
+            : `filed as ${k} · NOT usable: ${r.why}`,
+      )
+    } catch (e) {
+      setResult(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+      setKind('')
+    }
+  }
+
+  if (result) {
+    return (
+      <span className="muted" style={{ fontSize: 11 }} title={result}>
+        {result.length > 44 ? `${result.slice(0, 44)}…` : result}
+      </span>
+    )
+  }
+
+  return (
+    <select
+      value={kind}
+      disabled={busy}
+      title="Copy this image into a reference set and measure it"
+      style={{ fontSize: 11, padding: '4px 6px', flex: '0 0 auto' }}
+      onChange={(e) => {
+        const v = e.target.value as ReferenceKind | ''
+        setKind(v)
+        if (v) void go(v)
+      }}
+    >
+      <option value="">→ reference…</option>
+      <option value="core">as core</option>
+      <option value="sprite">as sprite</option>
+      <option value="tile">as tile</option>
+      <option value="map">as map</option>
+    </select>
   )
 }
