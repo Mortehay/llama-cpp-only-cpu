@@ -47,6 +47,9 @@ fragment of it.
   `scripts/setup-models-vhd.ps1 -AttachOnly`, `scripts/lan-expose.ps1`
   (elevated), `scripts/wsl-keepalive.ps1`. Symptoms of forgetting: models
   "vanished", LAN 404s, containers exiting 0 with clean logs.
+  **something2 reports an error but the API log has no `sdapi` lines? Run
+  `make lan-check`** — the portproxy forwards are gone or stale. `make
+  lan-expose` re-runs the script elevated (UAC prompt) and re-checks.
 - The repo path holds Cyrillic and a space. Quote every path; prefer
   `-LiteralPath` in PowerShell; keep `scripts/*.ps1` **ASCII-only** (5.1 reads
   ANSI without a BOM and a curly quote becomes a parse error).

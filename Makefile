@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: gpu-health test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-audio-paths test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
+.PHONY: gpu-health lan-check lan-expose test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes test-audio-paths test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -58,6 +58,44 @@ gpu-check:
 # and left /docs and the models route answering 200. Nothing else caught it.
 gpu-health:
 	@docker exec sprite_generator python /app/scripts/check-gpu-health.py
+
+# Ports scripts/lan-expose.ps1 forwards by default. Keep the two lists in sync.
+LAN_PORTS := 8001 7860 8002 3000 3001
+
+# Are LAN clients (something2) able to reach us? Read-only, needs no elevation.
+#
+# The WSL IP changes at every WSL start and the Windows portproxy entries do not
+# follow it, so after a restart they are either gone or point at a dead address.
+# From inside, nothing looks wrong: containers healthy, localhost answers, logs
+# clean. On 2026-09-28 something2 reported an error while the API log showed not
+# a single sdapi request -- the forwards for 8001 were simply missing.
+lan-check:
+	@ip=$$(hostname -I | awk '{print $$1}'); \
+	table=$$(netsh.exe interface portproxy show v4tov4 | tr -d '\r'); \
+	bad=0; \
+	for p in $(LAN_PORTS); do \
+		if echo "$$table" | grep -qE "^0\.0\.0\.0 +$$p +$$ip +$$p *$$"; then \
+			echo "ok     0.0.0.0:$$p -> $$ip:$$p"; \
+		else \
+			echo "STALE  0.0.0.0:$$p has no forward to $$ip:$$p"; bad=1; \
+		fi; \
+	done; \
+	if [ $$bad -ne 0 ]; then echo "LAN clients cannot reach these ports. Run: make lan-expose"; exit 1; fi
+
+# Re-run scripts/lan-expose.ps1 elevated, from inside WSL. Pops a UAC prompt on
+# the Windows desktop. The elevated window closes when done, so its output is
+# lost; lan-check afterwards reports the result instead. If it fails, run the
+# script by hand in an admin PowerShell to see why.
+#
+# Start-Process failing (UAC declined or timed out) is a NON-terminating error
+# by default: $p stays null, `exit $null` exits 0, and make carried on as if it
+# had worked. Hence -ErrorAction Stop and the try/catch.
+lan-expose:
+	@script=$$(wslpath -w "$(CURDIR)/scripts/lan-expose.ps1"); \
+	echo "Approve the UAC prompt on the Windows desktop..."; \
+	powershell.exe -NoProfile -Command "try { \$$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ErrorAction Stop -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + '$$script' + [char]34); exit \$$p.ExitCode } catch { \$$_.Exception.Message; exit 1 }" \
+		|| { echo "lan-expose.ps1 failed, or the UAC prompt was declined."; exit 1; }
+	@$(MAKE) --no-print-directory lan-check
 
 # Load models into VRAM out-of-band. A cold checkpoint takes minutes to fetch
 # and load, which blows past any HTTP client's timeout -- including something2's
