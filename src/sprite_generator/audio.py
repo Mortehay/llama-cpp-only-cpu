@@ -476,6 +476,11 @@ class SfxRequest(SfxItem):
 
 class SfxPackRequest(BaseModel):
     items: list[SfxItem]
+    # The pack's default engine: an item without its own `engine` inherits
+    # it. Without this field a top-level "engine" was SILENTLY dropped by
+    # pydantic and the whole pack fell to the next precedence level -
+    # measured 2026-09-28, a "retro" pack came back realistic after 71 s.
+    engine: str | None = None
     world: str | None = None
     variants: int = 3
     seed: int | None = None
@@ -686,7 +691,11 @@ def generate_sfx_pack(req: SfxPackRequest, request: Request,
     principal = auth.require(authorization, "generate")
     if len(req.items) > 40:
         raise HTTPException(status_code=422, detail="at most 40 cues per pack")
-    items = _serve_sfx(req.items, world=req.world, variants=req.variants,
+    # The pack-level engine counts as the REQUEST level of the precedence for
+    # every item that names none (an item's own engine still wins).
+    cues = [it if it.engine or not req.engine
+            else it.model_copy(update={"engine": req.engine}) for it in req.items]
+    items = _serve_sfx(cues, world=req.world, variants=req.variants,
                        seed=req.seed, principal=principal, request=request)
     return {"items": items, "count": len(items),
             "failed": sum(1 for i in items if i.get("error"))}
