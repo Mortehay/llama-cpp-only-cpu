@@ -41,7 +41,7 @@ import auth
 import core_models
 import generations
 from tasks import (celery_app, generate_raw_task, gpu_fault_block_reason,
-                   long_job_block_reason)
+                   worker_busy_reason)
 from core_models import is_gguf
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ router = APIRouter()
 # up. Raising it further only helps if something2 raises theirs first - past
 # 300 we would just be waiting on a connection they already closed. It does
 # NOT cover a request queued behind a Qwen core (~230s + an SDXL cold reload);
-# long_job_block_reason() turns that case away up front instead.
+# worker_busy_reason() turns that case away up front instead.
 GENERATE_TIMEOUT_S = int(os.environ.get("A1111_GENERATE_TIMEOUT_S", "285"))
 
 # The legacy shared secret is no longer read here. `auth.py` owns it - it still
@@ -546,26 +546,12 @@ def _long_job_ahead() -> str | None:
     tile, not a wrong one, and paying for a real lock here would mean holding it
     across a two-minute GPU build.
     """
-    try:
-        import psycopg2
-        import psycopg2.extras
-        with psycopg2.connect(os.environ.get("DB_URL")) as conn, conn.cursor(
-                cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT kind, started_at FROM jobs "
-                "WHERE status = 'running' AND kind <> 'tile' AND deleted = false "
-                "ORDER BY started_at LIMIT 1")
-            row = cur.fetchone()
-    except Exception as e:
-        # Never fail a tile because the ADVISORY check could not run. The build
-        # below is the thing that matters and it has its own timeout.
-        logger.warning("tile facade: could not check the queue: %s", e)
-        return None
-
-    if not row:
-        return None
-    return "a {} job has been running since {}".format(row["kind"],
-                                                       row["started_at"])
+    # tasks.worker_busy_reason reads BOTH registries - the jobs table and the
+    # Redis flag a Qwen core sets. This used to read only the table, so a tile
+    # queued behind a 4-minute core and timed out. Another tile building does
+    # not count: tiles are short and queue fine behind each other.
+    busy = worker_busy_reason(exclude_kinds=("tile",))
+    return busy["detail"] if busy else None
 
 
 def _tile_payload(name: str, row: dict, req: "Txt2ImgRequest", started: float,
@@ -867,12 +853,14 @@ def txt2img(req: Txt2ImgRequest, request: Request,
         generations.fail(gen, detail, duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=400, detail=detail)
 
-    # Same idea for a long job already holding the one worker: queueing behind
-    # it can only time out late, so say "busy" now and when to come back.
-    busy = long_job_block_reason()
+    # Same idea for a long job already holding the one worker - a Qwen core or
+    # a sheet/map/training job: queueing behind it can only time out late, so
+    # say "busy" now and when to come back.
+    busy = worker_busy_reason()
     if busy:
-        detail = ("GPU is busy with a %s (running %ds); retry in %ds."
-                  % (busy["kind"], busy["running_for_s"], busy["retry_after_s"]))
+        busy["retry_after_s"] = busy["retry_after_s"] or 120
+        detail = ("GPU is busy: %s; retry in %ds."
+                  % (busy["detail"], busy["retry_after_s"]))
         logger.info("txt2img refused: %s", detail)
         generations.fail(gen, detail, duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=503, detail=detail,

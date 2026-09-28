@@ -462,6 +462,50 @@ def long_job_block_reason():
             "running_for_s": int(running)}
 
 
+def worker_busy_reason(exclude_kinds: tuple = ()) -> dict | None:
+    """Is a long job holding the one worker? {detail, retry_after_s} or None.
+
+    The ONE place every synchronous facade asks. There used to be two
+    registries and each facade read only one: txt2img saw the Redis flag a Qwen
+    core sets but not a running sheet, while the tile and audio facades saw the
+    `jobs` table but not a Qwen core - so a tile queued behind a 4-minute core
+    and timed out (2026-09-28 branch review). Both sources, every caller.
+
+    `exclude_kinds` names job kinds that do not block this caller (the tile
+    facade does not refuse because another tile is building). Advisory, not a
+    lock - see a1111's tile facade for why that trade is right here. CUDA-free
+    and read-only, so the API process may call it.
+    """
+    core = long_job_block_reason()
+    if core:
+        return {"detail": "a %s has been running for %ds"
+                          % (core["kind"], core["running_for_s"]),
+                "retry_after_s": core["retry_after_s"]}
+    conn = get_db()
+    if not conn:
+        return None
+    try:
+        with conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT kind, started_at FROM jobs "
+                "WHERE status = 'running' AND deleted = false "
+                "AND NOT (kind = ANY(%s)) ORDER BY started_at LIMIT 1",
+                (list(exclude_kinds),))
+            row = cur.fetchone()
+    except Exception as e:
+        # Never refuse work because the ADVISORY check could not run.
+        logger.warning("could not check the jobs table: %s", e)
+        return None
+    finally:
+        conn.close()
+    if not row:
+        return None
+    # A job's end is unknown (a sheet is minutes to hours), so no estimate -
+    # callers fall back to their own Retry-After.
+    return {"detail": "a %s job has been running since %s" % (row[0], row[1]),
+            "retry_after_s": None}
+
+
 def _evict_pipelines(reason: str) -> None:
     """Drop every cached pipeline off the card - the same four lines
     get_sd_pipeline runs before a model switch. release_vram_cache() is NOT
@@ -2046,6 +2090,21 @@ QWEN_CORE_EXPECTED_S = float(os.environ.get("QWEN_CORE_EXPECTED_S", "260"))
 _QWEN_BANDS = {"encode": (2, 15), "load": (15, 25), "denoise": (25, 88)}
 _QWEN_PROGRESS = re.compile(r"^PROGRESS (\w+) (\d+) (\d+)$")
 
+# Wall-clock ceilings per stage, several times the measured cold figures
+# (encode 35s; load 59s + denoise 157s). The worker is --pool=solo: a child
+# that hangs - a stalled CUDA call, a stuck read - would otherwise hold every
+# later job, images, tiles and audio alike, until someone noticed.
+QWEN_STAGE_TIMEOUT_S = {
+    "encode": float(os.environ.get("QWEN_ENCODE_TIMEOUT_S", "300")),
+    "denoise": float(os.environ.get("QWEN_DENOISE_TIMEOUT_S", "900")),
+}
+
+# Free VRAM the Qwen core needs before it starts: measured peak 9.55 GiB
+# (9,779 MiB) with the transformer resident, plus a little. Checked AFTER the
+# SDXL eviction, so what is missing belongs to another tenant - usually the
+# llama.cpp model, which stays resident for --sleep-idle-seconds 120.
+QWEN_MIN_FREE_MB = int(os.environ.get("QWEN_MIN_FREE_MB", "10000"))
+
 
 def _run_qwen_stage(task_id: str, argv: list, label: str) -> str | None:
     """Run one qwen_t2i.py stage as a subprocess. Returns an error or None.
@@ -2056,10 +2115,28 @@ def _run_qwen_stage(task_id: str, argv: list, label: str) -> str | None:
     clean for the next SDXL job.
     """
     import subprocess
+    import threading
     cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "qwen_t2i.py")] + argv
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, bufsize=1)
+    limit = QWEN_STAGE_TIMEOUT_S.get(argv[0], 900.0)
+    timed_out = threading.Event()
+
+    def _kill():
+        timed_out.set()
+        proc.kill()   # closes stdout, which ends the read loop below
+
+    watchdog = threading.Timer(limit, _kill)
+    watchdog.daemon = True
+    watchdog.start()
     tail: list = []
+    try:
+        return _read_qwen_stage(task_id, proc, label, tail, timed_out, limit)
+    finally:
+        watchdog.cancel()
+
+
+def _read_qwen_stage(task_id, proc, label, tail, timed_out, limit):
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
@@ -2079,9 +2156,22 @@ def _run_qwen_stage(task_id: str, argv: list, label: str) -> str | None:
         if line.startswith(("[", "DONE", "Traceback")) or "Error" in line:
             logger.info("qwen %s: %s", label, line)
     rc = proc.wait()
+    if timed_out.is_set():
+        return (f"Qwen {label} stage killed after {limit:.0f}s with no result "
+                f"- treated as hung. Last output: " + " | ".join(tail[-4:]))
     if rc == 0:
         return None
-    return f"Qwen {label} stage failed (exit {rc}): " + " | ".join(tail[-6:])
+    err = f"Qwen {label} stage failed (exit {rc}): " + " | ".join(tail[-6:])
+    # The child owns its own CUDA context, so a fault there never reached the
+    # worker's breaker. Same signatures, same response: stop sending work and
+    # let the half-open probe decide. An OOM that reads like a fault ("device
+    # not ready") costs one cooldown - cheap next to a retry storm on a card
+    # that really did fault.
+    if is_cuda_fault(RuntimeError("\n".join(tail))):
+        logger.error("Qwen %s stage hit a CUDA fault signature; tripping the "
+                     "breaker.", label)
+        trip_gpu_breaker(RuntimeError(err))
+    return err
 
 
 def _generate_core_gguf(task_id: str, prompt: str, llm_name: str):
@@ -2112,6 +2202,20 @@ def _generate_core_gguf(task_id: str, prompt: str, llm_name: str):
     # The resident SDXL pipeline would leave the subprocess ~6.8 GB short.
     _evict_pipelines("a Qwen-Image core")
     release_vram_cache("qwen core")
+
+    # Refuse in a millisecond rather than after a minute of encode + load.
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        if free < QWEN_MIN_FREE_MB * 2 ** 20:
+            msg = (f"Not enough free VRAM for Qwen-Image: {free / 2**30:.1f} GiB "
+                   f"free of {total / 2**30:.1f}, needs "
+                   f"{QWEN_MIN_FREE_MB / 1024:.1f} GiB. Another process holds "
+                   f"the card - usually llm-server's chat model, which unloads "
+                   f"after 2 idle minutes. Retry then.")
+            logger.error("Task %s refused: %s", task_id, msg)
+            update_task_record(task_id, error_msg=msg)
+            return {"error": msg}
+
     mark_long_job("Qwen-Image core", QWEN_CORE_EXPECTED_S)
     try:
         err = _run_qwen_stage(task_id, ["encode", "--prompt", full_prompt,

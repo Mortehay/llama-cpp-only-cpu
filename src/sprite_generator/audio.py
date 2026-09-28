@@ -34,7 +34,7 @@ from pydantic import BaseModel
 import audio_styles
 import auth
 import generations
-from tasks import celery_app
+from tasks import celery_app, worker_busy_reason
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -140,22 +140,10 @@ def _long_job_ahead() -> str | None:
     and a sheet build is hours, so a caller blocking behind one can only spend
     its whole budget and time out. Advisory, not a lock.
     """
-    import psycopg2
-    import psycopg2.extras
-    try:
-        with psycopg2.connect(os.environ.get("DB_URL")) as conn, conn.cursor(
-                cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                "SELECT kind, started_at FROM jobs "
-                "WHERE status = 'running' AND deleted = false "
-                "ORDER BY started_at LIMIT 1")
-            row = cur.fetchone()
-    except Exception as e:
-        logger.warning("audio: could not check the queue: %s", e)
-        return None
-    if not row:
-        return None
-    return f"a {row['kind']} job has been running since {row['started_at']}"
+    # Both registries - jobs table AND the Redis flag a Qwen-Image core sets.
+    # Reading only the table let an audio build queue behind a 4-minute core.
+    busy = worker_busy_reason()
+    return busy["detail"] if busy else None
 
 
 def _require_kind(kind: str) -> str:
