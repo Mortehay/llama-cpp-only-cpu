@@ -232,6 +232,32 @@ def _await_build(task_id: str, gen_id: str | None, kind: str, name: str,
     return _payload(row, cached=False, started=started)
 
 
+class ProposeRequest(BaseModel):
+    context: str
+    kind: str = "music"
+
+
+@router.post("/api/audio/propose")
+def propose_style(req: ProposeRequest,
+                  authorization: str | None = Header(default=None)):
+    """What a map description would get, WITHOUT generating anything.
+
+    No GPU, no ledger row: the brain (two attempts, since a person is waiting
+    and a cold load can outlast one) or the keyword rules pick a style and
+    slots, and the template renders the prompt. The Audio tab fills its form
+    from this; generating is still a separate click.
+    """
+    auth.require(authorization, "read")
+    kind = _require_kind(req.kind)
+    if not req.context.strip():
+        raise HTTPException(status_code=422, detail="context is required")
+    style, slots, author = audio_styles.plan_style(req.context, kind)
+    rendered = audio_styles.render(style, **slots)
+    return {"kind": kind, "style": style, "slots": rendered["slots"],
+            "author": author, "prompt": rendered["prompt"],
+            "adjusted": rendered["adjusted"]}
+
+
 @router.get("/api/audio/styles")
 def list_styles(kind: str | None = Query(None),
                 authorization: str | None = Header(default=None)):
@@ -281,25 +307,33 @@ def generate_audio(req: AudioRequest, request: Request,
                                     "retry_after_s": 120},
                             headers={"Retry-After": "120"})
 
-    style = req.style
-    if not style and req.context and not req.prompt:
-        # Keyword fallback only; the LLM path is ticket 08. Recorded either
-        # way so `author` never claims more than actually happened.
-        style = audio_styles.style_from_context(req.context, kind)
-    author = ("style chosen by keyword from context" if style and req.context
-              and not req.style else "style given by the caller" if req.style
-              else "roster default")
+    # Precedence: an explicit prompt > an explicit style > the map description
+    # (brain, else keyword rules) > the roster default. Slots the caller sent
+    # beat the brain's, so a pinned mood survives a context. ONE brain
+    # attempt here, not two: this request's budget is something2's 300 s and
+    # the build below already gets 240 of it (see audio_styles).
+    style, slots = req.style, dict(req.slots or {})
+    if req.prompt:
+        author = "prompt given by the caller (style template bypassed)"
+    elif style:
+        author = "style given by the caller"
+    elif req.context:
+        style, planned, author = audio_styles.plan_style(
+            req.context, kind, attempts=1)
+        slots = {**planned, **slots}
+    else:
+        author = "roster default"
 
     gen = generations.begin(kind=kind, name=name, route="/api/audio",
                             prompt=(req.prompt or ""), seed=req.seed,
-                            params={"style": style, "requested_duration_s":
+                            params={"style": style, "slots": slots, "requested_duration_s":
                                     req.duration_s, "author": author},
                             caller=caller)
 
     task = celery_app.send_task(
         "tasks.generate_audio_task",
         kwargs={"kind": kind, "name": name, "style": style,
-                "prompt": req.prompt, "slots": req.slots, "seed": req.seed,
+                "prompt": req.prompt, "slots": slots or None, "seed": req.seed,
                 "duration_s": req.duration_s, "gen_id": gen})
     generations.attach_task(gen, task.id)
     return _await_build(task.id, gen, kind, name, started, queued=True)

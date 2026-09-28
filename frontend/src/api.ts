@@ -970,9 +970,27 @@ export type AudioGenerateOutcome =
       retry_after_s: number | null
     }
 
+export interface AudioProposal {
+  kind: string
+  style: string
+  slots: Record<string, string | number>
+  /** Who chose: the brain (named), or the keyword rules and why. */
+  author: string
+  prompt: string
+  adjusted: string[]
+}
+
 export const audioApi = {
   styles: (kind?: string) =>
     request<AudioStyle[]>(`/api/audio/styles${kind ? `?kind=${kind}` : ''}`),
+
+  /** A style for a map description, from the brain or the rules. No GPU. */
+  propose: (context: string, kind: string) =>
+    request<AudioProposal>('/api/audio/propose', {
+      method: 'POST',
+      body: JSON.stringify({ context, kind }),
+    }),
+
 
   list: (params: { kind?: string; name?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams()

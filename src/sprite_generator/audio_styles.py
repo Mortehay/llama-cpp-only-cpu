@@ -38,6 +38,7 @@ the image side (CLAUDE.md). Exclusions go in `negative` only.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 # ACE-Step takes the time signature as a beat count ("2", "3", "4", "6"), so
@@ -272,11 +273,21 @@ STYLES: list[dict[str, Any]] = [
 # wants a style from a map name without waking the LLM. First match wins, so
 # order matters: "mine" before "village" because "mining village" is a dungeon
 # with houses attached.
+#
+# Music and ambience share the table; `style_from_context` skips entries of
+# the other kind, so "mine" is `dungeon` for music and `cave` for ambience.
 RULES: list[tuple[tuple[str, ...], str]] = [
     (("dungeon", "cave", "crypt", "mine", "tomb", "catacomb", "lair"), "dungeon"),
     (("battle", "war", "siege", "arena", "boss", "fortress"), "battle"),
     (("tavern", "inn", "alehouse", "pub", "feast"), "tavern"),
     (("village", "town", "hamlet", "farm", "market", "square"), "village"),
+    (("cave", "mine", "cavern", "dungeon", "crypt", "tomb", "catacomb",
+      "underground", "grotto"), "cave"),
+    (("rain", "storm", "drizzle", "monsoon", "wet"), "rain"),
+    (("night", "moon", "dusk", "midnight", "graveyard"), "night"),
+    (("village", "town", "hamlet", "market", "square", "city", "inn",
+      "tavern"), "village_day"),
+    (("forest", "wood", "grove", "glade", "valley", "meadow", "field"), "forest"),
 ]
 
 
@@ -326,6 +337,173 @@ def style_from_context(context: str, kind: str = MUSIC_KIND) -> str:
             if entry["kind"] == kind:
                 return style
     return default_for(kind)
+
+
+# ---------------------------------------------------------------------------
+# Choosing a style from a map description (ticket 08)
+# ---------------------------------------------------------------------------
+#
+# The brain SELECTS a roster entry and fills its slots; it never writes the
+# model prompt - `render` does, from the template. Everything it returns is
+# validated against the roster, anything invented is dropped AND NAMED in the
+# author note, and any failure falls back to the keyword rules. The
+# `worlds._llm_biome_plan` pattern, with a different vocabulary.
+
+def _rules_style_plan(context: str, kind: str = MUSIC_KIND
+                      ) -> tuple[str, dict[str, Any], str]:
+    text = (context or "").lower()
+    for words, style in RULES:
+        if _entry(style)["kind"] != kind:
+            continue
+        hit = next((w for w in words if w in text), None)
+        if hit:
+            return style, {}, f"style chosen by keyword rules ({hit!r})"
+    return (default_for(kind), {},
+            "style chosen by keyword rules (no keyword matched; the default)")
+
+
+def _parse_llm_answer(text: str, kind: str
+                      ) -> tuple[str | None, dict[str, Any], list[str]]:
+    """(style, slots, notes) from a brain's reply, or (None, {}, notes).
+
+    Pure, so the smoke can feed it garbage. A 3B model wraps JSON in prose,
+    code fences, or answers with a style from the wrong kind or one that does
+    not exist; all of that is survivable. Slots are passed through for
+    `render` to clamp - it names every correction itself.
+    """
+    import json
+    import re
+
+    notes: list[str] = []
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None, {}, ["answer held no JSON object"]
+    try:
+        obj = json.loads(m.group(0))
+    except ValueError:
+        return None, {}, ["answer's JSON could not be read"]
+    if not isinstance(obj, dict):
+        return None, {}, ["answer was not a JSON object"]
+
+    style = str(obj.get("style") or "").strip()
+    valid = {s["value"] for s in STYLES if s["kind"] == kind}
+    if style not in valid:
+        other = {s["value"] for s in STYLES}
+        notes.append(f"dropped {'wrong-kind' if style in other else 'invented'} "
+                     f"style {style!r}" if style else "no style named")
+        return None, {}, notes
+
+    raw = obj.get("slots") if isinstance(obj.get("slots"), dict) else {}
+    known = _entry(style)["slots"]
+    slots = {k: v for k, v in raw.items() if k in known}
+    dropped = sorted(set(raw) - set(known))
+    if dropped:
+        notes.append(f"dropped invented slot(s): {', '.join(dropped)}")
+    return style, slots, notes
+
+
+def _llm_model(base: str) -> str | None:
+    """The TEXT model to route to - explicitly, not the router's first entry.
+
+    llama.cpp runs as a router over /models and lists every GGUF it finds,
+    including image-model GGUFs that happen to live there (the Qwen-Image
+    transformer, 2026-09-28). Taking entry [0] would one day ask the router to
+    load a 9.7 GB image model as a chat model. Prefer an instruct model.
+    """
+    import requests
+
+    override = os.environ.get("AUDIO_LLM_MODEL") or os.environ.get("WORLD_LLM_MODEL")
+    if override:
+        return override
+    data = requests.get(f"{base}/v1/models", timeout=10).json().get("data") or []
+    ids = [d.get("id", "") for d in data]
+    for i in ids:
+        if "instruct" in i.lower():
+            return i
+    return None
+
+
+def _llm_style_plan(context: str, kind: str = MUSIC_KIND, attempts: int = 2
+                    ) -> tuple[str | None, dict[str, Any], str]:
+    """Ask the brain for a style. Returns (style|None, slots, note); never raises.
+
+    `attempts`: a cold router load measured >45 s on 2026-09-28 (worlds.py
+    recorded ~13 s earlier), so the FIRST call after the 120 s sleep can time
+    out while the load continues, and a second call then answers in ~1 s. Two
+    attempts suit an interactive propose; a generation passes 1, because two
+    45 s attempts plus the 240 s build budget exceed something2's 300 s cap.
+    """
+    import requests
+
+    base = os.environ.get("LLM_URL", "http://llm-server:8080")
+    timeout = float(os.environ.get("AUDIO_LLM_TIMEOUT", "45"))
+    options = []
+    for s in STYLES:
+        if s["kind"] != kind:
+            continue
+        slots = "; ".join(
+            f"{n}: {spec['min']}-{spec['max']}" if spec["type"] == "int"
+            else f"{n}: one of {spec['values']}"
+            for n, spec in s["slots"].items())
+        options.append(f'- "{s["value"]}" ({s["label"]}). Slots - {slots}')
+    prompt = (
+        f"Pick the {kind} for a map in a medieval fantasy pixel-art RPG.\n"
+        f"Map description: {context}\n\n"
+        f"Choose exactly ONE style from this list and fill its slots with "
+        f"allowed values only:\n" + "\n".join(options) + "\n\n"
+        'Reply with ONLY a JSON object, e.g. '
+        '{"style": "<one of the names above>", "slots": {"mood": "..."}}')
+    try:
+        model = _llm_model(base)
+        if not model:
+            return None, {}, "no text model loaded in llama.cpp"
+        # Two attempts: the router loads on demand and the first call after
+        # its 120 s sleep answers with a non-completion body (worlds.py).
+        text = None
+        timed_out = False
+        for attempt in range(1, attempts + 1):
+            try:
+                r = requests.post(
+                    f"{base}/v1/chat/completions",
+                    json={"model": model, "temperature": 0, "max_tokens": 200,
+                          "messages": [{"role": "user", "content": prompt}]},
+                    timeout=timeout)
+            except requests.Timeout:
+                timed_out = True
+                continue
+            if r.status_code == 200:
+                try:
+                    text = r.json()["choices"][0]["message"]["content"]
+                    break
+                except (ValueError, KeyError, IndexError):
+                    pass
+        if text is None:
+            return None, {}, (f"LLM did not answer within {timeout:.0f}s x "
+                              f"{attempts} (cold load?)" if timed_out
+                              else "LLM did not answer")
+        style, slots, notes = _parse_llm_answer(text, kind)
+        if not style:
+            return None, {}, f"{model}: " + "; ".join(notes)
+        note = f"style chosen by {model}"
+        return style, slots, note + (f"; {'; '.join(notes)}" if notes else "")
+    except Exception as e:  # noqa: BLE001 - the brain is optional
+        return None, {}, f"LLM call failed ({type(e).__name__})"
+
+
+def plan_style(context: str, kind: str = MUSIC_KIND, *, use_llm: bool = True,
+               attempts: int = 2) -> tuple[str, dict[str, Any], str]:
+    """(style, slots, author) for a map description: the brain, else the rules.
+
+    `author` always says which ran and, on a fallback, why - so a response can
+    never claim the LLM chose something it did not.
+    """
+    if use_llm:
+        style, slots, note = _llm_style_plan(context, kind, attempts)
+        if style:
+            return style, slots, note
+        rstyle, rslots, rnote = _rules_style_plan(context, kind)
+        return rstyle, rslots, f"{rnote}; LLM not used: {note}"
+    return _rules_style_plan(context, kind)
 
 
 def render(style: str | None = None, **slots: Any) -> dict[str, Any]:

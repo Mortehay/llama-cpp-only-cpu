@@ -123,6 +123,45 @@ def _rules():
     return f"{len(want)} contexts"
 
 
+@case("ambience keywords pick textures, and the author names the keyword")
+def _rules_ambience():
+    want = {
+        "abandoned dwarven mine, danger": "cave",   # music says dungeon
+        "the drunken boar inn": "village_day",
+        "a storm over the moors": "rain",
+        "graveyard at midnight": "night",
+        "a green valley giving way to cold highlands": "forest",
+        "an empty plain": "forest",                 # the default
+    }
+    for ctx, expect in want.items():
+        style, slots, author = st._rules_style_plan(ctx, "ambience")
+        assert style == expect, f"{ctx!r} -> {style}, wanted {expect}"
+        assert slots == {} and "keyword rules" in author, author
+    _, _, author = st._rules_style_plan("an empty plain", "ambience")
+    assert "no keyword matched" in author, author
+    return f"{len(want)} contexts"
+
+
+@case("a brain's answer is validated: garbage, wrong kind and inventions are named")
+def _llm_parse():
+    ok = st._parse_llm_answer(
+        'Sure! ```json\n{"style": "dungeon", "slots": {"mood": "lonely", '
+        '"tempo_bpm": 999, "kazoo": "yes"}}\n```', "music")
+    assert ok[0] == "dungeon", ok
+    assert ok[1] == {"mood": "lonely", "tempo_bpm": 999}, ok  # render clamps
+    assert any("kazoo" in n for n in ok[2]), ok
+    assert st.render(ok[0], **ok[1])["bpm"] == 80, "tempo not clamped"
+    for text, why in (("no json here", "no JSON"),
+                      ('{"style": "sea_shanty"}', "invented"),
+                      ('{"style": "cave"}', "wrong-kind"),
+                      ('{"style": ', "no JSON"),
+                      ("[1, 2]", "no JSON")):
+        style, slots, notes = st._parse_llm_answer(text, "music")
+        assert style is None and slots == {}, (text, style)
+        assert any(why in n for n in notes), (text, notes)
+    return "1 accepted, 5 refused with a reason"
+
+
 # ---------------------------------------------------------------------------
 # Bars
 # ---------------------------------------------------------------------------

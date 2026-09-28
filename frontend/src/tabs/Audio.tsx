@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { audioApi } from '../api'
-import type { AudioGenerateOutcome, AudioRow, AudioStyle } from '../api'
+import type { AudioGenerateOutcome, AudioProposal, AudioRow, AudioStyle } from '../api'
 import { useAsync } from '../hooks'
 
 type Kind = 'music' | 'ambience'
@@ -39,10 +39,38 @@ export default function Audio() {
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<AudioGenerateOutcome | null>(null)
+  const [context, setContext] = useState('')
+  const [proposing, setProposing] = useState(false)
+  const [proposal, setProposal] = useState<AudioProposal | null>(null)
+  const [proposeError, setProposeError] = useState<string | null>(null)
 
   // A style change resets its slots: another entry's mood value is not valid
-  // here, and the server would silently swap it for the default.
-  useEffect(() => setSlots({}), [kind, entry?.value])
+  // here, and the server would silently swap it for the default. A proposal
+  // sets style and slots together, so it marks its slots to survive this.
+  const keepSlots = useRef(false)
+  useEffect(() => {
+    if (keepSlots.current) {
+      keepSlots.current = false
+      return
+    }
+    setSlots({})
+  }, [kind, entry?.value])
+
+  async function propose() {
+    setProposing(true)
+    setProposeError(null)
+    try {
+      const p = await audioApi.propose(context.trim(), kind)
+      keepSlots.current = p.style !== entry?.value
+      setStyle(p.style)
+      setSlots(p.slots)
+      setProposal(p)
+    } catch (e) {
+      setProposeError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProposing(false)
+    }
+  }
 
   // While something is building, poll the list so it appears the moment it
   // finishes - the request that started it may already have answered 503.
@@ -104,6 +132,33 @@ export default function Audio() {
         </p>
 
         {styles.error && <div className="note err">{styles.error}</div>}
+
+        <div className="row tight" style={{ alignItems: 'flex-end', marginBottom: 10 }}>
+          <div style={{ flex: '3 1 300px' }}>
+            <label htmlFor="a-context">Describe the map (optional)</label>
+            <input
+              id="a-context"
+              value={context}
+              placeholder="e.g. abandoned dwarven mine, danger"
+              onChange={(e) => setContext(e.target.value)}
+            />
+          </div>
+          <button
+            className="btn ghost"
+            disabled={proposing || !context.trim()}
+            onClick={propose}
+            title="The brain picks a style and fills its slots; nothing is generated"
+          >
+            {proposing ? 'Asking… (a cold LLM can take ~1 min)' : 'Propose style'}
+          </button>
+        </div>
+        {proposeError && <div className="note err">{proposeError}</div>}
+        {proposal && (
+          <p className="hint" style={{ marginTop: 0 }}>
+            <strong>{proposal.style}</strong> — {proposal.author}
+            {proposal.adjusted.length > 0 && ` (corrected: ${proposal.adjusted.join('; ')})`}
+          </p>
+        )}
 
         <div className="row tight">
           <div style={{ flex: '1 1 150px' }}>
