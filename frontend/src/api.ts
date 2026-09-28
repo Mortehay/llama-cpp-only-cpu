@@ -566,6 +566,8 @@ export interface ActivityFeed {
   /** Still queued or running, OLDEST FIRST - the order the GPU will reach them. */
   active: ActivityItem[]
   counts: { source: string; status: string; n: number }[]
+  /** Every model seen in the feed, most used first; ignores the filters. */
+  models: { model: string; n: number }[]
 }
 
 export interface NamedEntity {
@@ -616,6 +618,7 @@ export const api = {
     source?: string
     status?: string
     kind?: string
+    model?: string
     q?: string
     limit?: number
     offset?: number

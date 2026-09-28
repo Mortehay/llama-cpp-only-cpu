@@ -431,6 +431,7 @@ ACTIVE = ("queued", "running")
 def list_activity(source: str | None = Query(None, description="api | job | ui"),
                   status: str | None = Query(None),
                   kind: str | None = Query(None),
+                  model: str | None = Query(None, description="exact image model string"),
                   q: str | None = Query(None, description="substring of prompt"),
                   limit: int = Query(60, ge=1, le=500),
                   offset: int = Query(0, ge=0),
@@ -462,6 +463,9 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
     if kind:
         where.append("kind = %s")
         params.append(kind)
+    if model:
+        where.append("model = %s")
+        params.append(model)
     if q:
         where.append("title ILIKE %s")
         params.append(f"%{q}%")
@@ -487,17 +491,26 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
                 "SELECT * FROM activity_v WHERE status = ANY(%s) "
                 "ORDER BY created_at ASC", (list(ACTIVE),))
             active = [_activity_row(dict(r)) for r in cur.fetchall()]
+            _attach_audio(cur, items + active)
 
             cur.execute("SELECT source, status, count(*) AS n FROM activity_v "
                         "GROUP BY source, status ORDER BY source, status")
             counts = [dict(r) for r in cur.fetchall()]
-            _attach_audio(cur, items + active)
+
+            # The model filter's options. Unfiltered, like `counts`: options
+            # narrowed by the current filter could not be used to leave it.
+            # Job rows carry no model in the view, so they never appear here.
+            cur.execute("SELECT model, count(*) AS n FROM activity_v "
+                        "WHERE model IS NOT NULL "
+                        "GROUP BY model ORDER BY n DESC, model")
+            models = [dict(r) for r in cur.fetchall()]
     except psycopg2.Error as e:
         logger.exception("activity listing failed")
         raise HTTPException(status_code=503, detail=f"database error: {e}")
 
     return {"total": total, "limit": limit, "offset": offset,
-            "items": items, "active": active, "counts": counts}
+            "items": items, "active": active, "counts": counts,
+            "models": models}
 
 
 @router.get("/api/entities")
