@@ -23,6 +23,7 @@ const PAGE = 50
 export default function Activity() {
   const [source, setSource] = useState('')
   const [status, setStatus] = useState('')
+  const [model, setModel] = useState('')
   const [offset, setOffset] = useState(0)
 
   const feed = useAsync(
@@ -30,10 +31,11 @@ export default function Activity() {
       api.activity({
         source: source || undefined,
         status: status || undefined,
+        model: model || undefined,
         limit: PAGE,
         offset,
       }),
-    [source, status, offset],
+    [source, status, model, offset],
   )
 
   // Poll only while something is moving. A machine at rest does not need a
@@ -87,6 +89,22 @@ export default function Activity() {
           <option value="cancelled">Cancelled</option>
         </select>
 
+        <select
+          value={model}
+          onChange={(e) => {
+            setModel(e.target.value)
+            setOffset(0)
+          }}
+          title="The image model that drew it (llm_name) - not a language model"
+        >
+          <option value="">Any model</option>
+          {(feed.data?.models ?? []).map((m) => (
+            <option key={m.model} value={m.model}>
+              {shortModel(m.model)} ({m.n})
+            </option>
+          ))}
+        </select>
+
         <div style={{ flex: "1 1 auto" }} />
         <span className="muted">
           {total} {total === 1 ? 'entry' : 'entries'}
@@ -105,6 +123,9 @@ export default function Activity() {
               <th>What</th>
               <th style={{ width: 110 }}>Source</th>
               <th style={{ width: 110 }}>Status</th>
+              <th style={{ width: 170 }} title="The image model that drew it (llm_name) - not a language model">
+                Model
+              </th>
               <th style={{ width: 200 }}>Requested by</th>
               <th style={{ width: 90 }}>Took</th>
               <th style={{ width: 150 }}>When</th>
@@ -182,6 +203,17 @@ function PendingPanel({ active }: { active: ActivityItem[] }) {
   )
 }
 
+/**
+ * `"<base>+<lora>"` repo ids run past 60 characters; the org prefix is what a
+ * row can lose. The full string stays in the tooltip and the details panel.
+ */
+function shortModel(m: string): string {
+  return m
+    .split('+')
+    .map((p) => p.split('/').pop() || p)
+    .join(' + ')
+}
+
 function Row({ item }: { item: ActivityItem }) {
   const [open, setOpen] = useState(false)
 
@@ -234,6 +266,9 @@ function Row({ item }: { item: ActivityItem }) {
             {item.status}
           </span>
         </td>
+        <td className="muted" title={item.model ?? undefined}>
+          {item.model ? shortModel(item.model) : '—'}
+        </td>
         <td className="muted">{item.requested_by}</td>
         <td className="muted">
           {item.duration_ms != null ? `${(item.duration_ms / 1000).toFixed(1)}s` : '—'}
@@ -245,7 +280,7 @@ function Row({ item }: { item: ActivityItem }) {
 
       {open && (
         <tr>
-          <td colSpan={7} style={{ background: 'rgba(255,255,255,.02)' }}>
+          <td colSpan={8} style={{ background: 'rgba(255,255,255,.02)' }}>
             <div style={{ fontSize: 12, lineHeight: 1.6 }}>
               <div>
                 <strong>Prompt:</strong> {item.title}
