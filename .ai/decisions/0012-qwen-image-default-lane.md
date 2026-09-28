@@ -249,6 +249,28 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    fidelity visibly lower than the 20-step baseline. A speed/quality trade,
    not a free win - so it is the owner's call which the UI preselects.
 
+2c. **A persistent Qwen process (spike, 2026-09-28): works, costs RAM.** Each
+   request today starts two fresh subprocesses, so ~75 of a cold ~100-110 s
+   is re-loading. Spike: one process loads the NF4 encoder and the Q2_K +
+   Lightning transformer once, parks both in host RAM, and per request moves
+   encoder -> card -> encode -> host, then transformer -> card -> denoise.
+   Three requests, all correct images:
+
+   | | R1 | R2 | R3 |
+   |---|---|---|---|
+   | total | 43.9 s | 45.9 s | 35.9 s |
+   | of which CPU<->GPU swaps | ~9.4 s | ~18.5 s | ~9.8 s |
+   | denoise 8 + decode | 28.3 s | 25.8 s | 25.6 s |
+
+   One-time load ~85 s. Encoder `.to("cpu")` is the slowest move (~4 s, NF4).
+   **Resident host RAM ~17 GiB** (RSS 13.3 GiB after load, 16.9 GiB after the
+   first round trip) against a WSL VM of 23 GiB total - the reason it is not
+   built: the worker would sit one audio or SDXL job away from the OOM killer.
+   Precondition if wanted: raise `.wslconfig` `memory=` (still 24 GB from the
+   i3 era; the host now has 47.8 GB) and make the gateway release it on a
+   model switch. Spike VRAM was measured with the gateway's SD1.5 pipeline
+   (2,054 MiB) still resident in the worker, which a real run evicts first.
+
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,
