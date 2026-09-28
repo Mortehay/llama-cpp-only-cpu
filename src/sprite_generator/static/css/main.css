@@ -94,3 +94,40 @@ nav .brand { font-weight: 700; font-size: 16px; color: var(--accent2); margin-ri
 .crop-btn-container { margin-top: 12px; display: flex; justify-content: center; }
 .btn-crop { background: var(--surface); border: 1px solid var(--accent); color: var(--accent2); font-size: 11px; padding: 4px 10px; border-radius: 6px; cursor: pointer; font-weight: 600; display: flex; align-items: center; gap: 4px; }
 .btn-crop:hover { background: var(--accent); color: #fff; }
+
+/* Model gateway: nav indicator, switcher and switching popup */
+.gw-indicator {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 46vw;
+  background: var(--card); border: 1px solid var(--border); color: var(--text);
+  font: inherit; font-size: 12px; font-weight: 600;
+  padding: 6px 12px; border-radius: 999px; cursor: pointer; transition: border-color .2s;
+}
+.gw-indicator:hover { border-color: var(--accent); }
+.gw-indicator > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gw-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.gw-indicator.is-active .gw-dot { background: var(--success); }
+.gw-indicator.is-switching .gw-dot { background: var(--warn); animation: pulse 1s infinite; }
+.gw-indicator.is-error .gw-dot { background: var(--danger); }
+.gw-extra { color: var(--muted); font-weight: 400; }
+.gw-line { font-size: 13px; line-height: 1.5; }
+.gw-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.gw-label { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 14px 0 6px; }
+.gw-select { width: 100%; padding: 8px 10px; background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 13px; }
+.gw-message { margin-top: 10px; padding: 10px 12px; border-radius: 6px; font-size: 12px; line-height: 1.45; background: rgba(251, 191, 36, 0.1); border: 1px solid rgba(251, 191, 36, 0.3); color: #fcd34d; }
+.gw-message.is-error { background: rgba(239, 68, 68, 0.1); border-color: rgba(239, 68, 68, 0.3); color: #f87171; }
+.gw-message .btn-sm { margin-top: 8px; }
+.gw-pending { max-height: 200px; overflow-y: auto; font-size: 12px; }
+.gw-pending-row { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.gw-pending-row:last-child { border-bottom: none; }
+.gw-pending-row .gw-sub { margin: 0; }
+.progress-fill.indeterminate { width: 35% !important; animation: gw-slide 1.2s ease-in-out infinite; }
+@keyframes gw-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+
+/* Deferred rows in the Live Tasks panel: waiting, not failed. */
+.tag-waiting { background: rgba(136, 132, 168, 0.15); color: var(--muted); border: 1px solid rgba(136, 132, 168, 0.3); }
+.progress-info.is-deferred { color: var(--warn); }
+
+@media (max-width: 640px) {
+  nav { flex-wrap: wrap; padding: 10px 16px; }
+  .gw-indicator { max-width: 100%; }
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, isGguf, type Job } from '../api'
+import { api, deferredReason, isGguf, type Job } from '../api'
 import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /**
@@ -191,7 +191,9 @@ export default function Tiles() {
           <h2>
             Tile job <code>{job.job_id.slice(0, 8)}</code> · {job.status}
           </h2>
-          <div className="muted">{job.progress_msg ?? ''}</div>
+          <div className={`muted ${deferredReason(job.progress_msg) != null ? 'waiting' : ''}`}>
+            {job.progress_msg ?? ''}
+          </div>
           <div className="bar">
             <i style={{ width: `${job.progress_pct}%` }} />
           </div>

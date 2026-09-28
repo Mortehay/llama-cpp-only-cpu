@@ -28,8 +28,11 @@ import random
 import logging
 import requests
 from collections import namedtuple
-from celery import Celery, chord, group
-from celery.signals import worker_ready, task_prerun, task_postrun
+from celery import Celery, Task, chord, group
+from celery.signals import (worker_ready, task_prerun, task_postrun,
+                            before_task_publish)
+
+import model_gateway
 
 from PIL import Image, ImageDraw
 import base64
@@ -131,11 +134,24 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DB_URL = os.environ.get("DB_URL")
 IMAGES_DIR = "/app/images"
 
+class GatedTask(Task):
+    """Every task's base. A task listed in model_gateway.GATED asks the gateway
+    before its body runs: run, switch models first, or wait (a Celery retry of
+    the same task id). See model_gateway.py and .ai/specs/model-gateway/."""
+
+    def __call__(self, *args, **kwargs):
+        if self.name in model_gateway.GATED and not self.request.called_directly:
+            refusal = _gateway_admit(self, args, kwargs)
+            if refusal is not None:
+                return refusal
+        return super().__call__(*args, **kwargs)
+
+
 # `include` rather than an import: map_tasks imports this module for the app,
 # so importing it back here at module scope would be circular. Celery loads it
 # after the app exists, which is exactly when it is safe.
 celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL,
-                    include=["map_tasks"])
+                    include=["map_tasks"], task_cls=GatedTask)
 
 # Redis client for cooperative cancellation flags
 import redis as _redis
@@ -4122,6 +4138,131 @@ def _snapshot_before_task(**_):
 @task_postrun.connect
 def _snapshot_after_task(**_):
     _cache_device_snapshot(_read_device_info())
+
+
+# --- Model gateway ------------------------------------------------------------
+#
+# model_gateway.py holds the rules; these are the worker-side hooks. Spec:
+# .ai/specs/model-gateway/plan.md.
+
+# Tasks whose first argument is a jobs-table id, so a deferral can show there.
+_JOB_ROW_TASKS = {"tasks.build_tile_job", "tasks.build_sheet_job",
+                  "maps.build_map_job", "maps.resolve_map_props"}
+
+
+@before_task_publish.connect
+def _gateway_register(sender=None, headers=None, body=None, **_):
+    """Every publish of a gated task - from the API or from inside a task -
+    joins the pending list the gateway decides on. Retries republish the same
+    id and keep their original place (HSETNX)."""
+    if sender not in model_gateway.GATED:
+        return
+    try:
+        args, kwargs = (body[0], body[1]) if isinstance(body, (list, tuple)) else ((), {})
+        model = model_gateway.model_of(sender, args, kwargs)
+        if model:
+            model_gateway.register(headers["id"], sender, model)
+    except Exception as e:
+        logger.warning("gateway: could not register %s: %s", sender, e)
+
+
+@task_postrun.connect
+def _gateway_finished(task_id=None, task=None, state=None, **_):
+    """Drop the task from the pending list unless it is only being retried."""
+    if task is None or task.name not in model_gateway.GATED or state == "RETRY":
+        return
+    model_gateway.unregister(task_id)
+    active = model_gateway.get_active()
+    if active:
+        model_gateway.touch(active.get("model"))
+
+
+def _note_deferred(task, args, kwargs, reason: str) -> None:
+    """Say so where the UI looks: the sprite_images row, or the jobs row."""
+    msg = f"Deferred - {reason}"[:250]
+    try:
+        update_task_record(task.request.id, progress_msg=msg)
+        if task.name in _JOB_ROW_TASKS:
+            job_id = args[0] if args else next(iter(kwargs.values()), None)
+            if job_id:
+                _job_update(job_id, progress_msg=msg)
+    except Exception as e:
+        logger.debug("gateway: could not note deferral: %s", e)
+
+
+def _gateway_switch(model: str, pinned: bool) -> None:
+    """Free the card and, for a diffusers checkpoint, load `model` ahead of the
+    job, timing it for the UI's next estimate. The active model is set FIRST,
+    so facades asking during the load already see the new one."""
+    model_gateway.set_active(model, pinned)
+    model_gateway.begin_switch(model, "loading")
+    started, load_s = time.time(), None
+    try:
+        _evict_pipelines(f"a model switch to {model}")
+        release_vram_cache("model switch")
+        if model_gateway.preloadable(model) and not unavailable_reason(model):
+            if get_sd_pipeline(model):
+                load_s = time.time() - started
+    except Exception as e:
+        logger.warning("gateway: preload of %s failed (%s); the job will load "
+                       "it itself", model, e)
+    finally:
+        model_gateway.end_switch(model, load_s)
+    logger.info("gateway: switched to %s in %.1fs", model, time.time() - started)
+
+
+def _gateway_admit(task, args, kwargs):
+    """None to run the body; a result dict to return instead (sync deferral);
+    or raises Retry to wait."""
+    tid = task.request.id
+    model = model_gateway.model_of(task.name, args, kwargs)
+    if not model:
+        return None
+    model_gateway.register(tid, task.name, model)
+    active, now = model_gateway.get_active(), time.time()
+    action, reason = model_gateway.decide(model, tid, active,
+                                          model_gateway.get_pending(), now)
+    if action == "defer":
+        if task.name in model_gateway.SYNC_TASKS:
+            model_gateway.unregister(tid)
+            return {"error": f"Model gateway: requested {model}, but {reason}.",
+                    "error_kind": "model_deferred",
+                    "retry_after_s": model_gateway.retry_after_s(active, now)}
+        if task.request.retries == 0:
+            logger.info("gateway: deferring %s %s (%s): %s", task.name, tid,
+                        model, reason)
+        model_gateway.mark_deferred(tid, reason)
+        _note_deferred(task, args, kwargs, reason)
+        raise task.retry(countdown=model_gateway.RECHECK_S, max_retries=None)
+    if action == "switch":
+        _gateway_switch(model, pinned=False)
+    model_gateway.mark_running(tid)
+    model_gateway.touch(model)
+    return None
+
+
+@celery_app.task(name="tasks.model_switch_task")
+def model_switch_task(model: str):
+    """The UI's switch. Not gated: the API already set the active model, so
+    the old model's queued jobs defer and this reaches the card next."""
+    model_gateway.set_switch_phase("loading")
+    active = model_gateway.get_active() or {}
+    if active.get("model") != model:
+        # Superseded by a later switch before this ran.
+        return {"status": "superseded", "model": model}
+    _gateway_switch(model, pinned=True)
+    return {"status": "switched", "model": model}
+
+
+@worker_ready.connect
+def _gateway_reap(**_):
+    """A pending entry marked running belongs to a task this worker's previous
+    life died holding; it will never post-run. Deferred entries stay: their
+    retry messages are redelivered by the broker."""
+    for tid, p in model_gateway.get_pending().items():
+        if p.get("running"):
+            model_gateway.unregister(tid)
+    model_gateway.end_switch("", None)
 
 
 # ---------------------------------------------------------------------------

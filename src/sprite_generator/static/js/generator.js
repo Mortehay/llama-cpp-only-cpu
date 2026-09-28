@@ -8,6 +8,9 @@ let coreBusy = false;
 document.addEventListener('DOMContentLoaded', () => {
     updateQueue();
     setInterval(updateQueue, 3000);
+    // Model gateway: same cadence as the queue. See the gateway section below.
+    updateGateway();
+    setInterval(updateGateway, 3000);
     
     // Directions are in the markup; the action checkboxes are rendered from
     // /api/action-catalog and bind their own listeners in renderActions().
@@ -243,6 +246,13 @@ const armedDeletes = new Set();
 // nobody was holding. The two are merged here rather than given a second
 // panel: from the operator's side it is one queue of work on one GPU.
 
+// The model gateway's worker writes progress_msg = "Deferred - <reason>" on a
+// task or job row that is waiting for its model to become active. That row is
+// waiting, not failed and not progressing, so it gets a quiet tag instead of a
+// pulsing 0%.
+const DEFERRED_TAG = '<span class="tag tag-waiting">Deferred</span>';
+function isDeferredMsg(msg) { return /^Deferred\b/.test(msg || ''); }
+
 const JOB_TAGS = {
   done: '<span class="tag tag-success">Done</span>',
   failed: '<span class="tag tag-danger">Failed</span>',
@@ -255,8 +265,10 @@ function renderJobCard(j) {
   const dirs = (spec.directions || []).length;
   const title = `Sheet: ${acts} · ${dirs} dir · ${spec.frames || '?'}f`;
   const running = !JOB_TAGS[j.status];
+  const deferred = running && isDeferredMsg(j.progress_msg);
   const tag = JOB_TAGS[j.status]
-    || `<span class="tag tag-working pulse">${j.progress_pct || 0}%</span>`;
+    || (deferred ? DEFERRED_TAG
+                 : `<span class="tag tag-working pulse">${j.progress_pct || 0}%</span>`);
 
   let body = '';
   if (j.status === 'failed' && j.error) {
@@ -269,7 +281,8 @@ function renderJobCard(j) {
          + ` style="width:100%; margin-top:6px; border-radius:4px;`
          + ` image-rendering: pixelated; background: rgba(0,0,0,.25);" /></a>`;
   } else if (running) {
-    body = `<span class="progress-info">${esc(j.progress_msg || j.stage || 'queued')}</span>`
+    body = `<span class="progress-info${deferred ? ' is-deferred' : ''}">`
+         + `${esc(j.progress_msg || j.stage || 'queued')}</span>`
          + `<div class="progress-bg"><div class="progress-fill"`
          + ` style="width: ${j.progress_pct || 0}%"></div></div>`;
   }
@@ -344,9 +357,11 @@ async function updateQueue() {
       } else if (t.file_path) {
          statusTag = '<span class="tag tag-success">Done</span>';
       } else {
-         statusTag = `<span class="tag tag-working pulse">${t.progress_pct}%</span>`;
+         const deferred = isDeferredMsg(t.progress_msg);
+         statusTag = deferred ? DEFERRED_TAG
+                              : `<span class="tag tag-working pulse">${t.progress_pct}%</span>`;
          progressLine = `
-          <span class="progress-info">${esc(t.progress_msg || 'Preparing...')}</span>
+          <span class="progress-info${deferred ? ' is-deferred' : ''}">${esc(t.progress_msg || 'Preparing...')}</span>
           <div class="progress-bg"><div class="progress-fill" style="width: ${t.progress_pct}%"></div></div>
          `;
       }
@@ -792,4 +807,282 @@ function pollTaskStatus(taskId, mode) {
       }
     } catch (e) { console.error(e); }
   }, 1500);
+}
+
+// --- model gateway ---------------------------------------------------------
+//
+// One active image model holds the 12 GB card; jobs for any other model are
+// deferred by the worker instead of forcing a reload mid-queue. This shows the
+// active model in the nav, offers the switch, and blocks the page with a popup
+// while a switch is in progress. Spec: .ai/specs/model-gateway/plan.md.
+//
+// Auth: the rest of this file sends no bearer token (it predates enforcement).
+// The gateway calls send the key the React UI stores under `sprite.apiToken`
+// (Settings tab) - same origin, so the same localStorage. Without one, the
+// endpoints answer 401 and the indicator says so rather than looking broken.
+
+const GW_TOKEN_KEY = 'sprite.apiToken';
+let gwState = null;          // last GET /api/model-gateway body
+let gwFetchedAt = 0;         // Date.now() when gwState arrived
+let gwHiddenSwitch = null;   // switching.started the user chose to hide
+let gwTicker = null;         // 1s refresh of the popup's elapsed time
+let gwSelectTouched = false; // do not reset a choice the user is making
+
+function gwAuthHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  let token = '';
+  try { token = localStorage.getItem(GW_TOKEN_KEY) || ''; } catch (e) {}
+  if (token) h['Authorization'] = `Bearer ${token}`;
+  return h;
+}
+
+function gwLabel(model) {
+  if (!model) return '';
+  const c = ((gwState && gwState.choices) || []).find(x => x.value === model);
+  return c ? c.label : model;
+}
+
+function gwClock(s) {
+  s = Math.max(0, Math.round(s || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function updateGateway() {
+  try {
+    const res = await fetch('/api/model-gateway', { headers: gwAuthHeaders() });
+    if (!res.ok) {
+      renderGatewayIndicator(null, res.status === 401 || res.status === 403
+        ? 'API key needed - set it in the React UI Settings tab'
+        : `status unavailable (HTTP ${res.status})`);
+      return;
+    }
+    gwState = await res.json();
+    gwFetchedAt = Date.now();
+    renderGatewayIndicator(gwState);
+    renderSwitchingPopup();
+    const overlay = document.getElementById('gw-overlay');
+    if (overlay && overlay.style.display !== 'none') renderGatewayModal();
+  } catch (e) {
+    renderGatewayIndicator(null, 'status unavailable');
+    console.error('model gateway:', e);
+  }
+}
+
+function renderGatewayIndicator(st, problem) {
+  const btn = document.getElementById('gw-indicator');
+  const label = document.getElementById('gw-indicator-label');
+  const extra = document.getElementById('gw-indicator-extra');
+  if (!btn || !label || !extra) return;
+  btn.classList.remove('is-active', 'is-switching', 'is-error');
+
+  if (!st) {
+    btn.classList.add('is-error');
+    label.textContent = 'model: ?';
+    extra.textContent = problem || '';
+    btn.title = problem || '';
+    return;
+  }
+
+  const a = st.active;
+  if (st.switching) {
+    btn.classList.add('is-switching');
+    label.textContent = `switching to ${gwLabel(st.switching.to)}`;
+  } else if (a) {
+    btn.classList.add('is-active');
+    label.textContent = gwLabel(a.model);
+  } else {
+    label.textContent = 'no model yet';
+  }
+
+  const bits = [];
+  if (a && a.pinned && a.pin_release_in_s != null) {
+    bits.push(`pinned · releases in ${gwClock(a.pin_release_in_s)}`);
+  } else if (a && a.pinned) {
+    bits.push('pinned');
+  }
+  let deferred = 0, queued = 0, running = 0;
+  Object.values(st.by_model || {}).forEach(m => {
+    deferred += m.deferred || 0; queued += m.queued || 0; running += m.running || 0;
+  });
+  if (running) bits.push(`${running} running`);
+  if (queued) bits.push(`${queued} queued`);
+  if (deferred) bits.push(`${deferred} deferred`);
+  extra.textContent = bits.length ? '· ' + bits.join(' · ') : '';
+  btn.title = 'Active image model - click to switch' + (a ? `\n${a.model}` : '');
+}
+
+function openGatewayModal() {
+  const overlay = document.getElementById('gw-overlay');
+  if (!overlay) return;
+  gwSelectTouched = false;
+  setGatewayMessage(null);
+  overlay.style.display = 'flex';
+  renderGatewayModal();
+  updateGateway();
+}
+
+function closeGatewayModal() {
+  const overlay = document.getElementById('gw-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function renderGatewayModal() {
+  const cur = document.getElementById('gw-current');
+  const sel = document.getElementById('gw-select');
+  const list = document.getElementById('gw-pending');
+  if (!cur || !sel || !list) return;
+  const st = gwState;
+  if (!st) {
+    cur.textContent = 'Status not loaded yet.';
+    return;
+  }
+
+  const a = st.active;
+  cur.innerHTML = a
+    ? `Active: <strong>${esc(gwLabel(a.model))}</strong>`
+      + (a.pinned ? ` · pinned${a.pin_release_in_s != null
+          ? ` · releases in ${gwClock(a.pin_release_in_s)}` : ''}` : '')
+      + `<div class="gw-sub">idle ${gwClock(a.idle_for_s)} · deferred jobs for other `
+      + `models run after ${gwClock(st.idle_s)} idle</div>`
+    : 'No model is active yet.';
+
+  // Rebuild the options only while the user is not mid-choice, and keep the
+  // selection: a 3 s poll must not close the dropdown or reset it.
+  if (!gwSelectTouched) {
+    const keep = sel.value || (a && a.model) || '';
+    const opt = c => `<option value="${esc(c.value)}"${c.available ? '' : ' disabled'}>`
+      + `${esc(c.label)}${c.available ? '' : ' - not on disk'}</option>`;
+    const choices = st.choices || [];
+    const normal = choices.filter(c => !c.fixed).map(opt).join('');
+    const fixed = choices.filter(c => c.fixed).map(opt).join('');
+    sel.innerHTML = normal
+      + (fixed ? `<optgroup label="Fixed-model jobs">${fixed}</optgroup>` : '');
+    if (keep && choices.some(c => c.value === keep && c.available)) sel.value = keep;
+    sel.onchange = () => { gwSelectTouched = true; setGatewayMessage(null); };
+    sel.onfocus = () => { gwSelectTouched = true; };
+  }
+
+  const pending = st.pending || [];
+  list.innerHTML = pending.length
+    ? pending.map(p => {
+        const state = p.running
+          ? '<span class="tag tag-working">Running</span>'
+          : p.deferred
+            ? `<span class="tag tag-waiting" title="${esc(p.deferred)}">Deferred</span>`
+            : '<span class="tag tag-core">Queued</span>';
+        const why = p.deferred && !p.running
+          ? `<div class="gw-sub">${esc(p.deferred)}</div>` : '';
+        return `<div class="gw-pending-row"><div>`
+          + `<div>${esc(p.task || 'task')}</div>`
+          + `<div class="gw-sub">${esc(gwLabel(p.model))}</div>${why}</div>`
+          + `<div>${state}</div></div>`;
+      }).join('')
+    : '<div class="gw-sub">Nothing queued.</div>';
+}
+
+function setGatewayMessage(html, isError) {
+  const el = document.getElementById('gw-message');
+  if (!el) return;
+  if (!html) { el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  el.classList.toggle('is-error', !!isError);
+  el.innerHTML = html;
+}
+
+async function gatewaySwitch(force) {
+  const sel = document.getElementById('gw-select');
+  const model = sel ? sel.value : '';
+  if (!model) { setGatewayMessage('Pick a model first.', true); return; }
+  const label = gwLabel(model);
+
+  if (force) {
+    const idle = gwState ? `${gwState.idle_s}s` : 'the idle window';
+    // confirm() can be silenced by the browser (see showTaskError); if it is,
+    // this returns false and nothing is sent, which is the safe direction.
+    if (!confirm(`Force switch to ${label}?\n\n`
+        + 'It takes effect now. Jobs already queued for other models are '
+        + `deferred: they wait until ${label} has been idle for ${idle}, `
+        + 'then run. A job that is already running is not interrupted - '
+        + 'the switch waits for it.')) return;
+  }
+
+  const btns = ['gw-switch-btn', 'gw-force-btn'].map(id => document.getElementById(id));
+  btns.forEach(b => { if (b) b.disabled = true; });
+  try {
+    const res = await fetch('/api/model-gateway/switch', {
+      method: 'POST',
+      headers: gwAuthHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ model, force: !!force }),
+    });
+    if (res.status === 409) {
+      setGatewayMessage(`${esc(await errText(res))}<br>`
+        + `<button class="btn-sm" onclick="gatewaySwitch(true)">Force switch now</button>`);
+      return;
+    }
+    if (!res.ok) {
+      const hint = res.status === 401 || res.status === 403
+        ? ' - this needs an API key with the generate scope (React UI, Settings tab).' : '';
+      setGatewayMessage(`Switch failed (HTTP ${res.status}): ${esc(await errText(res))}${esc(hint)}`, true);
+      return;
+    }
+    const body = await res.json();
+    gwSelectTouched = false;
+    if (body.status === 'already_active') {
+      setGatewayMessage(`${esc(label)} is already the active model.`);
+    } else {
+      setGatewayMessage(null);
+      closeGatewayModal();
+      gwHiddenSwitch = null; // a switch the user just asked for is shown
+    }
+    updateGateway();
+  } catch (e) {
+    setGatewayMessage('Switch failed: ' + esc(e.message), true);
+  } finally {
+    btns.forEach(b => { if (b) b.disabled = false; });
+  }
+}
+
+const GW_PHASES = {
+  queued: 'Waiting for the worker to pick up the switch.',
+  waiting: 'Waiting for the running job to finish - it is never interrupted.',
+  loading: 'Loading the new model onto the GPU.',
+};
+
+function renderSwitchingPopup() {
+  const pop = document.getElementById('gw-switching');
+  if (!pop) return;
+  const sw = gwState && gwState.switching;
+
+  // Done only when `switching` is null - never on elapsed time.
+  if (!sw || gwHiddenSwitch === sw.started) {
+    pop.style.display = 'none';
+    if (!sw) gwHiddenSwitch = null;
+    if (gwTicker) { clearInterval(gwTicker); gwTicker = null; }
+    return;
+  }
+
+  const expected = Number(sw.expected_s) || 10;
+  const elapsed = (Number(sw.elapsed_s) || 0) + (Date.now() - gwFetchedAt) / 1000;
+  const over = elapsed > expected;
+  document.getElementById('gw-sw-title').textContent =
+    `Switching model to ${gwLabel(sw.to)}, please wait`;
+  document.getElementById('gw-sw-phase').textContent =
+    (GW_PHASES[sw.phase] || sw.phase || '')
+    + (sw.from ? ` (from ${gwLabel(sw.from)})` : '');
+  document.getElementById('gw-sw-time').textContent =
+    `elapsed ${Math.round(elapsed)}s / expected ~${Math.round(expected)}s`
+    + (over ? ' - taking longer than the last load' : '');
+  const bar = document.getElementById('gw-sw-bar');
+  bar.classList.toggle('indeterminate', over);
+  bar.style.width = over ? '' : `${Math.min(100, (elapsed / expected) * 100)}%`;
+  pop.style.display = 'flex';
+
+  // Tick the elapsed figure between 3 s polls.
+  if (!gwTicker) gwTicker = setInterval(renderSwitchingPopup, 1000);
+}
+
+function hideSwitchingPopup() {
+  const sw = gwState && gwState.switching;
+  gwHiddenSwitch = sw ? sw.started : null;
+  renderSwitchingPopup();
 }

@@ -194,6 +194,11 @@ services:
       # The build is NOT cancelled when it expires, so this is a patience
       # setting, not a budget. Set it to 1 to exercise that path.
       - AUDIO_GENERATE_TIMEOUT_S=${AUDIO_GENERATE_TIMEOUT_S:-240}
+      # Model gateway (model_gateway.py): how long a model selected in the UI
+      # holds the card after its last job, and how often a deferred job
+      # re-asks. Both services read them, so both must be listed here.
+      - MODEL_SWITCH_IDLE_S=${MODEL_SWITCH_IDLE_S:-300}
+      - MODEL_GATEWAY_RECHECK_S=${MODEL_GATEWAY_RECHECK_S:-5}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path
@@ -268,6 +273,11 @@ services:
       # The build is NOT cancelled when it expires, so this is a patience
       # setting, not a budget. Set it to 1 to exercise that path.
       - AUDIO_GENERATE_TIMEOUT_S=${AUDIO_GENERATE_TIMEOUT_S:-240}
+      # Model gateway (model_gateway.py): how long a model selected in the UI
+      # holds the card after its last job, and how often a deferred job
+      # re-asks. Both services read them, so both must be listed here.
+      - MODEL_SWITCH_IDLE_S=${MODEL_SWITCH_IDLE_S:-300}
+      - MODEL_GATEWAY_RECHECK_S=${MODEL_GATEWAY_RECHECK_S:-5}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path

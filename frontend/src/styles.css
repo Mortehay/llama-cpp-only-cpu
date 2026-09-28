@@ -42,6 +42,16 @@ a { color: var(--accent2); }
 .nav .mode { font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; }
 .mode.open { background: rgba(251,191,36,.15); color: #fcd34d; border: 1px solid rgba(251,191,36,.25); }
 .mode.locked { background: rgba(52,211,153,.15); color: #6ee7b7; border: 1px solid rgba(52,211,153,.25); }
+/* Active image model (components/ModelGateway.tsx). A button, so it is
+   reachable by keyboard; styled down to the pill next to it. */
+.mode.model {
+  background: rgba(124,106,247,.15); color: #c4b5fd; border: 1px solid rgba(124,106,247,.3);
+  font-family: inherit; cursor: pointer; display: inline-flex; gap: 6px; align-items: center;
+  max-width: 46vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mode.model:hover { border-color: var(--accent2); }
+.mode.model.busy { background: rgba(251,191,36,.15); color: #fcd34d; border-color: rgba(251,191,36,.3); }
+.mode.model .badge { font-weight: 500; opacity: .8; }
 
 .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 28px 64px; }
 
@@ -118,6 +128,13 @@ textarea { resize: vertical; min-height: 72px; }
 
 .bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 8px; }
 .bar > i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+/* No honest estimate left (or past it): a sweep, not a stuck percentage. */
+.bar.indeterminate > i { width: 30%; transition: none; animation: bar-sweep 1.4s ease-in-out infinite; }
+@keyframes bar-sweep { from { margin-left: -30%; } to { margin-left: 100%; } }
+
+/* Deferred by the model gateway: waiting its turn, not failed. */
+.tag.wait { background: rgba(251,191,36,.15); color: #fcd34d; }
+.waiting { color: #fcd34d; }
 
 /* --- grids --------------------------------------------------------------- */
 

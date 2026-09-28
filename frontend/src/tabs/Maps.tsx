@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, type Job, type MapSummary, type PropsStatus, type Terrain } from '../api'
+import { api, deferredReason, type Job, type MapSummary, type PropsStatus, type Terrain } from '../api'
 import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /**
@@ -385,7 +385,7 @@ export default function Maps() {
         <div className="card">
           <h2>{job.status === 'done' ? 'Map' : 'Building'}</h2>
           {job.status !== 'done' && (
-            <div className="note">
+            <div className={`note ${deferredReason(job.progress_msg) != null ? 'warn' : ''}`}>
               {job.progress_pct}% — {job.progress_msg}
             </div>
           )}

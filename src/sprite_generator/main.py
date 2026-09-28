@@ -47,6 +47,10 @@ app.include_router(a1111_router)
 from jobs import router as jobs_router
 app.include_router(jobs_router)
 
+# One active image model at a time; see model_gateway.py.
+from gateway_api import router as gateway_router
+app.include_router(gateway_router)
+
 # API keys. Replaces the single shared token that was a no-op when unset, so
 # "is my API open?" has an answer the UI can show.
 #

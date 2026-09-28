@@ -587,6 +587,72 @@ export interface NamedEntity {
   finished_at: string | null
 }
 
+/**
+ * The model gateway: one active image model holds the GPU, jobs for other
+ * models are deferred. Spec: .ai/specs/model-gateway/plan.md.
+ */
+export interface GatewayActive {
+  model: string
+  pinned: boolean
+  since: number
+  last_activity: number
+  idle_for_s: number
+  pin_release_in_s: number | null
+}
+
+export type GatewayPhase = 'queued' | 'waiting' | 'loading'
+
+export interface GatewaySwitching {
+  from: string | null
+  to: string
+  started: number
+  /** Last MEASURED load for `to` (fallback 10 s). A cold load can exceed it. */
+  expected_s: number
+  phase: GatewayPhase
+  elapsed_s: number
+  loading_started?: number
+}
+
+export interface GatewayPending {
+  task_id: string
+  model: string
+  task: string
+  queued_at: number
+  /** The reason, when the worker deferred it. */
+  deferred?: string
+  running?: boolean
+}
+
+export interface GatewayChoice {
+  value: string
+  label: string
+  available: boolean
+  /** A fixed-model job label (sheet edit, audio, training), not a checkpoint. */
+  fixed?: boolean
+}
+
+export interface GatewayStatus {
+  active: GatewayActive | null
+  switching: GatewaySwitching | null
+  pending: GatewayPending[]
+  by_model: Record<string, { queued: number; running: number; deferred: number }>
+  idle_s: number
+  recheck_s: number
+  choices: GatewayChoice[]
+}
+
+export interface GatewaySwitchResult extends Omit<GatewayStatus, 'choices'> {
+  status: 'switching' | 'already_active'
+  forced?: boolean
+  deferred?: number
+}
+
+/** The worker writes `progress_msg = "Deferred - <reason>"` on a deferred row. */
+const DEFERRED_PREFIX = 'Deferred - '
+export function deferredReason(msg: string | null | undefined): string | null {
+  return msg && msg.startsWith(DEFERRED_PREFIX) ? msg.slice(DEFERRED_PREFIX.length) : null
+}
+
 // --- calls ----------------------------------------------------------------
 
 export const api = {
@@ -902,6 +968,14 @@ export const api = {
       `/api/maps/${jobId}/resolve`, { method: 'POST' }),
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),
+
+  gatewayStatus: () => request<GatewayStatus>('/api/model-gateway'),
+  /** 409 = jobs pending and not forced; 400 = model unavailable. */
+  gatewaySwitch: (model: string, force: boolean) =>
+    request<GatewaySwitchResult>('/api/model-gateway/switch', {
+      method: 'POST',
+      body: JSON.stringify({ model, force }),
+    }),
 
   generateCore: (prompt: string, llm_name: string) => {
     const fd = new FormData()
