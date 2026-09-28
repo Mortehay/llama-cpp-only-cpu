@@ -28,8 +28,8 @@ In this repo's terms they are *image models* (`llm_name`) - see `domain.md`.
 | `qwen-image-lite-iq4_xs.gguf` | 10.17 GB | same 60-block layout, labelled `pig`, IQ4_XS + F16 | probably (IQ4_XS is supported); not run | parked - what "lite" means is unknown, and it is larger |
 | `Magic-Wan-Image-V3-Q5_K_M.gguf` | 10.06 GB | Wan 14B (40 blocks) fine-tuned for stills | yes (`WanTransformer3DModel`), but needs a UMT5-XXL encoder not on disk | parked |
 | `stable-diffusion-v3-5-large-pure-Q4_0.gguf` | 7.75 GB | SD3.5 Large packed with its text encoders and VAE, stable-diffusion.cpp layout (`model.` / `cond_stage_model.` / `first_stage_model.`) | no - that packaging needs a second runtime | parked |
-| `qwen-image-edit-2511-Q3_K_L.gguf` | 9.85 GB | Qwen-Image-**Edit**-2511 (has the `__index_timestep_zero__` marker) | yes | step-2 candidate, fit untested |
-| `Qwen-Image-Edit-2511_clear_Q3_K_L.gguf` | 9.65 GB | Qwen-Image-Edit, 60 blocks, no 2511 marker tensor | yes | step-2 candidate, fit untested |
+| `qwen-image-edit-2511-Q3_K_L.gguf` | 9.85 GiB | Qwen-Image-**Edit**-2511 (has the `__index_timestep_zero__` marker) | yes | **does not fit** - 0.0 GiB free after placement (Open #2) |
+| `Qwen-Image-Edit-2511_clear_Q3_K_L.gguf` | 9.65 GiB | Qwen-Image-Edit, 60 blocks, no 2511 marker tensor | yes | not run - larger than the Q3_K_M that already missed |
 | `qwen-image-edit-iq4_xs.gguf` | 10.2 GB | Qwen-Image-Edit, version not stated | probably | not pursued |
 | `krea2_turbo_edit-Q6_K.gguf` | 9.86 GB | labelled `qwen_image`, but a custom 28-block design (`txtfusion`, `egg_w=6144`) | no | **rejected** - no loader, and "turbo" means guidance 0 |
 | `SenseNova-U1.5-8B-MoT-Q3_K_M.gguf` | 10.17 GB | combined understand+generate model (MoT), mislabelled `wan` | no | **rejected** |
@@ -153,8 +153,17 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    offload, not the VAE). The integrated path decodes inside the same pipeline
    call with the transformer resident and VAE tiling on: 1.27 GiB free after
    decode.
-2. **Step-2 quant.** Edit Q3_K_M (9.92 GB) OOM'd here by 24 MiB (0005). The two
-   Q3_K_L files are 9.65-9.85 GB - test fit before switching from Q2_K.
+2. ~~**Step-2 quant.**~~ **Answered 2026-09-28: stay on Q2_K.**
+   `qwen-image-edit-2511-Q3_K_L` is 10.58 GB on disk (9.85 GiB - the table
+   above mixed units). Placed resident it left **0.0 GiB free** and died at the
+   first denoise with `CUDA driver error: device not ready` - the out-of-VRAM
+   form qwen_edit.py documents, not a context fault: `make gpu-health` right
+   after said OK, 11.2 GB free. Same core, same 4 directions on Q2_K: 8.4
+   s/step, 33 s/cell, fine. The `_clear` Q3_K_L (10.36 GB) is also above the
+   Q3_K_M that already missed by 24 MiB, so it was not run. A bigger Edit quant
+   needs CPU offload, which 0005 measured as the worse trade on this box.
+   `QWEN_EDIT_GGUF_FILE` now accepts an absolute local path, so a future
+   quant can be tried without a Hub round trip.
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,
