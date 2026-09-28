@@ -21,7 +21,7 @@ from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    warm_model_task, edit_image_task, EDIT_LORAS,
                    EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
 from core_models import (roster as core_model_roster, unavailable_reason,
-                         default_model, is_gguf)
+                         default_model, is_gguf, persistent_qwen)
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -303,13 +303,14 @@ def warm_model(model: str = Form(default_model()),
     Poll /api/task-status/{task_id} for completion.
     """
     auth.require(authorization, "generate")
-    if is_gguf(model):
-        # warm_model_task loads through get_sd_pipeline, which cannot load a
-        # GGUF image model - and there is nothing to warm: a GGUF core runs in
-        # its own subprocesses and releases the card when it exits.
+    if is_gguf(model) and not persistent_qwen(model):
+        # A per-image GGUF (the 20-step Q3_K_M) runs in its own subprocesses
+        # and releases the card when it exits - nothing stays resident to
+        # warm. The persistent fast model is different: warming starts its
+        # long-lived process (warm_model_task). See .ai/decisions/0012.
         raise HTTPException(status_code=400, detail=(
-            f"'{model}' is a GGUF image model; it loads per job and cannot be "
-            "warmed. See .ai/decisions/0012."))
+            f"'{model}' loads per image and keeps nothing resident, so there "
+            "is nothing to warm. See .ai/decisions/0012."))
     task = warm_model_task.delay(model)
     return JSONResponse({"status": "queued", "task_id": task.id, "model": model})
 

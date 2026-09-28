@@ -3840,6 +3840,18 @@ def warm_model_task(self, llm_name: str, pipeline_type: str = "text2img"):
     """
     started = time.time()
     logger.info(f"Warming '{llm_name}' ({pipeline_type})...")
+    if persistent_qwen(llm_name):
+        # The gateway switch before this body usually started the process
+        # already; ensure() is then a no-op and this just reports it.
+        err = _qwen_server_ensure(llm_name)
+        elapsed = time.time() - started
+        if err:
+            logger.error(f"Warm failed for '{llm_name}': {err}")
+            return {"status": "error", "model": llm_name,
+                    "elapsed_s": round(elapsed, 1), "error": err}
+        logger.info(f"Warmed '{llm_name}' (persistent Qwen process ready)")
+        return {"status": "ok", "model": llm_name, "elapsed_s": round(elapsed, 1),
+                "device": DEVICE, "loaded": ["qwen_server:" + llm_name]}
     p = get_sd_pipeline(llm_name, pipeline_type)
     elapsed = time.time() - started
     if not p:

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, getToken, isGguf, setToken, type NewApiKey } from '../api'
+import { api, getToken, isWarmable, setToken, type NewApiKey } from '../api'
 import { useAsync } from '../hooks'
 
 const SCOPES = ['read', 'generate', 'admin'] as const
@@ -445,7 +445,7 @@ function WarmPanel() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const available = models.data?.models.filter((m) => m.available && !isGguf(m)) ?? []
+  const available = models.data?.models.filter((m) => m.available && isWarmable(m)) ?? []
   const chosen = model || available[0]?.value || ''
 
   return (
@@ -454,6 +454,9 @@ function WarmPanel() {
       <p className="hint">
         Loads a checkpoint into VRAM ahead of time. The first generation after a
         restart otherwise pays for the load as well, which reads as a hang.
+        Warming the fast Qwen model starts its persistent process (~25-35 s),
+        which holds ~16 GiB of host RAM until another model takes the card or
+        it has been idle for 30 minutes.
       </p>
       {error && <div className="note err">{error}</div>}
       {status && <div className="note ok">{status}</div>}

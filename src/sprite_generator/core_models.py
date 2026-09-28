@@ -315,6 +315,9 @@ def roster() -> list[dict]:
             "missing": missing_repos(entry["value"]),
             "trained": bool(entry.get("trained")),
             "trigger": entry.get("trigger"),
+            # Served by the long-lived Qwen process, so it CAN be warmed:
+            # warming starts that process ahead of the first request.
+            "persistent": persistent_qwen(entry["value"]),
         })
     return out
 

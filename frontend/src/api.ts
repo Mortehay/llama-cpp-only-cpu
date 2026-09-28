@@ -380,14 +380,23 @@ export interface CoreModel {
   /** True for adapters trained on this machine, which sort to the top. */
   trained?: boolean
   trigger?: string | null
+  /** Served by the long-lived Qwen process (qwen_server.py). */
+  persistent?: boolean
 }
 
 /**
  * A GGUF image model (`gguf:<stem>`) runs only as a step-1 core, in its own
- * subprocesses. Tiles and the warm panel load through get_sd_pipeline and
- * cannot use one, so they filter it out.
+ * subprocesses. Tiles load through get_sd_pipeline and cannot use one, so
+ * they filter it out.
  */
 export const isGguf = (m: CoreModel) => m.value.startsWith('gguf:')
+
+/**
+ * Can the warm panel load this ahead of time? Diffusers checkpoints, and the
+ * persistent Qwen model (warming starts its process). A per-image GGUF such
+ * as the 20-step Q3_K_M keeps nothing resident, so there is nothing to warm.
+ */
+export const isWarmable = (m: CoreModel) => !isGguf(m) || !!m.persistent
 
 export interface TrainingRun {
   id: string
