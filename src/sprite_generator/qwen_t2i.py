@@ -20,7 +20,8 @@ was NOT measured by the bench (which batched decodes), so a failure here is the
 first thing to check if decode OOMs.
 
 Weights, and why they come from three places:
-    transformer   the GGUF file (Q3_K_M, 9.69 GB) under /models/gguf
+    transformer   the GGUF file (Q3_K_M, 9.69 GB) under
+                  /models/image-gguf/transformers (core_models.GGUF_DIR)
     encoder, VAE  ovedrive/Qwen-Image-Edit-2511-4bit - hash-identical to 2512's
     config        Qwen/Qwen-Image-2512. NOT the Edit repo: its transformer
                   config carries `zero_cond_t: true`, which 2512 does not.

@@ -41,7 +41,7 @@ SDXL = dict(label="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl"
 
 REPO = "ovedrive/Qwen-Image-Edit-2511-4bit"
 CFG_REPO = "Qwen/Qwen-Image-2512"
-GGUF = "/models/gguf/Qwen-Image-2512-Q3_K_M.gguf"
+GGUF = "/models/image-gguf/transformers/Qwen-Image-2512-Q3_K_M.gguf"
 DT = torch.bfloat16
 
 

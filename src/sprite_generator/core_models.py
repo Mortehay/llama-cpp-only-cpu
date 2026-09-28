@@ -25,10 +25,19 @@ import os
 HF_CACHE = os.environ.get("HF_HUB_CACHE") or "/models"
 
 # GGUF diffusion transformers: files, not Hub repos, like trained LoRAs.
-# `gguf:<stem>` names /models/gguf/<stem>.gguf. They are NOT loaded by
-# get_sd_pipeline - tasks.generate_core_task routes them to qwen_t2i.py.
+# `gguf:<stem>` names /models/image-gguf/transformers/<stem>.gguf. They are NOT
+# loaded by get_sd_pipeline - tasks.generate_core_task routes them to
+# qwen_t2i.py.
+#
+# TWO levels deep on purpose. llm_engine runs llama.cpp as a router with
+# `--models-dir /models` and offers as a TEXT model every .gguf directly in
+# /models and every folder that directly contains one. At /models/gguf/ the
+# Qwen-Image transformer was listed as a chat model named "gguf", and
+# worlds._llm_model() takes the router's first entry (found 2026-09-28). Nested
+# one level further, the router does not see it - the same reason the HF-cache
+# GGUF under models--unsloth--... never appeared. Do not flatten this path.
 GGUF_PREFIX = "gguf:"
-GGUF_DIR = os.path.join(HF_CACHE, "gguf")
+GGUF_DIR = os.path.join(HF_CACHE, "image-gguf", "transformers")
 
 # Everything a Qwen-Image GGUF needs besides itself. The Edit repo's NF4 text
 # encoder and VAE are hash-identical to Qwen-Image-2512's; the 2512 repo

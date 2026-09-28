@@ -724,8 +724,9 @@ Rules that are easy to get wrong:
   Qwen-Image-Edit that way (ADR 0005), and Qwen-Image-2512 text-to-image runs
   the same way at 9.55 GiB peak (ADR 0012).
 - **Qwen-Image-2512 (added 2026-09-28, ADR 0012).** The transformer is
-  `/models/gguf/Qwen-Image-2512-Q3_K_M.gguf` (9.69 GB, host
-  `/home/markunn/sprite-data/models/gguf/`). It reuses the Edit repo's NF4
+  `/models/image-gguf/transformers/Qwen-Image-2512-Q3_K_M.gguf` (9.69 GB, host
+  `/home/markunn/sprite-data/models/image-gguf/transformers/`; two levels deep
+  so the llama.cpp router does not list it as a chat model). It reuses the Edit repo's NF4
   encoder and VAE (hash-identical), with config from `Qwen/Qwen-Image-2512`.
   512 px, 20 steps: ~144 s/image, 1.3 GiB VRAM spare. **UI default for step 1;
   deliberately NOT `default_model()` and NOT offered to something2** (240 s

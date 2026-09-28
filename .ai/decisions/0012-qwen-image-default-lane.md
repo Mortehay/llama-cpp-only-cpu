@@ -49,12 +49,29 @@ identical for the text encoder across `Qwen/Qwen-Image`, `Qwen-Image-2512` and
 `Qwen-Image-Edit-2511`, and identical for the VAE between 2512 and Edit-2511.
 So the pipeline is:
 
-- transformer: the GGUF above, at `/models/gguf/` (host
-  `/home/markunn/sprite-data/models/gguf/`)
+- transformer: the GGUF above, at `/models/image-gguf/transformers/` (host
+  `/home/markunn/sprite-data/models/image-gguf/transformers/`). Moved from
+  `/models/gguf/` the same day - see "Where image GGUFs live" below
 - NF4 text encoder, VAE, tokenizer: `ovedrive/Qwen-Image-Edit-2511-4bit`
   (already cached)
 - transformer + scheduler **config** and `model_index.json`: `Qwen/Qwen-Image-2512`
   (a few KB, fetched once - the worker runs `HF_HUB_OFFLINE`).
+
+### Where image GGUFs live - and why not `/models/gguf/`
+
+They were first copied to `/models/gguf/`. That put them in front of
+`llm_engine`: llama.cpp runs as a router with `--models-dir /models` and offers
+as a **chat model** every `.gguf` directly in `/models` plus every folder that
+directly contains one. `/v1/models` returned `["Qwen2.5-3B-Instruct-Q4_K_M",
+"gguf"]`, and `worlds._llm_model()` takes entry `[0]` - an ordering change away
+from asking the router to load a 9.7 GB image transformer as a text model.
+Found by the audio session the same day, which hardened its own picker.
+
+Fixed at the root: moved to `/models/image-gguf/transformers/`, two levels
+deep, which the router does not scan (the same reason the HF-cache GGUF under
+`models--unsloth--...` was never listed). The router reads its model list **at
+startup only**, so `llm_engine` needed a restart; afterwards `/v1/models`
+returned only the Qwen2.5-3B. `core_models.GGUF_DIR` carries the warning.
 
 Do **not** point `config=` at the Edit repo: its transformer config carries
 `zero_cond_t: true`, which 2512's does not. The pipeline class is plain
@@ -180,7 +197,7 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
 
    One seed, so the back-view miss may be chance - but nothing here buys back
    two-thirds of the headroom on a card with this fault history. The file is
-   kept at `/models/gguf/` for a multi-seed comparison if one is ever wanted;
+   kept at `/models/image-gguf/transformers/` for a multi-seed comparison if one is ever wanted;
    switching is `QWEN_EDIT_GGUF_FILE` in compose plus a worker restart.
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.

@@ -124,6 +124,12 @@ fragment of it.
 - **A GGUF's `general.architecture` label is not evidence.** Four of the
   2026-09 downloads were mislabelled (`wan`, `qwen_image`, `pig`). Read the
   tensor prefixes and block count before wiring a file.
+- **Never put an image-model GGUF directly in `/models` or one folder below
+  it.** `llm_engine` (llama.cpp, `--models-dir /models`) lists every `.gguf`
+  there, and every folder directly holding one, as a *chat* model, and
+  `worlds._llm_model()` takes the first entry. Image GGUFs live two levels deep
+  in `/models/image-gguf/transformers/` (0012). The router scans only at
+  startup - restart `llm_engine` after moving files, then check `/v1/models`.
 - **"no frame, no border, no card" in a POSITIVE prompt asks for a frame.** A
   CLIP text encoder has no negation operator, so each of those nouns lands in
   the conditioning. something2's entity prompts arrive carrying nine of them;
