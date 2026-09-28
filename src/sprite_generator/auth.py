@@ -172,6 +172,48 @@ def revoke_key(key_id: str) -> bool:
         return cur.rowcount > 0
 
 
+def rotate_key(key_id: str) -> dict | None:
+    """A NEW secret for an existing key: same name, same scopes, old one revoked.
+
+    ONE transaction: the new row is inserted and the old one revoked together,
+    so a failure half way can neither leave both working nor both dead. The
+    new token is returned once, like `create_key`. None if the key is unknown
+    or already revoked - rotating a dead key would quietly resurrect access.
+    """
+    token = _new_token()
+    new_id = uuid.uuid4()
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT name, scopes FROM api_keys "
+                    "WHERE id = %s::uuid AND revoked_at IS NULL FOR UPDATE",
+                    (key_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cur.execute(
+            "INSERT INTO api_keys (id, name, key_hash, key_prefix, scopes) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (str(new_id), row["name"], hash_token(token), token[:PREFIX_LEN],
+             list(row["scopes"])))
+        cur.execute("UPDATE api_keys SET revoked_at = now() WHERE id = %s::uuid",
+                    (key_id,))
+    return {"id": str(new_id), "name": row["name"], "scopes": list(row["scopes"]),
+            "key_prefix": token[:PREFIX_LEN], "token": token,
+            "rotated_from": key_id}
+
+
+def key_id_for_token(token: str) -> str | None:
+    """The id of the ACTIVE key this token belongs to, or None. Lets a script
+    that holds only a token (the one in .env) rotate or revoke its own key."""
+    if not token:
+        return None
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM api_keys WHERE key_hash = %s "
+                    "AND revoked_at IS NULL", (hash_token(token.strip()),))
+        row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 # ---------------------------------------------------------------------------
 # Verification
 # ---------------------------------------------------------------------------
@@ -285,6 +327,17 @@ def post_key(body: NewKey, authorization: str | None = Header(None)):
         return create_key(body.name, body.scopes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/api/auth/keys/{key_id}/rotate", status_code=201)
+def post_rotate_key(key_id: str, authorization: str | None = Header(None)):
+    """Replace a key's secret, keeping its name and scopes. The new token is in
+    the response and nowhere else; the old one stops working immediately."""
+    require(authorization, "admin")
+    new = rotate_key(key_id)
+    if new is None:
+        raise HTTPException(status_code=404, detail="No such active key")
+    return {**new, "mode": describe_mode()}
 
 
 @router.delete("/api/auth/keys/{key_id}")

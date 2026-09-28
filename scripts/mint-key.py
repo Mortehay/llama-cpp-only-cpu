@@ -26,6 +26,9 @@ Usage:
     python mint-key.py --name recovery
     python mint-key.py --name something2 --scopes read,generate
     python mint-key.py --revoke <key-id>
+    python mint-key.py --rotate <key-id>          # same name+scopes, new secret
+    ROTATE_TOKEN=sk_... python mint-key.py --rotate-token --quiet
+    make api-key                                  # create or rotate .env's key
 """
 
 import argparse
@@ -53,6 +56,12 @@ def main():
                         "this path exists for recovery")
     p.add_argument("--list", action="store_true")
     p.add_argument("--revoke", metavar="KEY_ID")
+    p.add_argument("--rotate", metavar="KEY_ID",
+                   help="new secret for this key: same name and scopes, old revoked")
+    p.add_argument("--rotate-token", action="store_true",
+                   help="rotate the key whose token is in $ROTATE_TOKEN")
+    p.add_argument("--quiet", action="store_true",
+                   help="print only the new token (for scripts)")
     a = p.parse_args()
 
     if not os.environ.get("DB_URL"):
@@ -75,14 +84,36 @@ def main():
         print("revoked" if auth.revoke_key(a.revoke) else "no such active key")
         return 0
 
-    if not a.name:
-        p.error("give --name, --list or --revoke")
+    if a.rotate or a.rotate_token:
+        key_id = a.rotate
+        if a.rotate_token:
+            # The token comes from the environment, never argv: argv is
+            # visible in `ps` and shell history.
+            # $ROTATE_TOKEN, or stdin (make api-key pipes it in, so the token
+            # is not in a `docker exec -e` argument either).
+            token = os.environ.get("ROTATE_TOKEN", "") or (
+                "" if sys.stdin.isatty() else sys.stdin.read().strip())
+            key_id = auth.key_id_for_token(token)
+            if not key_id:
+                sys.exit("ROTATE_TOKEN is not an active key")
+        key = auth.rotate_key(key_id)
+        if key is None:
+            sys.exit("no such active key")
+    else:
+        if not a.name:
+            p.error("give --name, --list, --revoke, --rotate or --rotate-token")
+        scopes = [s.strip() for s in a.scopes.split(",") if s.strip()]
+        try:
+            key = auth.create_key(a.name, scopes)
+        except ValueError as e:
+            sys.exit(str(e))
 
-    scopes = [s.strip() for s in a.scopes.split(",") if s.strip()]
-    try:
-        key = auth.create_key(a.name, scopes)
-    except ValueError as e:
-        sys.exit(str(e))
+    if a.quiet:
+        # For scripts (make api-key): the token alone on stdout.
+        print(key["token"])
+        return 0
+    if key.get("rotated_from"):
+        print(f"rotated: {key['rotated_from']} (now revoked)")
 
     print(f"name:   {key['name']}")
     print(f"id:     {key['id']}")
