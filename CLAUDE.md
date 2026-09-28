@@ -43,10 +43,13 @@ fragment of it.
   container. Jinja templates *are* the exception and reload per request.
 - `df` inside WSL reports the VHDX's nominal size, not free disk. Check
   `Get-PSDrive C` on the Windows side before pulling weights.
-- After any reboot or `wsl --shutdown`, three things must be re-run:
-  `scripts/setup-models-vhd.ps1 -AttachOnly`, `scripts/lan-expose.ps1`
-  (elevated), `scripts/wsl-keepalive.ps1`. Symptoms of forgetting: models
-  "vanished", LAN 404s, containers exiting 0 with clean logs.
+- After any reboot or `wsl --shutdown`, re-run `scripts/wsl-keepalive.ps1`
+  and `make lan-expose` (UAC prompt; it runs `lan-check` after), then
+  `make up`. Symptoms of forgetting: LAN 404s, containers exiting 0 with clean
+  logs. `setup-models-vhd.ps1 -AttachOnly` no longer applies: since the drive
+  reshuffle there is no `D:\wsl-models.vhdx`, and `MODELS_DIR` is on the
+  distro root (checked 2026-09-28). Do NOT run it without `-AttachOnly` "to
+  fix" that - it would create an empty disk.
   **something2 reports an error but the API log has no `sdapi` lines? Run
   `make lan-check`** — the portproxy forwards are gone or stale. `make
   lan-expose` re-runs the script elevated (UAC prompt) and re-checks.
