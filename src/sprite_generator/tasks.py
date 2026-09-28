@@ -4132,3 +4132,67 @@ def generate_audio_task(self, kind: str, name: str, style: str = None,
                 os.path.basename(result["file_path"]),
                 result["duration_s"], result["seam_rms_jump_db"])
     return result
+
+
+@celery_app.task(name="tasks.generate_sfx_task", bind=True)
+def generate_sfx_task(self, items: list):
+    """A batch of one-shot cues in ONE model load; closes each cue's own row.
+
+    `items`: [{cue, entity, engine, engine_from, variants, seed, gen_id}]. One
+    request for one cue is a batch of one. Each item owns its ledger row, so a
+    pack's cues are later cache-addressable one by one, and one bad cue fails
+    only its own row.
+    """
+    import generations
+
+    gen_ids = [it.get("gen_id") for it in items]
+    blocked = _gpu_breaker_admit()
+    if blocked:
+        for g in gen_ids:
+            generations.fail(g, blocked["error"])
+        return blocked
+
+    start = time.time()
+    try:
+        import audio_engine
+        results = audio_engine.generate_sfx(items)
+    except Exception as e:
+        logger.error("sfx batch of %d failed: %s", len(items), e, exc_info=True)
+        ms = (time.time() - start) * 1000
+        if is_cuda_fault(e):
+            trip_gpu_breaker(e)
+            release_vram_cache("a CUDA fault", floor_mb=0)
+            msg = (f"GPU context faulted during sfx generation; refusing new "
+                   f"work for {GPU_FAULT_COOLDOWN_S}s.")
+            for g in gen_ids:
+                generations.fail(g, msg, duration_ms=ms)
+            return {"error": msg, "error_kind": "gpu_faulted",
+                    "retry_after_s": GPU_FAULT_COOLDOWN_S}
+        for g in gen_ids:
+            generations.fail(g, str(e), duration_ms=ms)
+        return {"error": str(e)}
+
+    ms = (time.time() - start) * 1000
+    for item, res in zip(items, results):
+        g = item.get("gen_id")
+        if generations.is_closed(g):
+            continue
+        if res.get("error"):
+            generations.fail(g, res["error"], duration_ms=ms)
+            continue
+        first = res["variants"][0]
+        generations.finish(
+            g, file_path=first["file_path"], seed=res["seed"],
+            prompt=res["prompt"], duration_ms=ms,
+            params={"cue": res["cue"], "entity": res["entity"],
+                    "engine": res["engine"],
+                    "engine_from": item.get("engine_from"),
+                    "sample_rate": res["sample_rate"],
+                    "duration_s": first["duration_s"],
+                    "variants": res["variants"],
+                    "model_seconds": res["model_seconds"],
+                    "load_seconds": res["load_seconds"],
+                    "peak_alloc_mb": res.get("peak_alloc_mb")})
+    logger.info("sfx batch of %d done in %.1fs (%d failed)", len(items),
+                time.time() - start, sum(1 for r in results if r.get("error")))
+    return {"items": results}

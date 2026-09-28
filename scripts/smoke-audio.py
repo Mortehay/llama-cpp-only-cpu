@@ -318,6 +318,80 @@ def _ogg_seam():
     return f"{jump:.2f} dB, {len(decoded) / rate:.3f}s decoded"
 
 
+# ---------------------------------------------------------------------------
+# Sound effects (ticket 16)
+# ---------------------------------------------------------------------------
+
+@case("sfx engine precedence: request > world > cue > default, refusals named")
+def _sfx_engine():
+    assert st.resolve_engine("hit") == ("realistic", "cue")
+    assert st.resolve_engine("hit", "realistic") == ("realistic", "request")
+    assert st.resolve_engine("hit", None, "realistic") == ("realistic", "world")
+    # A level that names an engine the cue cannot render is REFUSED, never
+    # passed down - a silent fall-through would mix looks within one game.
+    for req, world, where in (("retro", None, "request"),
+                              (None, "retro", "world"),
+                              ("retro", "realistic", "request")):
+        try:
+            st.resolve_engine("hit", req, world)
+        except st.NoRecipe as e:
+            assert where in str(e) and "ticket 17" in str(e), e
+        else:
+            raise AssertionError(f"retro from {where} was not refused")
+    try:
+        st.resolve_engine("hit", "chiptune")
+    except st.NoRecipe as e:
+        assert "unknown engine" in str(e), e
+    else:
+        raise AssertionError("an unknown engine was accepted")
+    try:
+        st.resolve_engine("yodel")
+    except st.UnknownStyle:
+        pass
+    else:
+        raise AssertionError("an unknown cue was accepted")
+    # Engine is part of the cache key; the entity is normalised.
+    assert st.sfx_name("realistic", "hit", " Slime ") == "realistic:hit/slime"
+    assert st.sfx_name("retro", "hit", None) == "retro:hit"
+    r = st.render_cue("hit", "a slime", "realistic")
+    assert "a slime" in r["prompt"] and " no " not in f" {r['prompt']} "
+    assert "music" in r["negative"] and r["duration_s"] == 0.6
+    assert "a creature" in st.render_cue("hit", None, "realistic")["prompt"]
+    assert {c["value"] for c in st.cue_roster()} >= {"slash", "hit", "pickup"}
+    return f"{len(st.CUES)} cues, 3 levels + 3 refusals"
+
+
+@case("one-shot mastering: onset <=10 ms, faded tail, -1 dBFS, no loop tags")
+def _one_shot():
+    sr = 44100
+    lead = np.zeros((int(0.3 * sr), 2), np.float32)          # 300 ms silence
+    hit = 0.3 * _sine(sr, 0.4)                                # stereo already
+    hit = (hit * np.linspace(1, 0.2, len(hit))[:, None]).astype(np.float32)
+    tail = np.zeros((int(0.5 * sr), 2), np.float32)
+    out = am.master_one_shot(np.concatenate([lead, hit, tail]), sr)
+    x = out["samples"]
+    assert out["onset_ms"] <= 10, out["onset_ms"]
+    assert 290 <= out["trimmed_lead_ms"] <= 300, out["trimmed_lead_ms"]
+    assert out["duration_s"] < 0.6, out["duration_s"]         # tail cut
+    assert abs(20 * np.log10(np.max(np.abs(x))) + 1.0) < 0.05
+    assert np.max(np.abs(x[-5:])) < 1e-3, "the end was not faded"
+    try:
+        am.master_one_shot(np.zeros((sr, 2), np.float32), sr)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a silent take was accepted")
+    from mutagen.oggvorbis import OggVorbis
+    with tempfile.TemporaryDirectory() as tmp:
+        wav, ogg = am.sfx_paths(tmp, "realistic", "hit", "Big Slime!", "ab12", 2)
+        assert ogg.endswith(os.path.join("sfx", "realistic", "hit",
+                                         "big-slime-_ab12_v2.ogg")), ogg
+        am.write_ogg(ogg, x, sr, loop=False)
+        assert "LOOPSTART" not in OggVorbis(ogg), "a cue carries loop tags"
+    return (f"lead {out['trimmed_lead_ms']} ms trimmed, onset "
+            f"{out['onset_ms']} ms, {out['duration_s']} s")
+
+
 @case("a full-length music loop writes to OGG without killing the process")
 def _long_ogg():
     # 2026-09-28: a single 60 s+ Vorbis write segfaulted libsndfile and took

@@ -269,6 +269,139 @@ STYLES: list[dict[str, Any]] = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Sound effects: CUES, not styles (0010 D7/D8, tickets 16/17)
+# ---------------------------------------------------------------------------
+#
+# A cue is one game event - a slash, a hit, a pickup - played ONCE, 0.1-3 s,
+# never looped. Deliberately NOT called an "action": that word already means a
+# sprite-sheet row (domain.md). Kept apart from STYLES because a cue has no
+# slots and no metre, and `render` / `roster` must not start meeting entries
+# they cannot render.
+#
+# Addressed as `<cue>/<entity>` (owner, 2026-09-28): `hit/slime`,
+# `slash/knight`. The entity is optional and folds into the prompt; a bare
+# `hit` is a generic one.
+#
+# Each cue carries one RECIPE PER ENGINE. `realistic` is Stable Audio Open 1.0
+# (the ambience model, already proven here); `retro` is procedural 8-bit
+# synthesis and arrives with ticket 17 - until then no cue has a retro recipe,
+# so asking for one is refused by `resolve_engine`, never faked.
+
+SFX_KIND = "sfx"
+ENGINES = ("realistic", "retro")
+DEFAULT_ENGINE = "realistic"
+
+# Every realistic cue excludes the ambience failure (a tune under the sound)
+# and the setting-breakers, plus room tone - a one-shot wants a dry, close
+# sound the game can place, not a recording of a hall.
+_SFX_NEGATIVE = ("music, melody, singing, speech, voice, background noise, "
+                 "room ambience, reverb tail, modern, electronic, low quality")
+_SFX_SUFFIX = "single isolated sound effect, close and dry, clean, game audio"
+
+CUES: list[dict[str, Any]] = [
+    {"value": "slash", "label": "Slash - a blade cutting air",
+     "default_engine": "realistic", "duration_s": 0.8,
+     "entity_default": "a steel sword",
+     "recipes": {"realistic": {"template":
+         "{entity} swung in a fast slash through the air, sharp whoosh, "
+         + _SFX_SUFFIX}}},
+    {"value": "hit", "label": "Hit - a blow landing",
+     "default_engine": "realistic", "duration_s": 0.6,
+     "entity_default": "a creature",
+     "recipes": {"realistic": {"template":
+         "a heavy blow landing on {entity}, short punchy impact, "
+         + _SFX_SUFFIX}}},
+    {"value": "pickup", "label": "Pickup - collecting an item",
+     "default_engine": "realistic", "duration_s": 0.5,
+     "entity_default": "a gold coin",
+     "recipes": {"realistic": {"template":
+         "picking up {entity}, bright short chime of metal, "
+         + _SFX_SUFFIX}}},
+    {"value": "spell", "label": "Spell - casting magic",
+     "default_engine": "realistic", "duration_s": 1.5,
+     "entity_default": "a fire spell",
+     "recipes": {"realistic": {"template":
+         "casting {entity}, magical shimmering swell and release, fantasy, "
+         + _SFX_SUFFIX}}},
+    {"value": "footstep", "label": "Footstep - one step",
+     "default_engine": "realistic", "duration_s": 0.4,
+     "entity_default": "a leather boot on stone",
+     "recipes": {"realistic": {"template":
+         "one single footstep, {entity}, " + _SFX_SUFFIX}}},
+    {"value": "ui_click", "label": "UI click - a menu button",
+     "default_engine": "realistic", "duration_s": 0.2,
+     "entity_default": "a wooden button",
+     "recipes": {"realistic": {"template":
+         "a soft short click of {entity}, crisp and subtle, "
+         + _SFX_SUFFIX}}},
+]
+
+
+class NoRecipe(ValueError):
+    """The chosen engine has no recipe for this cue - refused, not faked."""
+
+
+def _cue(cue: str) -> dict[str, Any]:
+    for c in CUES:
+        if c["value"] == cue:
+            return c
+    raise UnknownStyle(cue)
+
+
+def cue_roster() -> list[dict[str, Any]]:
+    """The cues as `GET /api/audio/styles?kind=sfx` returns them."""
+    return [{"value": c["value"], "label": c["label"], "kind": SFX_KIND,
+             "default": c["value"] == CUES[0]["value"],
+             "default_engine": c["default_engine"],
+             "engines": sorted(c["recipes"]), "duration_s": c["duration_s"],
+             "entity_default": c["entity_default"]} for c in CUES]
+
+
+def resolve_engine(cue: str, requested: str | None = None,
+                   world_engine: str | None = None) -> tuple[str, str]:
+    """(engine, engine_from) by precedence: request > world > cue > default.
+
+    Most specific wins (0010 D8). A level that names an engine the cue has no
+    recipe for RAISES `NoRecipe` rather than falling through: a silent
+    fall-through is how one game ends up with a mix of looks, which is what
+    the world level exists to prevent.
+    """
+    entry = _cue(cue)
+    for value, source in ((requested, "request"), (world_engine, "world"),
+                          (entry["default_engine"], "cue"),
+                          (DEFAULT_ENGINE, "default")):
+        if not value:
+            continue
+        if value not in ENGINES:
+            raise NoRecipe(f"unknown engine {value!r} (from {source}); "
+                           f"expected one of {', '.join(ENGINES)}")
+        if value not in entry["recipes"]:
+            later = " - the retro engine is ticket 17" if value == "retro" else ""
+            raise NoRecipe(f"cue {cue!r} has no {value!r} recipe (engine from "
+                           f"{source}){later}")
+        return value, source
+    raise NoRecipe(f"no engine resolved for {cue!r}")  # unreachable: default
+
+
+def sfx_name(engine: str, cue: str, entity: str | None) -> str:
+    """The ledger name: engine is part of the cache key (0010 D8)."""
+    ent = (entity or "").strip().lower()
+    return f"{engine}:{cue}/{ent}" if ent else f"{engine}:{cue}"
+
+
+def render_cue(cue: str, entity: str | None, engine: str) -> dict[str, Any]:
+    entry = _cue(cue)
+    recipe = entry["recipes"].get(engine)
+    if not recipe:
+        raise NoRecipe(f"cue {cue!r} has no {engine!r} recipe")
+    subject = (entity or "").strip() or entry["entity_default"]
+    return {"cue": cue, "entity": (entity or "").strip() or None,
+            "engine": engine, "duration_s": entry["duration_s"],
+            "prompt": recipe["template"].format(entity=subject),
+            "negative": recipe.get("negative", _SFX_NEGATIVE)}
+
+
 # Keyword -> style, for `_rules_style_plan` in ticket 08 and for anyone who
 # wants a style from a map name without waking the LLM. First match wins, so
 # order matters: "mine" before "village" because "mining village" is a dungeon

@@ -68,6 +68,11 @@ class WorldSpec(BaseModel):
     chunk_size: int = Field(32, ge=8, le=64)
     biome_cell: int = Field(32, ge=8, le=64)
     theme: str | None = Field(None, description="what this region is, for the LLM")
+    # The look of this region's sound effects (0010 D8, level 2 of the engine
+    # precedence). Stored in the `.gen.json` sidecar only - never in the spec
+    # something2 seeds - and read by POST /api/audio/sfx when a request names
+    # this world. Not used by map generation at all.
+    sfx_engine: str | None = Field(None, pattern="^(realistic|retro)$")
     author: str = Field("rules", pattern="^(rules|llm)$")
     overwrite: bool = False
 
@@ -332,6 +337,7 @@ class WorldEdit(BaseModel):
     chunk_size: int | None = Field(None, ge=8, le=64)
     biome_cell: int | None = Field(None, ge=8, le=64)
     theme: str | None = None
+    sfx_engine: str | None = Field(None, pattern="^(realistic|retro)$")
     # Re-ask the LLM for biomes. Off by default: an edit to the creature target
     # should not quietly redraw the whole region's character.
     reauthor: bool = False

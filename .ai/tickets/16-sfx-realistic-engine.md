@@ -39,3 +39,30 @@ cue, one cue vs a pack per request.
 ## Suggested Route
 
 `/plan-feature` for the three undecided items, then `/implement`.
+
+## Status 2026-09-28
+
+Implemented in the audio worktree (`feat/audio-generation`): cue roster and
+`resolve_engine` precedence (`audio_styles`), one-shot mastering and
+`sfx_paths` (`audio_master`), `generate_sfx` one-load batches
+(`audio_engine`), `tasks.generate_sfx_task` (row per cue, breaker-wrapped),
+`POST /api/audio/sfx` + `/api/audio/sfx-pack`, `GET /api/audio/styles?kind=sfx`,
+`sfx_engine` on `WorldSpec`/`WorldEdit`, and an sfx panel on the Audio tab
+(single cue, pack builder, per-variant players). Owner decisions: name
+`<cue>/<entity>`, caller chooses 1-5 variants, pack endpoint too.
+
+- [x] Onset: 0-5 ms on every variant measured (bar <= 10 ms).
+- [x] `info.engine_from` correct per level: `cue` and `world` exercised
+      through the facade; `request` and the refusals in smoke + facade.
+- [x] Facade end to end through Celery (temporary worktree worker): build,
+      cache hit, fewer-variants cache hit, world precedence, 422/404
+      refusals, pack with a mix of cached and new cues.
+- [ ] `verify-audio-api.py --submit --kind sfx` - the verifier has no sfx
+      mode yet, and there is no bearer in this session.
+- [ ] **Listening pass on sub-second cues** - the owner's call; files are in
+      `audio/sfx/realistic/` and `audio/sfx/_experiment/`.
+- [ ] Not deployed: the running stack mounts the shared checkout, which does
+      not have this code until the branch is merged there.
+
+Findings: the pipeline's full 47.6 s denoise window and its batched decode
+(GPU fault) - 0010 "sfx, measured". smoke-audio 18/18.

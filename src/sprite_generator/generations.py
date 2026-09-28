@@ -56,7 +56,7 @@ IMAGES_DIR = "/app/images"
 # tell them apart from pixels, so it declines to guess. A caller that knows
 # says so with `override_settings.kind`; asking for a cutout is taken as saying
 # "entity", since only an object composited over terrain needs one.
-KINDS = ("raw", "entity", "tile", "map", "music", "ambience")
+KINDS = ("raw", "entity", "tile", "map", "music", "ambience", "sfx")
 
 # Terminal states, matching `jobs.TERMINAL` minus the ones a synchronous facade
 # cannot reach: nothing here is queued long enough to be cancelled.
