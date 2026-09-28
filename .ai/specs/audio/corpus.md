@@ -44,7 +44,16 @@ What the numbers say, before anyone listens:
 - The metric is RMS continuity at the join. It is evidence, not the verdict:
   the acceptance bar is the LISTENING pass below.
 
-## Listening pass - pending (owner)
+## Listening pass - owner, 2026-09-28
+
+Verdict as given: **"sounds normal for now"** - an overall pass on the set,
+taken as meeting the bar for v1. Recorded exactly as said: it is NOT a
+per-track verdict, so `corpus.json` rows are still unfilled, no vocal count
+exists, and the two high-seam ambience loops (cave, village_day) were not
+singled out as clicking. If a later change is compared against this corpus,
+the per-row fields are where a finer verdict goes.
+
+### The bar, for reference
 
 Bar (contract "Acceptance"): the seam inaudible on >= 8 of 10 music tracks,
 "audible but not a click" tolerated on the rest; **0 vocals** on

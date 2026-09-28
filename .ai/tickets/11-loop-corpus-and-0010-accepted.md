@@ -87,3 +87,6 @@ re-runs, never invented. Waits on 503 building/busy per Retry-After.
 - [x] Built 2026-09-28: 15/15 through the authenticated API in 723 s; music
       seams 0.42-1.78 dB (warm 26-29 s per 2-min loop); ambience cave 5.57 dB
       and village_day 4.50 dB flagged for listening. `.ai/specs/audio/corpus.md`.
+- [x] Owner listening 2026-09-28: "sounds normal for now" - overall pass,
+      recorded verbatim; no per-row verdicts, so corpus.json fields stay open.
+- [x] 0010 -> accepted for v1, with that caveat written into its status.
