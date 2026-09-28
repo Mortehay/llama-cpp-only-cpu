@@ -151,11 +151,28 @@ from 240 on 2026-09-28) is set below their limit deliberately, so a slow job
 surfaces as our 504 with a message rather than their opaque timeout. If jobs
 legitimately need longer, raise both.
 
-**Two new refusals (decisions/0012), both before anything is queued:**
-- `503` + `Retry-After` when a long job (a Qwen-Image core, ~4 min) holds the
-  one worker. Queueing behind it could only time out late.
-- `400` if `sd_model_checkpoint` names a `gguf:` model - UI-only, too slow for
-  this route.
+**Default model changed 2026-09-28 (decisions/0012 2b).** A request that
+names no `sd_model_checkpoint` now gets `KNOWN_MODELS[0]` =
+`gguf:qwen-image-2512-Q2_K+lightning8` (Qwen-Image-2512, 8-step Lightning),
+not an SDXL checkpoint. Measured over HTTP with a real key that day: 1024x1024
+cutout, no model named -> `200` in **101 s cold**, `info.model` names it. What
+the caller should know:
+- **Square only.** Non-square or multi-frame requests get `400` before
+  queueing; name an SDXL model for those. It renders at 512 and is scaled
+  NEAREST to the requested size.
+- **The negative prompt is inert** (step-distilled, true CFG 1). The bench
+  still measured 0/12 contact sheets against SDXL + nerijs's 2/12.
+- **~100-130 s cold, faster warm**, against the 285 s budget: room for one
+  cutout retry, not three.
+- It is its own model string to the model gateway, so a request for an SDXL
+  model after a Qwen one is a model switch.
+
+**Refusals before anything is queued:**
+- `503` + `Retry-After` when a long job (a Qwen-Image core, or a sheet / map /
+  training job) holds the one worker - `tasks.worker_busy_reason()`. Measured:
+  0.09 s, `retry-after: 229`. Queueing behind it could only time out late.
+- `503` + `Retry-After` from the model gateway when another model holds the
+  card (see `.ai/specs/model-gateway/`).
 
 ## Troubleshooting, mapped to their error text
 
