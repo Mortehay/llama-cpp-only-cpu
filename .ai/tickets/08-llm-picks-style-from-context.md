@@ -76,3 +76,31 @@ and that `author` is honest when the fallback ran.
 ## Suggested Route
 
 `/implement`, then `/review-code`.
+
+## Status 2026-09-28
+
+Implemented: `audio_styles.plan_style` (brain, else `_rules_style_plan`),
+`_llm_style_plan`, the pure `_parse_llm_answer`; `POST /api/audio/propose`
+(scope read, no GPU, no ledger row); `POST /api/audio` precedence prompt >
+style > context > default, caller slots beat the brain's, `author` in the
+ledger; "Propose style" on the Audio tab. Ambience keyword rules added.
+
+- [x] Propose for "abandoned dwarven mine, danger": `dungeon` (somber, bells +
+      viola da gamba) by Qwen2.5-3B in 4.7 s; ambience -> `cave`.
+- [x] Fallback is honest: a real cold-load ReadTimeout produced `dungeon`
+      with author "keyword rules ('mine'); LLM not used: LLM call failed".
+- [x] Generation from context only: `ctx-graveyard-1` -> `night`, author
+      names the model, 63.4 s, gpu-health OK after.
+- [x] smoke-audio 16/16 (ambience rules; parser refuses garbage, invented and
+      wrong-kind styles with a named reason; invented slots dropped).
+- [ ] `verify-audio-api.py --llm` over HTTP - not run (no bearer here).
+- [ ] With `llm_engine` STOPPED - not run; the timeout path above covers the
+      same fallback branch, not the connection-refused one.
+
+Findings: (1) a cold router load measured >45 s, not the ~13 s worlds.py
+records, so propose makes 2 attempts and generation 1 (two 45 s attempts
+plus the 240 s build would exceed something2's 300 s). (2) The llama.cpp
+router lists EVERY GGUF under /models, including the Qwen-Image transformer
+as model `gguf`; `worlds._llm_model()` takes entry [0] and would load that
+image model as a chat model if the order changed. The audio path picks an
+"instruct" id explicitly. worlds.py was not changed (not this work).

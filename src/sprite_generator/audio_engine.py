@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import random
 import subprocess
@@ -48,7 +49,7 @@ ACESTEP_TIMEOUT_S = float(os.environ.get("ACESTEP_TIMEOUT_S", "300"))
 # Measured 2026-09-12: ACE-Step turbo peaks at 7,488 MB reserved, Stable Audio
 # at 5,988 MB. Refuse before loading rather than OOM half way, the same
 # preflight `get_flux_pipeline` makes.
-GPU_BUDGET_MB = {"music": 8200, "ambience": 6600}
+GPU_BUDGET_MB = {"music": 8200, "ambience": 6600, "sfx": 6600}
 
 # A take must exceed the loop by the crossfade plus a bar of slack, or the
 # whole-bar cut lands under the requested minimum.
@@ -189,6 +190,139 @@ def _generate_ambience(rendered: dict, duration_s: float, seed: int,
     am.write_wav(path, np.asarray(wav), sr, subtype="FLOAT")
     return {"path": path, "seed": seed, "seconds": round(took, 2),
             "load_s": round(load_s, 2), "peak_alloc_mb": peak}
+
+
+# ---------------------------------------------------------------------------
+# Sound effects: Stable Audio Open, ONE load for a whole batch
+# ---------------------------------------------------------------------------
+#
+# A cue is under 2 s of audio but the model load is ~21 s, so a pack of cues
+# is built in one load (owner, 2026-09-28: a pack endpoint as well as single
+# cues). Variants come from ONE call with `num_waveforms_per_prompt`, so 1-5
+# variants cost about one generation, not five.
+
+def sfx_ledger_params(item: dict, res: dict) -> dict:
+    """What a finished cue's ledger row records. ONE definition for both
+    engines - the worker (realistic) and the API (retro) - so a row reads the
+    same whichever built it. Torch-free: the API process calls it."""
+    first = res["variants"][0]
+    return {"cue": res["cue"], "entity": res["entity"],
+            "engine": res["engine"], "engine_from": item.get("engine_from"),
+            "sample_rate": res["sample_rate"],
+            "duration_s": first["duration_s"], "variants": res["variants"],
+            "model_seconds": res["model_seconds"],
+            "load_seconds": res["load_seconds"],
+            "peak_alloc_mb": res.get("peak_alloc_mb")}
+
+
+SFX_TAKE_SLACK_S = 0.7      # generated past the cue so the release is not cut
+SFX_STEPS = int(os.environ.get("SFX_STEPS", "100"))
+MAX_VARIANTS = 5
+
+# How much latent the transformer denoises, in frames (hop 2048 at 44.1 kHz,
+# so 128 frames = 5.9 s). The pipeline's default is the model's FULL window,
+# 1024 frames = 47.6 s, whatever `audio_end_in_s` asks for - so a 0.6 s hit
+# cost the same 29.3 s as a 30 s ambience. Measured 2026-09-28, one cue, 100
+# steps: 1024 -> 29.3 s, 128 -> 8.0 s, 64 -> 6.9 s but with a 2.36 raw peak
+# and a hit that rang out to 1.1 s. 128 covers every cue (max 1.5 s + slack).
+SFX_LATENT_FRAMES = int(os.environ.get("SFX_LATENT_FRAMES", "128"))
+
+
+def generate_sfx(items: list[dict], *, audio_dir: str | None = None) -> list[dict]:
+    """Build every item in one model load. Raises only on a load failure.
+
+    Each item: {cue, entity, engine, variants, seed}. A per-item failure (a
+    silent take, a bad cue) is returned as {"error": ...} for THAT item, so
+    one bad cue does not throw away the others' GPU time. A CUDA fault still
+    raises: the caller trips the breaker, as for every other GPU task.
+    """
+    import numpy as np
+    import torch
+    from diffusers import StableAudioPipeline
+
+    audio_dir = audio_dir or AUDIO_DIR
+    _evict_pipelines()
+    _preflight("sfx")
+
+    t0 = time.time()
+    pipe = StableAudioPipeline.from_pretrained(AMBIENCE_MODEL,
+                                               torch_dtype=torch.float16).to("cuda")
+    load_s = round(time.time() - t0, 2)
+    sr = pipe.vae.sampling_rate
+    # Shrink the denoised window to what a cue needs (see SFX_LATENT_FRAMES).
+    # This pipeline instance is discarded after the batch, so nothing else
+    # ever sees the changed config.
+    full = int(pipe.transformer.config.sample_size)
+    frames = min(full, max(SFX_LATENT_FRAMES, 32))
+    pipe.transformer.register_to_config(sample_size=frames)
+    out: list[dict] = []
+    try:
+        for item in items:
+            try:
+                rendered = st.render_cue(item["cue"], item.get("entity"),
+                                         item["engine"])
+                n = max(1, min(MAX_VARIANTS, int(item.get("variants") or 1)))
+                seed = resolve_seed(item.get("seed"))
+                t1 = time.time()
+                end_s = float(rendered["duration_s"] + SFX_TAKE_SLACK_S)
+                keep = int(math.ceil(end_s * sr / pipe.vae.hop_length)) + 8
+                # Variants are SEQUENTIAL, seeds seed..seed+n-1, each decoded
+                # from latents cut to the cue first. Both measured 2026-09-28:
+                # the pipeline's own batched decode (3 variants) faulted the
+                # card deterministically - dxgkio_make_resident -12 inside
+                # autoencoder_oobleck.decode - and batched denoising was SLOWER
+                # than separate calls (142 s for 3 vs 29 s for 1). The decoder
+                # is convolutional, so decoding a prefix is valid; the edge at
+                # the cut falls in the slack the mastering trims.
+                audios = []
+                for v in range(n):
+                    gen = torch.Generator("cuda").manual_seed(seed + v)
+                    latents = pipe(rendered["prompt"],
+                                   negative_prompt=rendered["negative"],
+                                   num_inference_steps=SFX_STEPS,
+                                   audio_end_in_s=end_s,
+                                   output_type="latent",
+                                   generator=gen).audios
+                    with torch.no_grad():
+                        wave = pipe.vae.decode(latents[:1, :, :keep]).sample
+                    audios.append(wave[0, :, :int(end_s * sr)])
+                    del wave, latents
+                    torch.cuda.empty_cache()
+                took = round(time.time() - t1, 2)
+                uid = uuid.uuid4().hex[:8]
+                variants = []
+                for v, a in enumerate(audios, start=1):
+                    shot = am.master_one_shot(
+                        np.asarray(a.T.float().cpu().numpy()), sr)
+                    wav, ogg = am.sfx_paths(audio_dir, rendered["engine"],
+                                            rendered["cue"], rendered["entity"],
+                                            uid, v)
+                    am.write_wav(wav, shot["samples"], sr)
+                    am.write_ogg(ogg, shot["samples"], sr, loop=False)
+                    variants.append({"file_path": ogg, "master_path": wav,
+                                     "seed": seed + v - 1,
+                                     "duration_s": shot["duration_s"],
+                                     "onset_ms": shot["onset_ms"],
+                                     "trimmed_lead_ms": shot["trimmed_lead_ms"]})
+                out.append({**{k: rendered[k] for k in
+                               ("cue", "entity", "engine", "prompt", "negative")},
+                            "seed": seed, "sample_rate": sr,
+                            "variants": variants, "model_seconds": took,
+                            "load_seconds": load_s})
+            except (st.NoRecipe, st.UnknownStyle, ValueError) as e:
+                out.append({"cue": item.get("cue"), "entity": item.get("entity"),
+                            "engine": item.get("engine"), "error": str(e)})
+        peak = round(torch.cuda.max_memory_allocated() / 2 ** 20)
+        for o in out:
+            o.setdefault("peak_alloc_mb", peak)
+    finally:
+        del pipe
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        from tasks import release_vram_cache
+        release_vram_cache("audio sfx")
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,7 @@ the image side (CLAUDE.md). Exclusions go in `negative` only.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 # ACE-Step takes the time signature as a beat count ("2", "3", "4", "6"), so
@@ -268,15 +269,172 @@ STYLES: list[dict[str, Any]] = [
     },
 ]
 
+# ---------------------------------------------------------------------------
+# Sound effects: CUES, not styles (0010 D7/D8, tickets 16/17)
+# ---------------------------------------------------------------------------
+#
+# A cue is one game event - a slash, a hit, a pickup - played ONCE, 0.1-3 s,
+# never looped. Deliberately NOT called an "action": that word already means a
+# sprite-sheet row (domain.md). Kept apart from STYLES because a cue has no
+# slots and no metre, and `render` / `roster` must not start meeting entries
+# they cannot render.
+#
+# Addressed as `<cue>/<entity>` (owner, 2026-09-28): `hit/slime`,
+# `slash/knight`. The entity is optional and folds into the prompt; a bare
+# `hit` is a generic one.
+#
+# Each cue carries one RECIPE PER ENGINE. `realistic` is Stable Audio Open 1.0
+# (the ambience model, already proven here); `retro` is procedural 8-bit
+# synthesis (`audio_retro`, ticket 17). A cue without a recipe for the chosen
+# engine is refused by `resolve_engine`, never faked - `footstep` has no retro
+# recipe on purpose, because an 8-bit footstep is a weak blip.
+
+SFX_KIND = "sfx"
+ENGINES = ("realistic", "retro")
+DEFAULT_ENGINE = "realistic"
+
+# Every realistic cue excludes the ambience failure (a tune under the sound)
+# and the setting-breakers, plus room tone - a one-shot wants a dry, close
+# sound the game can place, not a recording of a hall.
+_SFX_NEGATIVE = ("music, melody, singing, speech, voice, background noise, "
+                 "room ambience, reverb tail, modern, electronic, low quality")
+_SFX_SUFFIX = "single isolated sound effect, close and dry, clean, game audio"
+
+CUES: list[dict[str, Any]] = [
+    {"value": "slash", "label": "Slash - a blade cutting air",
+     "default_engine": "realistic", "duration_s": 0.8,
+     "entity_default": "a steel sword",
+     "recipes": {"realistic": {"template":
+         "{entity} swung in a fast slash through the air, sharp whoosh, "
+         + _SFX_SUFFIX}}},
+    {"value": "hit", "label": "Hit - a blow landing",
+     "default_engine": "realistic", "duration_s": 0.6,
+     "entity_default": "a creature",
+     "recipes": {"realistic": {"template":
+         "a heavy blow landing on {entity}, short punchy impact, "
+         + _SFX_SUFFIX}}},
+    {"value": "pickup", "label": "Pickup - collecting an item",
+     "default_engine": "realistic", "duration_s": 0.5,
+     "entity_default": "a gold coin",
+     "recipes": {"realistic": {"template":
+         "picking up {entity}, bright short chime of metal, "
+         + _SFX_SUFFIX}}},
+    {"value": "spell", "label": "Spell - casting magic",
+     "default_engine": "realistic", "duration_s": 1.5,
+     "entity_default": "a fire spell",
+     "recipes": {"realistic": {"template":
+         "casting {entity}, magical shimmering swell and release, fantasy, "
+         + _SFX_SUFFIX}}},
+    {"value": "footstep", "label": "Footstep - one step",
+     "default_engine": "realistic", "duration_s": 0.4,
+     "entity_default": "a leather boot on stone",
+     "recipes": {"realistic": {"template":
+         "one single footstep, {entity}, " + _SFX_SUFFIX}}},
+    {"value": "ui_click", "label": "UI click - a menu button",
+     "default_engine": "realistic", "duration_s": 0.2,
+     "entity_default": "a wooden button",
+     "recipes": {"realistic": {"template":
+         "a soft short click of {entity}, crisp and subtle, "
+         + _SFX_SUFFIX}}},
+]
+
+# The cues `audio_retro.PRESETS` can render. Named here rather than imported
+# so this module stays dependency-free; smoke-audio asserts the two agree.
+RETRO_CUES = ("slash", "hit", "pickup", "spell", "ui_click")
+for _c in CUES:
+    if _c["value"] in RETRO_CUES:
+        _c["recipes"]["retro"] = {"preset": _c["value"]}
+
+
+class NoRecipe(ValueError):
+    """The chosen engine has no recipe for this cue - refused, not faked."""
+
+
+def _cue(cue: str) -> dict[str, Any]:
+    for c in CUES:
+        if c["value"] == cue:
+            return c
+    raise UnknownStyle(cue)
+
+
+def cue_roster() -> list[dict[str, Any]]:
+    """The cues as `GET /api/audio/styles?kind=sfx` returns them."""
+    return [{"value": c["value"], "label": c["label"], "kind": SFX_KIND,
+             "default": c["value"] == CUES[0]["value"],
+             "default_engine": c["default_engine"],
+             "engines": sorted(c["recipes"]), "duration_s": c["duration_s"],
+             "entity_default": c["entity_default"]} for c in CUES]
+
+
+def resolve_engine(cue: str, requested: str | None = None,
+                   world_engine: str | None = None) -> tuple[str, str]:
+    """(engine, engine_from) by precedence: request > world > cue > default.
+
+    Most specific wins (0010 D8). A level that names an engine the cue has no
+    recipe for RAISES `NoRecipe` rather than falling through: a silent
+    fall-through is how one game ends up with a mix of looks, which is what
+    the world level exists to prevent.
+    """
+    entry = _cue(cue)
+    for value, source in ((requested, "request"), (world_engine, "world"),
+                          (entry["default_engine"], "cue"),
+                          (DEFAULT_ENGINE, "default")):
+        if not value:
+            continue
+        if value not in ENGINES:
+            raise NoRecipe(f"unknown engine {value!r} (from {source}); "
+                           f"expected one of {', '.join(ENGINES)}")
+        if value not in entry["recipes"]:
+            raise NoRecipe(f"cue {cue!r} has no {value!r} recipe (engine from "
+                           f"{source}); it offers "
+                           f"{', '.join(sorted(entry['recipes']))}")
+        return value, source
+    raise NoRecipe(f"no engine resolved for {cue!r}")  # unreachable: default
+
+
+def sfx_name(engine: str, cue: str, entity: str | None) -> str:
+    """The ledger name: engine is part of the cache key (0010 D8)."""
+    ent = (entity or "").strip().lower()
+    return f"{engine}:{cue}/{ent}" if ent else f"{engine}:{cue}"
+
+
+def render_cue(cue: str, entity: str | None, engine: str) -> dict[str, Any]:
+    entry = _cue(cue)
+    recipe = entry["recipes"].get(engine)
+    if not recipe:
+        raise NoRecipe(f"cue {cue!r} has no {engine!r} recipe")
+    subject = (entity or "").strip() or entry["entity_default"]
+    if "template" not in recipe:
+        # A procedural recipe has no text prompt; this line is what the
+        # ledger and Activity show for it.
+        return {"cue": cue, "entity": (entity or "").strip() or None,
+                "engine": engine, "duration_s": entry["duration_s"],
+                "prompt": f"{engine} {cue} ({subject})", "negative": ""}
+    return {"cue": cue, "entity": (entity or "").strip() or None,
+            "engine": engine, "duration_s": entry["duration_s"],
+            "prompt": recipe["template"].format(entity=subject),
+            "negative": recipe.get("negative", _SFX_NEGATIVE)}
+
+
 # Keyword -> style, for `_rules_style_plan` in ticket 08 and for anyone who
 # wants a style from a map name without waking the LLM. First match wins, so
 # order matters: "mine" before "village" because "mining village" is a dungeon
 # with houses attached.
+#
+# Music and ambience share the table; `style_from_context` skips entries of
+# the other kind, so "mine" is `dungeon` for music and `cave` for ambience.
 RULES: list[tuple[tuple[str, ...], str]] = [
     (("dungeon", "cave", "crypt", "mine", "tomb", "catacomb", "lair"), "dungeon"),
     (("battle", "war", "siege", "arena", "boss", "fortress"), "battle"),
     (("tavern", "inn", "alehouse", "pub", "feast"), "tavern"),
     (("village", "town", "hamlet", "farm", "market", "square"), "village"),
+    (("cave", "mine", "cavern", "dungeon", "crypt", "tomb", "catacomb",
+      "underground", "grotto"), "cave"),
+    (("rain", "storm", "drizzle", "monsoon", "wet"), "rain"),
+    (("night", "moon", "dusk", "midnight", "graveyard"), "night"),
+    (("village", "town", "hamlet", "market", "square", "city", "inn",
+      "tavern"), "village_day"),
+    (("forest", "wood", "grove", "glade", "valley", "meadow", "field"), "forest"),
 ]
 
 
@@ -326,6 +484,173 @@ def style_from_context(context: str, kind: str = MUSIC_KIND) -> str:
             if entry["kind"] == kind:
                 return style
     return default_for(kind)
+
+
+# ---------------------------------------------------------------------------
+# Choosing a style from a map description (ticket 08)
+# ---------------------------------------------------------------------------
+#
+# The brain SELECTS a roster entry and fills its slots; it never writes the
+# model prompt - `render` does, from the template. Everything it returns is
+# validated against the roster, anything invented is dropped AND NAMED in the
+# author note, and any failure falls back to the keyword rules. The
+# `worlds._llm_biome_plan` pattern, with a different vocabulary.
+
+def _rules_style_plan(context: str, kind: str = MUSIC_KIND
+                      ) -> tuple[str, dict[str, Any], str]:
+    text = (context or "").lower()
+    for words, style in RULES:
+        if _entry(style)["kind"] != kind:
+            continue
+        hit = next((w for w in words if w in text), None)
+        if hit:
+            return style, {}, f"style chosen by keyword rules ({hit!r})"
+    return (default_for(kind), {},
+            "style chosen by keyword rules (no keyword matched; the default)")
+
+
+def _parse_llm_answer(text: str, kind: str
+                      ) -> tuple[str | None, dict[str, Any], list[str]]:
+    """(style, slots, notes) from a brain's reply, or (None, {}, notes).
+
+    Pure, so the smoke can feed it garbage. A 3B model wraps JSON in prose,
+    code fences, or answers with a style from the wrong kind or one that does
+    not exist; all of that is survivable. Slots are passed through for
+    `render` to clamp - it names every correction itself.
+    """
+    import json
+    import re
+
+    notes: list[str] = []
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None, {}, ["answer held no JSON object"]
+    try:
+        obj = json.loads(m.group(0))
+    except ValueError:
+        return None, {}, ["answer's JSON could not be read"]
+    if not isinstance(obj, dict):
+        return None, {}, ["answer was not a JSON object"]
+
+    style = str(obj.get("style") or "").strip()
+    valid = {s["value"] for s in STYLES if s["kind"] == kind}
+    if style not in valid:
+        other = {s["value"] for s in STYLES}
+        notes.append(f"dropped {'wrong-kind' if style in other else 'invented'} "
+                     f"style {style!r}" if style else "no style named")
+        return None, {}, notes
+
+    raw = obj.get("slots") if isinstance(obj.get("slots"), dict) else {}
+    known = _entry(style)["slots"]
+    slots = {k: v for k, v in raw.items() if k in known}
+    dropped = sorted(set(raw) - set(known))
+    if dropped:
+        notes.append(f"dropped invented slot(s): {', '.join(dropped)}")
+    return style, slots, notes
+
+
+def _llm_model(base: str) -> str | None:
+    """The TEXT model to route to - explicitly, not the router's first entry.
+
+    llama.cpp runs as a router over /models and lists every GGUF it finds,
+    including image-model GGUFs that happen to live there (the Qwen-Image
+    transformer, 2026-09-28). Taking entry [0] would one day ask the router to
+    load a 9.7 GB image model as a chat model. Prefer an instruct model.
+    """
+    import requests
+
+    override = os.environ.get("AUDIO_LLM_MODEL") or os.environ.get("WORLD_LLM_MODEL")
+    if override:
+        return override
+    data = requests.get(f"{base}/v1/models", timeout=10).json().get("data") or []
+    ids = [d.get("id", "") for d in data]
+    for i in ids:
+        if "instruct" in i.lower():
+            return i
+    return None
+
+
+def _llm_style_plan(context: str, kind: str = MUSIC_KIND, attempts: int = 2
+                    ) -> tuple[str | None, dict[str, Any], str]:
+    """Ask the brain for a style. Returns (style|None, slots, note); never raises.
+
+    `attempts`: a cold router load measured >45 s on 2026-09-28 (worlds.py
+    recorded ~13 s earlier), so the FIRST call after the 120 s sleep can time
+    out while the load continues, and a second call then answers in ~1 s. Two
+    attempts suit an interactive propose; a generation passes 1, because two
+    45 s attempts plus the 240 s build budget exceed something2's 300 s cap.
+    """
+    import requests
+
+    base = os.environ.get("LLM_URL", "http://llm-server:8080")
+    timeout = float(os.environ.get("AUDIO_LLM_TIMEOUT", "45"))
+    options = []
+    for s in STYLES:
+        if s["kind"] != kind:
+            continue
+        slots = "; ".join(
+            f"{n}: {spec['min']}-{spec['max']}" if spec["type"] == "int"
+            else f"{n}: one of {spec['values']}"
+            for n, spec in s["slots"].items())
+        options.append(f'- "{s["value"]}" ({s["label"]}). Slots - {slots}')
+    prompt = (
+        f"Pick the {kind} for a map in a medieval fantasy pixel-art RPG.\n"
+        f"Map description: {context}\n\n"
+        f"Choose exactly ONE style from this list and fill its slots with "
+        f"allowed values only:\n" + "\n".join(options) + "\n\n"
+        'Reply with ONLY a JSON object, e.g. '
+        '{"style": "<one of the names above>", "slots": {"mood": "..."}}')
+    try:
+        model = _llm_model(base)
+        if not model:
+            return None, {}, "no text model loaded in llama.cpp"
+        # Two attempts: the router loads on demand and the first call after
+        # its 120 s sleep answers with a non-completion body (worlds.py).
+        text = None
+        timed_out = False
+        for attempt in range(1, attempts + 1):
+            try:
+                r = requests.post(
+                    f"{base}/v1/chat/completions",
+                    json={"model": model, "temperature": 0, "max_tokens": 200,
+                          "messages": [{"role": "user", "content": prompt}]},
+                    timeout=timeout)
+            except requests.Timeout:
+                timed_out = True
+                continue
+            if r.status_code == 200:
+                try:
+                    text = r.json()["choices"][0]["message"]["content"]
+                    break
+                except (ValueError, KeyError, IndexError):
+                    pass
+        if text is None:
+            return None, {}, (f"LLM did not answer within {timeout:.0f}s x "
+                              f"{attempts} (cold load?)" if timed_out
+                              else "LLM did not answer")
+        style, slots, notes = _parse_llm_answer(text, kind)
+        if not style:
+            return None, {}, f"{model}: " + "; ".join(notes)
+        note = f"style chosen by {model}"
+        return style, slots, note + (f"; {'; '.join(notes)}" if notes else "")
+    except Exception as e:  # noqa: BLE001 - the brain is optional
+        return None, {}, f"LLM call failed ({type(e).__name__})"
+
+
+def plan_style(context: str, kind: str = MUSIC_KIND, *, use_llm: bool = True,
+               attempts: int = 2) -> tuple[str, dict[str, Any], str]:
+    """(style, slots, author) for a map description: the brain, else the rules.
+
+    `author` always says which ran and, on a fallback, why - so a response can
+    never claim the LLM chose something it did not.
+    """
+    if use_llm:
+        style, slots, note = _llm_style_plan(context, kind, attempts)
+        if style:
+            return style, slots, note
+        rstyle, rslots, rnote = _rules_style_plan(context, kind)
+        return rstyle, rslots, f"{rnote}; LLM not used: {note}"
+    return _rules_style_plan(context, kind)
 
 
 def render(style: str | None = None, **slots: Any) -> dict[str, Any]:

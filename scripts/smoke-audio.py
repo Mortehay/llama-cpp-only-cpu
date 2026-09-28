@@ -123,6 +123,45 @@ def _rules():
     return f"{len(want)} contexts"
 
 
+@case("ambience keywords pick textures, and the author names the keyword")
+def _rules_ambience():
+    want = {
+        "abandoned dwarven mine, danger": "cave",   # music says dungeon
+        "the drunken boar inn": "village_day",
+        "a storm over the moors": "rain",
+        "graveyard at midnight": "night",
+        "a green valley giving way to cold highlands": "forest",
+        "an empty plain": "forest",                 # the default
+    }
+    for ctx, expect in want.items():
+        style, slots, author = st._rules_style_plan(ctx, "ambience")
+        assert style == expect, f"{ctx!r} -> {style}, wanted {expect}"
+        assert slots == {} and "keyword rules" in author, author
+    _, _, author = st._rules_style_plan("an empty plain", "ambience")
+    assert "no keyword matched" in author, author
+    return f"{len(want)} contexts"
+
+
+@case("a brain's answer is validated: garbage, wrong kind and inventions are named")
+def _llm_parse():
+    ok = st._parse_llm_answer(
+        'Sure! ```json\n{"style": "dungeon", "slots": {"mood": "lonely", '
+        '"tempo_bpm": 999, "kazoo": "yes"}}\n```', "music")
+    assert ok[0] == "dungeon", ok
+    assert ok[1] == {"mood": "lonely", "tempo_bpm": 999}, ok  # render clamps
+    assert any("kazoo" in n for n in ok[2]), ok
+    assert st.render(ok[0], **ok[1])["bpm"] == 80, "tempo not clamped"
+    for text, why in (("no json here", "no JSON"),
+                      ('{"style": "sea_shanty"}', "invented"),
+                      ('{"style": "cave"}', "wrong-kind"),
+                      ('{"style": ', "no JSON"),
+                      ("[1, 2]", "no JSON")):
+        style, slots, notes = st._parse_llm_answer(text, "music")
+        assert style is None and slots == {}, (text, style)
+        assert any(why in n for n in notes), (text, notes)
+    return "1 accepted, 5 refused with a reason"
+
+
 # ---------------------------------------------------------------------------
 # Bars
 # ---------------------------------------------------------------------------
@@ -277,6 +316,123 @@ def _ogg_seam():
     jump = am.seam_rms_jump(decoded, rate)
     assert jump < 1.5, f"{jump:.2f} dB at the seam after vorbis"
     return f"{jump:.2f} dB, {len(decoded) / rate:.3f}s decoded"
+
+
+# ---------------------------------------------------------------------------
+# Sound effects (ticket 16)
+# ---------------------------------------------------------------------------
+
+@case("sfx engine precedence: request > world > cue > default, refusals named")
+def _sfx_engine():
+    assert st.resolve_engine("hit") == ("realistic", "cue")
+    assert st.resolve_engine("hit", "realistic") == ("realistic", "request")
+    assert st.resolve_engine("hit", None, "realistic") == ("realistic", "world")
+    assert st.resolve_engine("hit", "retro") == ("retro", "request")
+    assert st.resolve_engine("hit", None, "retro") == ("retro", "world")
+    assert st.resolve_engine("hit", "realistic", "retro") == ("realistic", "request")
+    # A level that names an engine the cue cannot render is REFUSED, never
+    # passed down - a silent fall-through would mix looks within one game.
+    # footstep has no retro recipe on purpose (ticket 17).
+    for req, world, where in (("retro", None, "request"),
+                              (None, "retro", "world"),
+                              ("retro", "realistic", "request")):
+        try:
+            st.resolve_engine("footstep", req, world)
+        except st.NoRecipe as e:
+            assert where in str(e) and "offers realistic" in str(e), e
+        else:
+            raise AssertionError(f"retro footstep from {where} was not refused")
+    try:
+        st.resolve_engine("hit", "chiptune")
+    except st.NoRecipe as e:
+        assert "unknown engine" in str(e), e
+    else:
+        raise AssertionError("an unknown engine was accepted")
+    try:
+        st.resolve_engine("yodel")
+    except st.UnknownStyle:
+        pass
+    else:
+        raise AssertionError("an unknown cue was accepted")
+    # Engine is part of the cache key; the entity is normalised.
+    assert st.sfx_name("realistic", "hit", " Slime ") == "realistic:hit/slime"
+    assert st.sfx_name("retro", "hit", None) == "retro:hit"
+    r = st.render_cue("hit", "a slime", "realistic")
+    assert "a slime" in r["prompt"] and " no " not in f" {r['prompt']} "
+    assert "music" in r["negative"] and r["duration_s"] == 0.6
+    assert "a creature" in st.render_cue("hit", None, "realistic")["prompt"]
+    assert {c["value"] for c in st.cue_roster()} >= {"slash", "hit", "pickup"}
+    return f"{len(st.CUES)} cues, 3 levels + 3 refusals"
+
+
+@case("retro engine: deterministic, fast, every recipe audible, name-seeded")
+def _retro():
+    import time as _t
+    import audio_retro as ar
+    # The roster and the synth agree on which cues exist in 8-bit.
+    assert set(st.RETRO_CUES) == set(ar.PRESETS), (st.RETRO_CUES, list(ar.PRESETS))
+    assert "footstep" not in ar.PRESETS
+    # Same cue + seed -> byte-identical samples.
+    a = ar.synth(ar.draw("hit", 7), 7)
+    b = ar.synth(ar.draw("hit", 7), 7)
+    assert a.tobytes() == b.tobytes(), "retro is not deterministic"
+    assert a.tobytes() != ar.synth(ar.draw("hit", 8), 8).tobytes()
+    # The name gives the seed: stable, and different per entity.
+    assert ar.seed_for("hit", "Slime ") == ar.seed_for("hit", "slime")
+    assert ar.seed_for("hit", "slime") != ar.seed_for("hit", "knight")
+    worst, lengths = 0.0, []
+    with tempfile.TemporaryDirectory() as tmp:
+        for cue in ar.PRESETS:
+            t0 = _t.time()
+            res = ar.build(cue, "slime", None, 3, tmp)
+            worst = max(worst, (_t.time() - t0) / 3)
+            for v in res["variants"]:
+                assert v["onset_ms"] <= 10, (cue, v["onset_ms"])
+                assert os.path.exists(v["file_path"]), v["file_path"]
+                lengths.append(v["duration_s"])
+            assert res["engine"] == "retro" and res["seed"] == ar.seed_for(cue, "slime")
+            assert [v["seed"] for v in res["variants"]] == [res["seed"] + k
+                                                            for k in range(3)]
+        # Rebuilding by name reproduces the same audio (the cache contract).
+        again = ar.build("pickup", "slime", None, 1, tmp)["variants"][0]
+        first = ar.build("pickup", "slime", None, 1, tmp)["variants"][0]
+        import soundfile as sf
+        assert (sf.read(again["master_path"])[0] == sf.read(first["master_path"])[0]).all()
+    # Ticket 17's bar is "under 1 s"; a variant is far below it.
+    assert worst < 0.5, f"{worst:.3f}s per variant"
+    return (f"{len(ar.PRESETS)} cues x 3 variants, worst {worst * 1000:.0f} ms/variant, "
+            f"{min(lengths):.2f}-{max(lengths):.2f} s long")
+
+
+@case("one-shot mastering: onset <=10 ms, faded tail, -1 dBFS, no loop tags")
+def _one_shot():
+    sr = 44100
+    lead = np.zeros((int(0.3 * sr), 2), np.float32)          # 300 ms silence
+    hit = 0.3 * _sine(sr, 0.4)                                # stereo already
+    hit = (hit * np.linspace(1, 0.2, len(hit))[:, None]).astype(np.float32)
+    tail = np.zeros((int(0.5 * sr), 2), np.float32)
+    out = am.master_one_shot(np.concatenate([lead, hit, tail]), sr)
+    x = out["samples"]
+    assert out["onset_ms"] <= 10, out["onset_ms"]
+    assert 290 <= out["trimmed_lead_ms"] <= 300, out["trimmed_lead_ms"]
+    assert out["duration_s"] < 0.6, out["duration_s"]         # tail cut
+    assert abs(20 * np.log10(np.max(np.abs(x))) + 1.0) < 0.05
+    assert np.max(np.abs(x[-5:])) < 1e-3, "the end was not faded"
+    try:
+        am.master_one_shot(np.zeros((sr, 2), np.float32), sr)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a silent take was accepted")
+    from mutagen.oggvorbis import OggVorbis
+    with tempfile.TemporaryDirectory() as tmp:
+        wav, ogg = am.sfx_paths(tmp, "realistic", "hit", "Big Slime!", "ab12", 2)
+        assert ogg.endswith(os.path.join("sfx", "realistic", "hit",
+                                         "big-slime-_ab12_v2.ogg")), ogg
+        am.write_ogg(ogg, x, sr, loop=False)
+        assert "LOOPSTART" not in OggVorbis(ogg), "a cue carries loop tags"
+    return (f"lead {out['trimmed_lead_ms']} ms trimmed, onset "
+            f"{out['onset_ms']} ms, {out['duration_s']} s")
 
 
 @case("a full-length music loop writes to OGG without killing the process")

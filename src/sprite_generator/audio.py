@@ -232,11 +232,43 @@ def _await_build(task_id: str, gen_id: str | None, kind: str, name: str,
     return _payload(row, cached=False, started=started)
 
 
+class ProposeRequest(BaseModel):
+    context: str
+    kind: str = "music"
+
+
+@router.post("/api/audio/propose")
+def propose_style(req: ProposeRequest,
+                  authorization: str | None = Header(default=None)):
+    """What a map description would get, WITHOUT generating anything.
+
+    No GPU, no ledger row: the brain (two attempts, since a person is waiting
+    and a cold load can outlast one) or the keyword rules pick a style and
+    slots, and the template renders the prompt. The Audio tab fills its form
+    from this; generating is still a separate click.
+    """
+    auth.require(authorization, "read")
+    kind = _require_kind(req.kind)
+    if not req.context.strip():
+        raise HTTPException(status_code=422, detail="context is required")
+    style, slots, author = audio_styles.plan_style(req.context, kind)
+    rendered = audio_styles.render(style, **slots)
+    return {"kind": kind, "style": style, "slots": rendered["slots"],
+            "author": author, "prompt": rendered["prompt"],
+            "adjusted": rendered["adjusted"]}
+
+
 @router.get("/api/audio/styles")
 def list_styles(kind: str | None = Query(None),
                 authorization: str | None = Header(default=None)):
-    """The roster. `$[*].value` is the discovery pointer for something2."""
+    """The roster. `$[*].value` is the discovery pointer for something2.
+
+    `?kind=sfx` lists CUES instead (each with the engines it has a recipe
+    for): a cue is not a style and has no slots.
+    """
     auth.require(authorization, "read")
+    if kind and kind.strip().lower() == "sfx":
+        return audio_styles.cue_roster()
     return audio_styles.roster(kind)
 
 
@@ -281,25 +313,33 @@ def generate_audio(req: AudioRequest, request: Request,
                                     "retry_after_s": 120},
                             headers={"Retry-After": "120"})
 
-    style = req.style
-    if not style and req.context and not req.prompt:
-        # Keyword fallback only; the LLM path is ticket 08. Recorded either
-        # way so `author` never claims more than actually happened.
-        style = audio_styles.style_from_context(req.context, kind)
-    author = ("style chosen by keyword from context" if style and req.context
-              and not req.style else "style given by the caller" if req.style
-              else "roster default")
+    # Precedence: an explicit prompt > an explicit style > the map description
+    # (brain, else keyword rules) > the roster default. Slots the caller sent
+    # beat the brain's, so a pinned mood survives a context. ONE brain
+    # attempt here, not two: this request's budget is something2's 300 s and
+    # the build below already gets 240 of it (see audio_styles).
+    style, slots = req.style, dict(req.slots or {})
+    if req.prompt:
+        author = "prompt given by the caller (style template bypassed)"
+    elif style:
+        author = "style given by the caller"
+    elif req.context:
+        style, planned, author = audio_styles.plan_style(
+            req.context, kind, attempts=1)
+        slots = {**planned, **slots}
+    else:
+        author = "roster default"
 
     gen = generations.begin(kind=kind, name=name, route="/api/audio",
                             prompt=(req.prompt or ""), seed=req.seed,
-                            params={"style": style, "requested_duration_s":
+                            params={"style": style, "slots": slots, "requested_duration_s":
                                     req.duration_s, "author": author},
                             caller=caller)
 
     task = celery_app.send_task(
         "tasks.generate_audio_task",
         kwargs={"kind": kind, "name": name, "style": style,
-                "prompt": req.prompt, "slots": req.slots, "seed": req.seed,
+                "prompt": req.prompt, "slots": slots or None, "seed": req.seed,
                 "duration_s": req.duration_s, "gen_id": gen})
     generations.attach_task(gen, task.id)
     return _await_build(task.id, gen, kind, name, started, queued=True)
@@ -319,7 +359,11 @@ def list_audio(kind: str | None = Query(None), name: str | None = Query(None),
     # second, emptier copy of a track that already appears above it.
     where = ["kind = ANY(%s)", "deleted = false",
              "(file_path IS NOT NULL OR status <> 'done')"]
-    args: list = [list(KINDS) if not kind else [_require_kind(kind)]]
+    listed = KINDS + ("sfx",)
+    if kind and kind.strip().lower() == "sfx":
+        args: list = [["sfx"]]
+    else:
+        args = [list(listed) if not kind else [_require_kind(kind)]]
     if name:
         where.append("lower(name) = lower(%s)")
         args.append(name.strip())
@@ -362,6 +406,12 @@ def list_audio(kind: str | None = Query(None), name: str | None = Query(None),
             # The open /audio mount, so a browser <audio> tag can play it
             # without a bearer; the /api/audio route below needs one.
             "url": generations._url(r["file_path"]),
+            # sfx only: every variant, so the tab can play each one.
+            "variants": [generations._url(v.get("file_path"))
+                         for v in (params.get("variants") or [])] or None,
+            "cue": params.get("cue"), "entity": params.get("entity"),
+            "engine": params.get("engine"),
+            "engine_from": params.get("engine_from"),
             "download_url": base,
         })
     return {"items": out, "count": len(out)}
@@ -406,3 +456,243 @@ def get_audio_info(kind: str, name: str,
     kind = _require_kind(kind)
     row = _resolve_or_404(kind, _require_name(name))
     return _info(row, cached=True, elapsed_ms=0)
+
+
+# ---------------------------------------------------------------------------
+# Sound effects: one-shot cues (0010 D7/D8, ticket 16)
+# ---------------------------------------------------------------------------
+#
+# Addressed as `<cue>/<entity>`; the engine is part of the ledger name
+# (`realistic:hit/slime`) so a realistic and a retro cue never share a cache
+# slot. Same D5 facade as music: cache first, build within the budget, 503 +
+# Retry-After on overshoot WITHOUT cancelling. A pack is one worker task and
+# ONE model load; each cue still owns its own ledger row.
+
+class SfxItem(BaseModel):
+    cue: str
+    entity: str | None = None
+    engine: str | None = None
+
+
+class SfxRequest(SfxItem):
+    world: str | None = None
+    variants: int = 3
+    seed: int | None = None
+
+
+class SfxPackRequest(BaseModel):
+    items: list[SfxItem]
+    world: str | None = None
+    variants: int = 3
+    seed: int | None = None
+
+
+def _world_engine(world: str | None) -> str | None:
+    """`sfx_engine` from the world's generation sidecar, or None.
+
+    Level 2 of the precedence. The sidecar is the world's `.gen.json` - the
+    file something2's seeder never reads - so the spec they consume is
+    untouched. A world named but not found is a 404: a typo must not quietly
+    drop to the cue default and mix looks.
+    """
+    if not world:
+        return None
+    import worlds
+    _, _, gen_path = worlds._paths(world)
+    if not os.path.exists(gen_path):
+        raise HTTPException(status_code=404,
+                            detail=f"no world named {world!r} to read an sfx "
+                                   f"engine from")
+    with open(gen_path, encoding="utf-8") as fh:
+        return (json.load(fh) or {}).get("sfx_engine")
+
+
+def _sfx_entry(row: dict, *, cached: bool, want: int, engine_from: str) -> dict:
+    p = _params(row)
+    variants = (p.get("variants") or [])[:want]
+    return {
+        "cue": p.get("cue"), "entity": p.get("entity"),
+        "engine": p.get("engine"), "engine_from": engine_from,
+        "name": row["name"], "prompt": row.get("prompt"), "seed": row.get("seed"),
+        "sample_rate": p.get("sample_rate"),
+        "variants": [{"url": generations._url(v["file_path"]),
+                      "duration_s": v.get("duration_s"),
+                      "onset_ms": v.get("onset_ms")} for v in variants],
+        "audio": [_b64(v["file_path"]) for v in variants],
+        "cached": cached, "served_from": "cache" if cached else "generated",
+        "generation_id": str(row["id"]),
+    }
+
+
+def _serve_sfx(items: list[SfxItem], *, world: str | None, variants: int,
+               seed: int | None, principal, request: Request) -> list[dict]:
+    started = time.time()
+    if not items:
+        raise HTTPException(status_code=422, detail="no cues given")
+    if not 1 <= variants <= 5:
+        raise HTTPException(status_code=422, detail="variants must be 1-5")
+    caller = generations.describe_caller(principal, request)
+    world_engine = _world_engine(world)
+
+    plan: list = []
+    out: list[dict] = [{} for _ in items]
+    for i, it in enumerate(items):
+        try:
+            engine, source = audio_styles.resolve_engine(it.cue, it.engine,
+                                                         world_engine)
+        except audio_styles.UnknownStyle:
+            raise HTTPException(status_code=422,
+                                detail=f"unknown cue {it.cue!r}; see "
+                                       f"GET /api/audio/styles?kind=sfx")
+        except audio_styles.NoRecipe as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        name = audio_styles.sfx_name(engine, it.cue, it.entity)
+        cached = generations.resolve_name(name, kind="sfx")
+        if cached and len(_params(cached).get("variants") or []) >= variants:
+            generations.record(kind="sfx", name=name, served_from="cache",
+                               route="/api/audio/sfx",
+                               prompt=cached.get("prompt") or "",
+                               params={"cache_of": str(cached["id"])},
+                               caller=caller,
+                               duration_ms=(time.time() - started) * 1000)
+            out[i] = _sfx_entry(cached, cached=True, want=variants,
+                                engine_from=source)
+            continue
+        if _running_build("sfx", name):
+            raise HTTPException(
+                status_code=503, headers={"Retry-After": "60"},
+                detail={"reason": "building", "kind": "sfx", "name": name,
+                        "detail": f"{name!r} is already being built; ask "
+                                  f"again and it will be served from cache.",
+                        "retry_after_s": 60})
+        plan.append((i, it, engine, source, name))
+
+    # RETRO renders here, in the API process, before any worker check: it is
+    # milliseconds of numpy and must never queue behind a GPU job (ticket 17).
+    # With no seed, audio_retro derives one from the name - same name, same
+    # sound. Only realistic cues continue to the worker below.
+    gpu_plan = []
+    for n, (i, it, engine, source, name) in enumerate(plan):
+        if engine != "retro":
+            gpu_plan.append((i, it, engine, source, name))
+            continue
+        gen = generations.begin(
+            kind="sfx", name=name, route="/api/audio/sfx", seed=seed,
+            params={"cue": it.cue, "entity": it.entity, "engine": engine,
+                    "engine_from": source, "requested_variants": variants,
+                    "world": world},
+            caller=caller)
+        t0 = time.time()
+        try:
+            import audio_engine
+            import audio_retro
+            res = audio_retro.build(it.cue, it.entity,
+                                    (seed + n) if seed else None, variants,
+                                    audio_engine.AUDIO_DIR)
+        except Exception as e:  # noqa: BLE001 - one cue fails, not the pack
+            generations.fail(gen, str(e), duration_ms=(time.time() - t0) * 1000)
+            out[i] = {"cue": it.cue, "entity": it.entity, "engine": engine,
+                      "engine_from": source, "name": name, "error": str(e)}
+            continue
+        generations.finish(gen, file_path=res["variants"][0]["file_path"],
+                           seed=res["seed"], prompt=res["prompt"],
+                           duration_ms=(time.time() - t0) * 1000,
+                           params=audio_engine.sfx_ledger_params(
+                               {"engine_from": source}, res))
+        row = generations.resolve_name(name, kind="sfx")
+        out[i] = (_sfx_entry(row, cached=False, want=variants,
+                             engine_from=source) if row else
+                  {"cue": it.cue, "name": name,
+                   "error": "built but not readable back from the ledger"})
+    plan = gpu_plan
+
+    if not plan:
+        return out
+
+    busy = _long_job_ahead()
+    if busy:
+        raise HTTPException(status_code=503, headers={"Retry-After": "120"},
+                            detail={"reason": "busy", "kind": "sfx",
+                                    "detail": f"cannot build now: {busy}",
+                                    "retry_after_s": 120})
+
+    batch = []
+    for n, (i, it, engine, source, name) in enumerate(plan):
+        gen = generations.begin(
+            kind="sfx", name=name, route="/api/audio/sfx", seed=seed,
+            params={"cue": it.cue, "entity": it.entity, "engine": engine,
+                    "engine_from": source, "requested_variants": variants,
+                    "world": world},
+            caller=caller)
+        batch.append({"cue": it.cue, "entity": it.entity, "engine": engine,
+                      "engine_from": source, "variants": variants,
+                      # Distinct seeds per cue in a pack, still reproducible.
+                      "seed": (seed + n) if seed else None, "gen_id": gen})
+    task = celery_app.send_task("tasks.generate_sfx_task",
+                                kwargs={"items": batch})
+    for b in batch:
+        generations.attach_task(b["gen_id"], task.id)
+
+    try:
+        result = celery_app.AsyncResult(task.id).get(
+            timeout=AUDIO_GENERATE_TIMEOUT_S)
+    except Exception:
+        # DELIBERATELY NO REVOKE - the task closes its own rows (D5).
+        raise HTTPException(
+            status_code=503, headers={"Retry-After": "60"},
+            detail={"reason": "building", "kind": "sfx",
+                    "detail": f"{len(batch)} cue(s) still building after "
+                              f"{time.time() - started:.0f}s. NOT cancelled - "
+                              f"ask again and they will be served from cache.",
+                    "retry_after_s": 60})
+    if result and result.get("error_kind") == "gpu_faulted":
+        raise HTTPException(
+            status_code=503,
+            headers={"Retry-After": str(result.get("retry_after_s", 90))},
+            detail={"reason": "gpu_faulted", "kind": "sfx",
+                    "detail": result.get("error"),
+                    "retry_after_s": result.get("retry_after_s", 90)})
+    if not result or result.get("error"):
+        raise HTTPException(status_code=500,
+                            detail=f"sfx build failed: "
+                                   f"{(result or {}).get('error', 'unknown')}")
+
+    for (i, it, engine, source, name), res in zip(plan, result["items"]):
+        if res.get("error"):
+            out[i] = {"cue": it.cue, "entity": it.entity, "engine": engine,
+                      "engine_from": source, "name": name,
+                      "error": res["error"]}
+            continue
+        row = generations.resolve_name(name, kind="sfx")
+        out[i] = (_sfx_entry(row, cached=False, want=variants,
+                             engine_from=source) if row else
+                  {"cue": it.cue, "name": name,
+                   "error": "built but not readable back from the ledger"})
+    return out
+
+
+@router.post("/api/audio/sfx")
+def generate_sfx(req: SfxRequest, request: Request,
+                 authorization: str | None = Header(default=None)):
+    """One cue, 1-5 variants. `audio` holds one base64 OGG per variant."""
+    principal = auth.require(authorization, "generate")
+    entry = _serve_sfx([req], world=req.world, variants=req.variants,
+                       seed=req.seed, principal=principal, request=request)[0]
+    if entry.get("error"):
+        raise HTTPException(status_code=500, detail=entry["error"])
+    audio = entry.pop("audio")
+    return {"audio": audio, "info": {"kind": "sfx", **entry}}
+
+
+@router.post("/api/audio/sfx-pack")
+def generate_sfx_pack(req: SfxPackRequest, request: Request,
+                      authorization: str | None = Header(default=None)):
+    """Many cues in ONE model load. A cue that fails is reported in its own
+    entry; the others still return."""
+    principal = auth.require(authorization, "generate")
+    if len(req.items) > 40:
+        raise HTTPException(status_code=422, detail="at most 40 cues per pack")
+    items = _serve_sfx(req.items, world=req.world, variants=req.variants,
+                       seed=req.seed, principal=principal, request=request)
+    return {"items": items, "count": len(items),
+            "failed": sum(1 for i in items if i.get("error"))}

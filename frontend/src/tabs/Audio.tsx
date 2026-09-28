@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { audioApi } from '../api'
-import type { AudioGenerateOutcome, AudioRow, AudioStyle } from '../api'
+import type { AudioGenerateOutcome, AudioProposal, AudioRow, AudioStyle, SfxCue } from '../api'
 import { useAsync } from '../hooks'
 
-type Kind = 'music' | 'ambience'
+type Kind = 'music' | 'ambience' | 'sfx'
 
 /**
  * Generate, listen to, and audition music and ambience loops by hand.
@@ -39,10 +39,38 @@ export default function Audio() {
   const [prompt, setPrompt] = useState('')
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<AudioGenerateOutcome | null>(null)
+  const [context, setContext] = useState('')
+  const [proposing, setProposing] = useState(false)
+  const [proposal, setProposal] = useState<AudioProposal | null>(null)
+  const [proposeError, setProposeError] = useState<string | null>(null)
 
   // A style change resets its slots: another entry's mood value is not valid
-  // here, and the server would silently swap it for the default.
-  useEffect(() => setSlots({}), [kind, entry?.value])
+  // here, and the server would silently swap it for the default. A proposal
+  // sets style and slots together, so it marks its slots to survive this.
+  const keepSlots = useRef(false)
+  useEffect(() => {
+    if (keepSlots.current) {
+      keepSlots.current = false
+      return
+    }
+    setSlots({})
+  }, [kind, entry?.value])
+
+  async function propose() {
+    setProposing(true)
+    setProposeError(null)
+    try {
+      const p = await audioApi.propose(context.trim(), kind)
+      keepSlots.current = p.style !== entry?.value
+      setStyle(p.style)
+      setSlots(p.slots)
+      setProposal(p)
+    } catch (e) {
+      setProposeError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setProposing(false)
+    }
+  }
 
   // While something is building, poll the list so it appears the moment it
   // finishes - the request that started it may already have answered 503.
@@ -65,7 +93,7 @@ export default function Audio() {
     setOutcome(null)
     try {
       const res = await audioApi.generate({
-        kind,
+        kind: kind as 'music' | 'ambience',
         name: name.trim(),
         style: entry.value,
         prompt: prompt.trim() || undefined,
@@ -105,14 +133,45 @@ export default function Audio() {
 
         {styles.error && <div className="note err">{styles.error}</div>}
 
+        {kind !== 'sfx' && (<>
+        <div className="row tight" style={{ alignItems: 'flex-end', marginBottom: 10 }}>
+          <div style={{ flex: '3 1 300px' }}>
+            <label htmlFor="a-context">Describe the map (optional)</label>
+            <input
+              id="a-context"
+              value={context}
+              placeholder="e.g. abandoned dwarven mine, danger"
+              onChange={(e) => setContext(e.target.value)}
+            />
+          </div>
+          <button
+            className="btn ghost"
+            disabled={proposing || !context.trim()}
+            onClick={propose}
+            title="The brain picks a style and fills its slots; nothing is generated"
+          >
+            {proposing ? 'Asking… (a cold LLM can take ~1 min)' : 'Propose style'}
+          </button>
+        </div>
+        {proposeError && <div className="note err">{proposeError}</div>}
+        {proposal && (
+          <p className="hint" style={{ marginTop: 0 }}>
+            <strong>{proposal.style}</strong> — {proposal.author}
+            {proposal.adjusted.length > 0 && ` (corrected: ${proposal.adjusted.join('; ')})`}
+          </p>
+        )}
+        </>)}
+
         <div className="row tight">
           <div style={{ flex: '1 1 150px' }}>
             <label htmlFor="a-kind">Kind</label>
             <select id="a-kind" value={kind} onChange={(e) => switchKind(e.target.value as Kind)}>
               <option value="ambience">ambience (Stable Audio Open)</option>
               <option value="music">music (ACE-Step)</option>
+              <option value="sfx">sound effects (one-shot cues)</option>
             </select>
           </div>
+          {kind !== 'sfx' && (<>
           <div style={{ flex: '2 1 220px' }}>
             <label htmlFor="a-style">Style</label>
             <select
@@ -131,8 +190,12 @@ export default function Audio() {
             <label htmlFor="a-name">Name (map)</label>
             <input id="a-name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
+          </>)}
         </div>
 
+        {kind === 'sfx' ? (
+          <SfxPanel onBuilt={list.reload} />
+        ) : (<>
         {kind === 'music' && (
           <p className="hint" style={{ marginTop: 10 }}>
             A 2-minute loop takes about a minute cold (measured 56 s): ACE-Step loads,
@@ -211,6 +274,7 @@ export default function Audio() {
           </button>
           {outcome && <OutcomeNote o={outcome} />}
         </div>
+        </>)}
       </div>
 
       <div className="card">
@@ -225,6 +289,167 @@ export default function Audio() {
           ))}
         </div>
       </div>
+    </>
+  )
+}
+
+/**
+ * Sound effects: one cue, or a pack of cues built in ONE model load.
+ *
+ * Addressed as `<cue>/<entity>`. The engine field is optional: left on
+ * "auto", the server resolves it (request > world > cue default) and says
+ * which level decided. Asking for an engine a cue has no recipe for is a 422
+ * with the reason - retro arrives with ticket 17 - never a silent substitute.
+ * Unlike music, a repeated cue/entity IS served from cache on purpose: the
+ * name is the game's handle for that sound.
+ */
+function SfxPanel({ onBuilt }: { onBuilt: () => void }) {
+  const cues = useAsync(() => audioApi.cues(), [])
+  const [cue, setCue] = useState('hit')
+  const [entity, setEntity] = useState('')
+  const [engine, setEngine] = useState('')
+  const [world, setWorld] = useState('')
+  const [variants, setVariants] = useState(3)
+  const [pack, setPack] = useState<Set<string>>(new Set())
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<AudioGenerateOutcome | null>(null)
+  const [packNote, setPackNote] = useState<string | null>(null)
+
+  const current: SfxCue | undefined = cues.data?.find((c) => c.value === cue)
+
+  async function run(isPack: boolean) {
+    setBusy(true)
+    setOutcome(null)
+    setPackNote(null)
+    const common = {
+      world: world.trim() || undefined,
+      variants,
+    }
+    try {
+      const res = isPack
+        ? await audioApi.sfxPack({
+            ...common,
+            items: [...pack].map((c) => ({
+              cue: c,
+              entity: entity.trim() || undefined,
+              engine: engine || undefined,
+            })),
+          })
+        : await audioApi.sfx({
+            ...common,
+            cue,
+            entity: entity.trim() || undefined,
+            engine: engine || undefined,
+          })
+      setOutcome(res)
+      if (res.ok && isPack) {
+        const items = (res.info as { items?: { name: string; served_from?: string; error?: string }[] })
+          .items ?? []
+        setPackNote(
+          items
+            .map((i) => `${i.name}: ${i.error ? `failed (${i.error})` : i.served_from}`)
+            .join(' · '),
+        )
+      }
+    } finally {
+      setBusy(false)
+      onBuilt()
+    }
+  }
+
+  return (
+    <>
+      {cues.error && <div className="note err">{cues.error}</div>}
+      <div className="row tight" style={{ marginTop: 10 }}>
+        <div style={{ flex: '1 1 160px' }}>
+          <label htmlFor="s-cue">Cue</label>
+          <select id="s-cue" value={cue} onChange={(e) => setCue(e.target.value)}>
+            {(cues.data ?? []).map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div style={{ flex: '2 1 200px' }}>
+          <label htmlFor="s-entity">Entity (optional)</label>
+          <input
+            id="s-entity"
+            value={entity}
+            placeholder={current ? `e.g. ${current.entity_default}` : ''}
+            onChange={(e) => setEntity(e.target.value)}
+          />
+        </div>
+        <div style={{ flex: '1 1 150px' }}>
+          <label htmlFor="s-engine">Engine</label>
+          <select id="s-engine" value={engine} onChange={(e) => setEngine(e.target.value)}>
+            <option value="">auto (world, then cue default)</option>
+            <option value="realistic">realistic</option>
+            <option value="retro">retro (8-bit)</option>
+          </select>
+        </div>
+        <div style={{ flex: '1 1 150px' }}>
+          <label htmlFor="s-world">World (optional)</label>
+          <input
+            id="s-world"
+            value={world}
+            placeholder="reads its sfx_engine"
+            onChange={(e) => setWorld(e.target.value)}
+          />
+        </div>
+        <div style={{ flex: '0 1 90px' }}>
+          <label htmlFor="s-var">Variants</label>
+          <input
+            id="s-var"
+            type="number"
+            min={1}
+            max={5}
+            value={variants}
+            onChange={(e) => setVariants(Math.max(1, Math.min(5, Number(e.target.value) || 1)))}
+          />
+        </div>
+      </div>
+      {current && engine && !current.engines.includes(engine) && (
+        <div className="note" style={{ marginTop: 8 }}>
+          {cue} has no {engine} recipe yet ({current.engines.join(', ')} only) — the server
+          will refuse it rather than substitute.
+        </div>
+      )}
+      <div className="row" style={{ marginTop: 12, alignItems: 'center' }}>
+        <button className="btn" disabled={busy || !cue} onClick={() => run(false)}>
+          {busy ? 'Generating…' : `Generate ${variants} variant${variants > 1 ? 's' : ''}`}
+        </button>
+        {outcome && <OutcomeNote o={outcome} />}
+      </div>
+
+      <details style={{ marginTop: 14 }}>
+        <summary className="muted">Pack: several cues in one model load</summary>
+        <div className="row tight" style={{ marginTop: 8 }}>
+          {(cues.data ?? []).map((c) => (
+            <label key={c.value} style={{ flex: '0 1 auto', display: 'flex', gap: 6 }}>
+              <input
+                type="checkbox"
+                checked={pack.has(c.value)}
+                onChange={(e) => {
+                  const next = new Set(pack)
+                  if (e.target.checked) next.add(c.value)
+                  else next.delete(c.value)
+                  setPack(next)
+                }}
+              />
+              {c.value}
+            </label>
+          ))}
+        </div>
+        <p className="hint">
+          Uses the entity, engine, world and variants above for every cue. Measured: ~8 s
+          per variant after a one-off ~4 s load, so 6 cues × 3 variants is about 2.5 min.
+        </p>
+        <button className="btn ghost" disabled={busy || pack.size === 0} onClick={() => run(true)}>
+          Generate pack ({pack.size} cue{pack.size === 1 ? '' : 's'})
+        </button>
+        {packNote && <p className="hint">{packNote}</p>}
+      </details>
     </>
   )
 }
@@ -274,7 +499,23 @@ function TakeRow({ r }: { r: AudioRow }) {
           {r.prompt}
         </div>
       )}
-      {r.url && (
+      {r.kind === 'sfx' && r.variants && (
+        <div className="row tight" style={{ marginTop: 6, alignItems: 'center' }}>
+          <span className="muted">
+            {r.engine} (from {r.engine_from ?? '?'})
+          </span>
+          {r.variants.map((v, i) => (
+            <span key={v} style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
+              <span className="muted">v{i + 1}</span>
+              <audio controls preload="none" src={v} style={{ height: 32, width: 180 }} />
+              <a className="btn ghost sm" href={v} download>
+                OGG
+              </a>
+            </span>
+          ))}
+        </div>
+      )}
+      {r.url && r.kind !== 'sfx' && (
         <div className="row tight" style={{ marginTop: 6, alignItems: 'center' }}>
           <audio controls preload="none" src={r.url} style={{ height: 32 }} />
           <button className="btn ghost sm" onClick={() => loop.play(0)} disabled={!loop.ready}>

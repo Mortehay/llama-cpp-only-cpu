@@ -168,8 +168,12 @@ OGG_WRITE_BLOCK = 65536
 
 def write_ogg(path: str, samples: np.ndarray, sr: int, *,
               loop_start: int = 0, loop_end: int | None = None,
-              quality: float = 0.6) -> str:
-    """OGG Vorbis with LOOPSTART / LOOPLENGTH in SAMPLES, as engines expect."""
+              quality: float = 0.6, loop: bool = True) -> str:
+    """OGG Vorbis with LOOPSTART / LOOPLENGTH in SAMPLES, as engines expect.
+
+    `loop=False` writes no loop tags: a one-shot cue must not carry them, or
+    an engine that honours LOOPSTART would play a sword swing forever.
+    """
     import soundfile as sf
     from mutagen.oggvorbis import OggVorbis
 
@@ -193,6 +197,8 @@ def write_ogg(path: str, samples: np.ndarray, sr: int, *,
         for i in range(0, len(clipped), OGG_WRITE_BLOCK):
             fh.write(clipped[i:i + OGG_WRITE_BLOCK])
 
+    if not loop:
+        return path
     tags = OggVorbis(path)
     tags["LOOPSTART"] = str(int(loop_start))
     tags["LOOPLENGTH"] = str(int(loop_end - loop_start))
@@ -207,6 +213,56 @@ def read_loop_tags(path: str) -> tuple[int, int]:
     start = int(tags.get("LOOPSTART", ["0"])[0])
     length = int(tags.get("LOOPLENGTH", ["0"])[0])
     return start, start + length
+
+
+# ---------------------------------------------------------------------------
+# One-shot mastering (sfx)
+# ---------------------------------------------------------------------------
+#
+# A cue is judged on its ONSET: a sound that starts 80 ms late feels like
+# input lag. So the generated take is trimmed to its first audible sample
+# (keeping a few ms so the attack is not clipped), cut after its last audible
+# one plus a short release, faded out so the cut cannot click, and peak-
+# normalised so every cue in a pack sits at the same level.
+
+def master_one_shot(samples: np.ndarray, sr: int, *,
+                    threshold_db: float = -40.0, preroll_ms: float = 5.0,
+                    release_ms: float = 60.0, fade_ms: float = 25.0,
+                    peak_db: float = -1.0) -> dict:
+    """Trim, fade and normalise one cue. Raises ValueError on a silent take."""
+    x = samples if samples.ndim == 2 else samples[:, None]
+    env = np.max(np.abs(x), axis=1)
+    peak = float(env.max()) if len(env) else 0.0
+    if peak <= 1e-6:
+        raise ValueError("the take is silent")
+    above = np.flatnonzero(env >= peak * 10 ** (threshold_db / 20))
+    start = max(int(above[0]) - int(sr * preroll_ms / 1000), 0)
+    end = min(int(above[-1]) + int(sr * release_ms / 1000), len(x))
+    cut = x[start:end].astype(np.float32).copy()
+
+    fade = min(int(sr * fade_ms / 1000), len(cut))
+    if fade > 1:
+        cut[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)[:, None]
+    cut *= (10 ** (peak_db / 20)) / float(np.max(np.abs(cut)))
+
+    out = cut if samples.ndim == 2 else cut[:, 0]
+    # onset_ms: where the sound starts IN THE OUTPUT (ticket 16 bar: <=10 ms).
+    # trimmed_lead_ms: how much silence the model had put in front of it.
+    return {"samples": out,
+            "onset_ms": round((int(above[0]) - start) / sr * 1000, 1),
+            "trimmed_lead_ms": round(start / sr * 1000, 1),
+            "duration_s": round(len(cut) / sr, 3)}
+
+
+def sfx_paths(audio_dir: str, engine: str, cue: str, entity: str | None,
+              uid: str, variant: int) -> tuple[str, str]:
+    """`(wav, ogg)` under `<AUDIO_DIR>/sfx/<engine>/<cue>/` for one variant."""
+    d = os.path.join(audio_dir, "sfx", engine, cue)
+    os.makedirs(d, exist_ok=True)
+    ent = "".join(ch if ch.isalnum() or ch in "-_" else "-"
+                  for ch in (entity or "generic").strip().lower()) or "generic"
+    stem = os.path.join(d, f"{ent}_{uid}_v{variant}")
+    return stem + ".wav", stem + ".ogg"
 
 
 def audio_paths(audio_dir: str, kind: str, name: str, uid: str) -> tuple[str, str]:

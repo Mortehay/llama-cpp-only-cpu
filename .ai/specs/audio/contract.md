@@ -246,8 +246,51 @@ that names an engine the cue has no recipe for is a `422` with a message, not
 a silent fall-through. The cache key is `(sfx, engine, cue, name)`, so a
 world's engine change takes effect on the next request.
 
-Undecided, for planning: the name shape (`<cue>` vs `<cue>/<entity>`),
-variants per cue, and whether a request is one cue or a pack.
+Decided by the owner, 2026-09-28, and implemented (ticket 16):
+
+- **Name `<cue>/<entity>`**, entity optional (`hit/slime`, `ui_click`). The
+  ledger name is `<engine>:<cue>/<entity>`, lower-cased - that is the cache
+  key, so a realistic and a retro `hit/slime` never share a slot.
+- **Variants: the caller chooses 1-5, default 3.** A cached cue with at
+  least as many variants as asked is served from cache (first N).
+- **Single cues and packs.**
+
+      POST /api/audio/sfx       {"cue","entity?","engine?","world?","variants":3,"seed?"}
+          -> {"audio": ["<b64 ogg>", ...one per variant],
+              "info": {"kind":"sfx","cue","entity","engine","engine_from",
+                       "name","prompt","seed","sample_rate",
+                       "variants":[{"url","duration_s","onset_ms"}],
+                       "cached","served_from","generation_id"}}
+      POST /api/audio/sfx-pack  {"items":[{"cue","entity?","engine?"}],
+                                 "world?","variants":3,"seed?"}      (max 40)
+          -> {"items":[<the info block above, plus "audio">, or
+                       {"cue","name","error"} for a cue that failed],
+              "count","failed"}
+      GET  /api/audio/styles?kind=sfx   the cue roster, with each cue's engines
+
+  A pack is ONE worker task and ONE model load; each cue owns its own ledger
+  row. The same D5 rules apply: 503 `building` (not cancelled), `busy`,
+  `gpu_faulted`. Refusals: unknown cue or variants outside 1-5 -> 422; an
+  engine without a recipe -> 422 naming the level it came from; `world`
+  that does not exist -> 404. `sfx_engine` is set on a world with
+  `POST/PATCH /api/worlds` and lives only in its `.gen.json`.
+- Files: `audio/sfx/<engine>/<cue>/<entity>_<uid>_v<n>.{ogg,wav}`, served at
+  `/audio/sfx/...`. **No loop tags** - a cue that carried LOOPSTART would
+  loop forever in an engine that honours it.
+
+Measured 2026-09-28 (realistic, Stable Audio Open, 100 steps): ~8 s per
+variant after a ~3-4 s load; a 3-cue / 8-variant pack in 79 s; onset 0-5 ms
+on every variant; 2.85 GB peak. Two findings made that possible - see 0010
+"sfx".
+
+**Retro (ticket 17).** Procedural 8-bit, rendered in the API process - never
+queued on the worker, so it answers while a GPU job runs. Cues: slash, hit,
+pickup, spell, ui_click; **footstep has no retro recipe** and is refused
+(422, "it offers realistic"). Without a `seed` the seed is derived from
+`<cue>/<entity>`, so a name always yields the same sound; variants use
+`seed..seed+n-1`, each recorded in `info.variants`. Measured: 218 ms for a
+3-variant cue end to end, 25 ms of synthesis per variant; a pack mixing a
+cached realistic cue with three retro cues in 566 ms with no GPU.
 
 ## Non-goals for v1
 

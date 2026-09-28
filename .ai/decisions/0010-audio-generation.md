@@ -365,6 +365,37 @@ the worker). `/api/audio` also listed finished cache-read rows as artefacts
 with null metadata; it now lists a row only if it owns a file or is still
 in flight.
 
+### sfx, measured 2026-09-28 (realistic engine, ticket 16)
+
+Stable Audio Open 1.0, 100 steps, run from the audio worktree in a one-off
+worker container with the stock worker stopped (never two processes on the
+card):
+
+| | measured |
+|---|---|
+| one cue, 1 variant, pipeline defaults | 29.3 s model time for a 0.6 s hit |
+| one cue, 3 variants, pipeline's batched decode | **GPU fault, twice, deterministic**: `dxgkio_make_resident -12` inside `autoencoder_oobleck.decode`, surfacing as `CUDA driver error: device not ready` |
+| 3 variants, latents decoded one at a time, full window | fixed the fault; but 142 s - batching was SLOWER than 3 separate calls |
+| one cue, denoised window cut to 128 frames (5.9 s) | **8.0 s** (64 frames: 6.9 s, but raw peak 2.36 and a hit that rang to 1.1 s) |
+| product: pack of 3 cues / 8 variants, 128 frames, sequential variants | **79.2 s** incl. a 3.4 s load; onset 0-5 ms on all 8; peak 2,851 MB |
+| facade, through Celery | single cold 21.7 s (2 variants); repeat 0.0 s from cache; pack of 1 cached + 2 new 35.8 s |
+
+What it settles:
+
+- **The pipeline always denoises the model's full ~47.6 s window** (1024
+  latent frames) whatever `audio_end_in_s` asks for, and trims after
+  decoding. That is why a cue cost as much as a 30 s ambience, and why its
+  own decode of 3 variants (3 x 47 s of audio) faulted the card. The engine
+  now asks for latents, cuts them to the cue plus slack, decodes one at a
+  time, and shrinks the window to `SFX_LATENT_FRAMES` (128).
+- Variants are sequential calls with seeds `seed..seed+n-1`, each recorded,
+  so any one variant can be regenerated alone.
+- **Not yet judged by ear**: whether 128 frames costs quality against the
+  full window. `audio/sfx/_experiment/hit-slime_frames{1024,128,64}.wav`
+  are the same prompt and seed at each size, for that comparison.
+- The same full-window cost applies to AMBIENCE (a 30 s clip denoises 47.6 s);
+  shrinking it there is a possible later saving, not measured.
+
 ### In product, measured 2026-09-28 (music path end to end)
 
 Worker image rebuilt with the ACE-Step venv (ticket 15), turbo, bf16,

@@ -956,6 +956,29 @@ export interface AudioRow {
   /** The open /audio static URL of the OGG; the WAV master sits beside it. */
   url: string | null
   download_url: string | null
+  /** sfx only: every variant's OGG URL, and how the cue was addressed. */
+  variants?: string[] | null
+  cue?: string | null
+  entity?: string | null
+  engine?: string | null
+  engine_from?: string | null
+}
+
+/** One sfx cue from `GET /api/audio/styles?kind=sfx`. */
+export interface SfxCue {
+  value: string
+  label: string
+  default_engine: string
+  /** Engines that have a recipe for this cue; others are refused (422). */
+  engines: string[]
+  duration_s: number
+  entity_default: string
+}
+
+export interface SfxItemBody {
+  cue: string
+  entity?: string
+  engine?: string
 }
 
 export interface AudioGenerateBody {
@@ -984,9 +1007,27 @@ export type AudioGenerateOutcome =
       retry_after_s: number | null
     }
 
+export interface AudioProposal {
+  kind: string
+  style: string
+  slots: Record<string, string | number>
+  /** Who chose: the brain (named), or the keyword rules and why. */
+  author: string
+  prompt: string
+  adjusted: string[]
+}
+
 export const audioApi = {
   styles: (kind?: string) =>
     request<AudioStyle[]>(`/api/audio/styles${kind ? `?kind=${kind}` : ''}`),
+
+  /** A style for a map description, from the brain or the rules. No GPU. */
+  propose: (context: string, kind: string) =>
+    request<AudioProposal>('/api/audio/propose', {
+      method: 'POST',
+      body: JSON.stringify({ context, kind }),
+    }),
+
 
   list: (params: { kind?: string; name?: string; limit?: number } = {}) => {
     const qs = new URLSearchParams()
@@ -998,35 +1039,43 @@ export const audioApi = {
 
   /** Blocks until built, or until the server's budget runs out (a 503). The
    * base64 body is dropped: the tab plays the file from the static mount. */
-  generate: async (body: AudioGenerateBody): Promise<AudioGenerateOutcome> => {
-    const headers = new Headers({ 'Content-Type': 'application/json' })
-    const token = getToken()
-    if (token) headers.set('Authorization', `Bearer ${token}`)
-    const res = await fetch('/api/audio', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    })
-    let json: any = null
-    try {
-      json = await res.json()
-    } catch {
-      /* non-JSON error page */
-    }
-    if (res.ok) return { ok: true, info: json?.info ?? {} }
-    const d = json?.detail
-    const obj = d && typeof d === 'object' && !Array.isArray(d) ? d : null
-    const reason = obj?.reason
-    return {
-      ok: false,
-      status: res.status,
-      reason:
-        reason === 'building' || reason === 'busy' || reason === 'gpu_faulted'
-          ? reason
-          : 'error',
-      detail: obj?.detail ?? (typeof d === 'string' ? d : describeDetail(d)) ?? `${res.status}`,
-      retry_after_s:
-        obj?.retry_after_s ?? (Number(res.headers.get('retry-after')) || null),
-    }
-  },
+  generate: (body: AudioGenerateBody) => postOutcome('/api/audio', body),
+
+  cues: () => request<SfxCue[]>('/api/audio/styles?kind=sfx'),
+
+  /** One cue, 1-5 variants. Same 503-is-an-answer contract as `generate`. */
+  sfx: (body: SfxItemBody & { world?: string; variants: number; seed?: number }) =>
+    postOutcome('/api/audio/sfx', body),
+
+  /** Many cues in one model load; the response lists each cue's result. */
+  sfxPack: (body: { items: SfxItemBody[]; world?: string; variants: number; seed?: number }) =>
+    postOutcome('/api/audio/sfx-pack', body),
+}
+
+async function postOutcome(path: string, body: unknown): Promise<AudioGenerateOutcome> {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const res = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) })
+  let json: any = null
+  try {
+    json = await res.json()
+  } catch {
+    /* non-JSON error page */
+  }
+  if (res.ok) return { ok: true, info: json?.info ?? json ?? {} }
+  const d = json?.detail
+  const obj = d && typeof d === 'object' && !Array.isArray(d) ? d : null
+  const reason = obj?.reason
+  return {
+    ok: false,
+    status: res.status,
+    reason:
+      reason === 'building' || reason === 'busy' || reason === 'gpu_faulted'
+        ? reason
+        : 'error',
+    detail: obj?.detail ?? (typeof d === 'string' ? d : describeDetail(d)) ?? `${res.status}`,
+    retry_after_s:
+      obj?.retry_after_s ?? (Number(res.headers.get('retry-after')) || null),
+  }
 }
