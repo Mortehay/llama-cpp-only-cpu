@@ -164,6 +164,24 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    needs CPU offload, which 0005 measured as the worse trade on this box.
    `QWEN_EDIT_GGUF_FILE` now accepts an absolute local path, so a future
    quant can be tried without a Hub round trip.
+
+   **Q3_K_S tried the same day - fits, not adopted.** unsloth
+   `qwen-image-edit-2511-Q3_K_S.gguf`, 9.22 GB, sha256 `d613d933...` verified
+   against the Hub (an FDM file mid-download has the FINAL size, preallocated,
+   with holes - size is not evidence of completion, the hash is). Same core,
+   seed 0, s/e/n/w at 512px:
+
+   | | Q2_K (production) | Q3_K_S |
+   |---|---|---|
+   | VRAM free after placement | 2.7 GiB | **0.7 GiB** |
+   | s/step | 8.4 | 8.8 |
+   | back view | correct, no face | **wrong - drew the face** |
+   | edges | clean | more white fringe |
+
+   One seed, so the back-view miss may be chance - but nothing here buys back
+   two-thirds of the headroom on a card with this fault history. The file is
+   kept at `/models/gguf/` for a multi-seed comparison if one is ever wanted;
+   switching is `QWEN_EDIT_GGUF_FILE` in compose plus a worker restart.
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,
