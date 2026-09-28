@@ -84,3 +84,6 @@ re-runs, never invented. Waits on 503 building/busy per Retry-After.
 - [ ] Run it (needs the same key as ticket 10; ~15-20 min of GPU).
 - [ ] Owner's listening pass fills the verdicts; then `corpus.md` and 0010
       -> accepted.
+- [x] Built 2026-09-28: 15/15 through the authenticated API in 723 s; music
+      seams 0.42-1.78 dB (warm 26-29 s per 2-min loop); ambience cave 5.57 dB
+      and village_day 4.50 dB flagged for listening. `.ai/specs/audio/corpus.md`.
