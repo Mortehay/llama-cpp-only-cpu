@@ -199,6 +199,28 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    two-thirds of the headroom on a card with this fault history. The file is
    kept at `/models/image-gguf/transformers/` for a multi-seed comparison if one is ever wanted;
    switching is `QWEN_EDIT_GGUF_FILE` in compose plus a worker restart.
+2b. **Lightning for step 1 (2026-09-28): quality holds, VRAM does not - on
+   this quant.** `lightx2v/Qwen-Image-2512-Lightning` 8-step bf16 LoRA
+   (0.85 GB) on the 9.69 GB Q3_K_M, 8 steps, true CFG 1, the distillation's
+   own scheduler (shift 3, from ModelTC's generate_with_diffusers.py). Same
+   bench, same 12 cases:
+
+   | | baseline (20 st, cfg 4) | Lightning 8 st, cfg 1 |
+   |---|---|---|
+   | contact sheets | 0/12 | **0/12** - holds with the negative prompt inert |
+   | cutout kept | 98.2% | 100% |
+   | steady s/image | ~144 | **~30** |
+   | VRAM free after placement | 1.3 GiB | **0.00 GiB** |
+   | timings | stable | 332, 308, then ~30, then 99-103 s; placement 244 s |
+
+   By eye: equal or crisper pixel art; knight 303 now full-body (was cropped);
+   knight 202 still helmet-only; **less variety** - the three slime seeds are
+   near-identical, the usual cost of step distillation. The erratic timings
+   with a full card look like WDDM spilling VRAM to system RAM - inferred from
+   the pattern, not measured. Not shippable at 0 GiB on a card with this fault
+   history. Next: the 7.33 GB Q2_K transformer, which should leave ~2 GiB with
+   the LoRA - if Q2_K does not cost the quality that Lightning kept.
+
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,

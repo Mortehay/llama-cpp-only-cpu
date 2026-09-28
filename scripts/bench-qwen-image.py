@@ -36,6 +36,20 @@ BASE_NEG = "blurry, photo, watermark"
 CALLER = {"principal_name": "bench: qwen-image-2512 vs sdxl (claude)"}
 
 QWEN = dict(label="Qwen-Image-2512 Q3_K_M GGUF", size=512, steps=20, cfg=4.0)
+
+# Optional Lightning run, same subjects/seeds/judge so the rows compare:
+#   BENCH_QWEN_LORA=Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
+#   BENCH_QWEN_STEPS=8  BENCH_QWEN_CFG=1.0
+# A step-distilled LoRA runs at true CFG 1 - the negative prompt is then
+# INERT, the SDXL-Turbo trap - which is the thing this run exists to measure.
+LIGHTNING_REPO = "lightx2v/Qwen-Image-2512-Lightning"
+LORA = os.environ.get("BENCH_QWEN_LORA", "")
+if LORA:
+    QWEN = dict(label=f"Qwen-Image-2512 Q3_K_M GGUF + {LORA.split('-V1')[0]}",
+                size=512, steps=int(os.environ.get("BENCH_QWEN_STEPS", "8")),
+                cfg=float(os.environ.get("BENCH_QWEN_CFG", "1.0")))
+QWEN_TAG = os.environ.get("BENCH_QWEN_TAG",
+                          f"qwen2512-l{QWEN['steps']}" if LORA else "qwen2512")
 SDXL = dict(label="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl",
             size=1024, steps=25, cfg=7.0)
 
@@ -163,12 +177,30 @@ def qwen():
     tr = QwenImageTransformer2DModel.from_single_file(
         GGUF, quantization_config=GGUFQuantizationConfig(compute_dtype=DT),
         config=CFG_REPO, subfolder="transformer", dtype=DT, cache_dir="/models")
-    sched = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        CFG_REPO, subfolder="scheduler", cache_dir="/models")
+    if LORA:
+        # The distillation's own scheduler (shift=3), from ModelTC's
+        # generate_with_diffusers.py - the stock one is not what it learned.
+        import math
+        sched = FlowMatchEulerDiscreteScheduler.from_config({
+            "base_image_seq_len": 256, "base_shift": math.log(3),
+            "invert_sigmas": False, "max_image_seq_len": 8192,
+            "max_shift": math.log(3), "num_train_timesteps": 1000,
+            "shift": 1.0, "shift_terminal": None, "stochastic_sampling": False,
+            "time_shift_type": "exponential", "use_beta_sigmas": False,
+            "use_dynamic_shifting": True, "use_exponential_sigmas": False,
+            "use_karras_sigmas": False})
+    else:
+        sched = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            CFG_REPO, subfolder="scheduler", cache_dir="/models")
     pipe = QwenImagePipeline.from_pretrained(
         REPO, transformer=tr, scheduler=sched, text_encoder=None, tokenizer=None,
         dtype=DT, cache_dir="/models")
+    if LORA:
+        pipe.load_lora_weights(LIGHTNING_REPO, weight_name=LORA,
+                               cache_dir="/models")
     pipe.to("cuda")
+    free, _ = torch.cuda.mem_get_info()
+    print(f"VRAM free after placement: {free / 2**30:.2f} GiB", flush=True)
     print(f"transformer placed in {time.time()-t0:.0f}s", flush=True)
 
     lats, times = {}, {}
@@ -196,7 +228,7 @@ def qwen():
     vae.to("cuda"); vae.enable_tiling()
     for c, lat in lats.items():
         img = _decode_latent(vae, lat, QWEN["size"], QWEN["size"], vsf, proc)
-        ledger_done(gids[c], img, "qwen2512", c[0], c[1], times[c])
+        ledger_done(gids[c], img, QWEN_TAG, c[0], c[1], times[c])
     vae.to("cpu"); _free()
 
 
@@ -224,7 +256,7 @@ def sdxl():
 
 def report():
     rows = [json.loads(l) for l in open(f"{OUT}/results.jsonl")]
-    for tag in ("qwen2512", "sdxl-nerijs"):
+    for tag in sorted({x["model"] for x in rows}):
         r = [x for x in rows if x["model"] == tag]
         if not r:
             continue
