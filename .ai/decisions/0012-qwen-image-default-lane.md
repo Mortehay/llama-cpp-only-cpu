@@ -221,6 +221,23 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    history. Next: the 7.33 GB Q2_K transformer, which should leave ~2 GiB with
    the LoRA - if Q2_K does not cost the quality that Lightning kept.
 
+   **Q2_K + Lightning 8 (same day): shippable, slightly rougher.** unsloth
+   `qwen-image-2512-Q2_K.gguf`, 7.33 GB, sha256 `176678f0...` verified, at
+   `/models/image-gguf/transformers/`. Same bench:
+
+   | | Q3_K_M 20 st cfg 4 | Q3_K_M + L8 | **Q2_K + L8** |
+   |---|---|---|---|
+   | contact sheets | 0/12 | 0/12 | **0/12** |
+   | s/image | ~144 | ~30, spikes to 332 | **24, flat** (placement 51 s) |
+   | VRAM free after placement | 1.3 GiB | 0.00 | **3.12 GiB** |
+   | knights full-body | 1/3 | 2/3 | **3/3**, stockier |
+   | texture / edges | cleanest | crisp | **noisier** slime edges, less potion detail |
+   | background | white | white | faint grey (cutout still kept 98-100%) |
+
+   Prompt adherence equal or better ("obsidian" boots come out black);
+   fidelity visibly lower than the 20-step baseline. A speed/quality trade,
+   not a free win - so it is the owner's call which the UI preselects.
+
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,

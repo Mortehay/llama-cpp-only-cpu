@@ -35,7 +35,8 @@ TEMPLATE = ("pixel art, {s}, single object, centered, full view, plain white "
 BASE_NEG = "blurry, photo, watermark"
 CALLER = {"principal_name": "bench: qwen-image-2512 vs sdxl (claude)"}
 
-QWEN = dict(label="Qwen-Image-2512 Q3_K_M GGUF", size=512, steps=20, cfg=4.0)
+_GGUF_NAME = os.path.basename(os.environ.get("BENCH_QWEN_GGUF", "Qwen-Image-2512-Q3_K_M.gguf"))
+QWEN = dict(label=_GGUF_NAME, size=512, steps=20, cfg=4.0)
 
 # Optional Lightning run, same subjects/seeds/judge so the rows compare:
 #   BENCH_QWEN_LORA=Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors
@@ -45,7 +46,7 @@ QWEN = dict(label="Qwen-Image-2512 Q3_K_M GGUF", size=512, steps=20, cfg=4.0)
 LIGHTNING_REPO = "lightx2v/Qwen-Image-2512-Lightning"
 LORA = os.environ.get("BENCH_QWEN_LORA", "")
 if LORA:
-    QWEN = dict(label=f"Qwen-Image-2512 Q3_K_M GGUF + {LORA.split('-V1')[0]}",
+    QWEN = dict(label=f"{_GGUF_NAME} + {LORA.split('-V1')[0]}",
                 size=512, steps=int(os.environ.get("BENCH_QWEN_STEPS", "8")),
                 cfg=float(os.environ.get("BENCH_QWEN_CFG", "1.0")))
 QWEN_TAG = os.environ.get("BENCH_QWEN_TAG",
@@ -55,7 +56,8 @@ SDXL = dict(label="stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl"
 
 REPO = "ovedrive/Qwen-Image-Edit-2511-4bit"
 CFG_REPO = "Qwen/Qwen-Image-2512"
-GGUF = "/models/image-gguf/transformers/Qwen-Image-2512-Q3_K_M.gguf"
+GGUF = os.environ.get("BENCH_QWEN_GGUF",
+                      "/models/image-gguf/transformers/Qwen-Image-2512-Q3_K_M.gguf")
 DT = torch.bfloat16
 
 
