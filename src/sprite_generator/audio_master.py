@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 
 import numpy as np
 
@@ -273,5 +274,28 @@ def audio_paths(audio_dir: str, kind: str, name: str, uid: str) -> tuple[str, st
     """
     kind_dir = os.path.join(audio_dir, kind)
     os.makedirs(kind_dir, exist_ok=True)
-    stem = os.path.join(kind_dir, f"{name}_{uid}")
+    stem = os.path.join(kind_dir, f"{safe_stem(name)}_{uid}")
+    # Second barrier, in case safe_stem is ever loosened: the file must land
+    # inside kind_dir, whatever the caller's name was.
+    root = os.path.realpath(kind_dir)
+    if os.path.commonpath([root, os.path.realpath(stem)]) != root:
+        raise ValueError(f"audio name {name!r} resolves outside {kind_dir}")
     return stem + ".wav", stem + ".ogg"
+
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def safe_stem(name: str, limit: int = 80) -> str:
+    """A filename-safe form of a caller's audio name.
+
+    `name` comes straight from `POST /api/audio`, and a raw join let
+    "../../images/x" climb out of AUDIO_DIR and "/tmp/x" discard it entirely
+    (os.path.join drops everything before an absolute part) - a write anywhere
+    the worker can write, for any `generate`-scoped key. "dungeon/level1" also
+    pointed at a subdirectory that did not exist, failing only after the GPU
+    build. The name stays the lookup key in the ledger; only the FILE is
+    slugged, and the uid suffix keeps two names that slug alike distinct.
+    """
+    stem = _UNSAFE.sub("-", name or "").strip(".-")[:limit]
+    return stem or "audio"
