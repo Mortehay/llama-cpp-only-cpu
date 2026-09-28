@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, fetchObjectUrl } from './api'
+import { ApiError, api, fetchObjectUrl, type GatewayStatus } from './api'
 
 export interface AsyncState<T> {
   data: T | null
@@ -118,6 +118,20 @@ export function usePoll(fn: () => void, ms: number, active: boolean) {
     const id = setInterval(() => saved.current(), ms)
     return () => clearInterval(id)
   }, [ms, active])
+}
+
+/**
+ * The model gateway's status, polled every 3 s.
+ *
+ * Mounted once, in the nav, which is on every tab - so the pill and the
+ * "switching" popup are live wherever the user is. Always polling (not only
+ * while something is pending): a switch can be started from the other UI or
+ * by something2's auto-switch, and this is the only way to learn of it.
+ */
+export function useModelGateway(): AsyncState<GatewayStatus> {
+  const status = useAsync(() => api.gatewayStatus(), [])
+  usePoll(status.reload, 3000, true)
+  return status
 }
 
 /**

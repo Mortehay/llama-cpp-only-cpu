@@ -13,6 +13,7 @@ import Worlds from './tabs/Worlds'
 import Audio from './tabs/Audio'
 import Commands from './tabs/Commands'
 import Activity from './tabs/Activity'
+import ModelGateway from './components/ModelGateway'
 
 const TABS = [
   { id: 'core', label: 'Entity Generation' },
@@ -77,6 +78,7 @@ export default function App() {
             {mode.data.enforced ? '🔒 API secured' : '⚠ API open'}
           </span>
         )}
+        <ModelGateway />
       </nav>
 
       <div className="wrap">

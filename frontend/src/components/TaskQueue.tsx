@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, imageUrl } from '../api'
+import { api, deferredReason, imageUrl } from '../api'
 import { useAsync, usePoll } from '../hooks'
 
 /**
@@ -90,6 +90,15 @@ export default function TaskQueue() {
                       </>
                     ) : done ? (
                       <span className="tag ok">done</span>
+                    ) : deferredReason(t.progress_msg) != null ? (
+                      // Waiting for the model gateway to hand the card to
+                      // this model - not stuck, not failed.
+                      <>
+                        <span className="tag wait">deferred</span>
+                        <div className="muted" title={t.progress_msg ?? ''}>
+                          {deferredReason(t.progress_msg)}
+                        </div>
+                      </>
                     ) : (
                       <>
                         <span className="tag neutral">{t.progress_msg ?? 'working'}</span>

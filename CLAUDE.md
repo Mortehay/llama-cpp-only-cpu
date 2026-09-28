@@ -91,6 +91,14 @@ fragment of it.
   Check `(Get-Counter '\GPU Process Memory(*)\Dedicated Usage')` on Windows.
 - The Qwen3-8B GGUF and a diffusion pipeline **cannot both hold the card**.
   `--sleep-idle-seconds 120` is what lets them share it.
+- **A model gateway decides who gets the card** (`model_gateway.py`, spec
+  `.ai/specs/model-gateway/`). A job for a non-active model is *deferred* — a
+  Celery retry of the same task id every `MODEL_GATEWAY_RECHECK_S`, row text
+  "Deferred - ..." — and something2 gets 503 + `Retry-After`. A model picked in
+  the UI holds the card until `MODEL_SWITCH_IDLE_S` (300) idle. Neither is a
+  hang or an outage. Every task goes through `GatedTask` (`task_cls`), so a
+  **new GPU task must be added to `model_gateway.GATED`** or it bypasses the
+  gateway silently.
 - Celery runs `--pool=solo`. `tasks.py` must not touch CUDA at import —
   `torch.cuda.is_available()` is fork-safe, `get_device_properties()` is not.
 
@@ -122,8 +130,11 @@ fragment of it.
 - **The UI's preselected model and `core_models.default_model()` differ on
   purpose** (0012). The UI defaults to Qwen-Image-2512 (~144 s/image);
   `default_model()` is also `main.py`'s `Form` default for every script that
-  omits `llm_name`, so it stays SDXL + nerijs. Do not "fix" them to match. Qwen
-  is also not in `a1111.KNOWN_MODELS` - it cannot meet something2's 240 s.
+  omits `llm_name`, so it stays SDXL + nerijs. Do not "fix" them to match.
+  Qwen **is** offered to something2 (0012 D2, reversed 2026-09-28 at the
+  owner's request), square sizes only. `KNOWN_MODELS[0]` is the fast Q2_K +
+  Lightning variant (~107-113 s cold). The Q3_K_M entry is ~250 s against the
+  285 s facade budget, with no room for a cutout retry - accepted, not a bug.
 - **A GGUF's `general.architecture` label is not evidence.** Four of the
   2026-09 downloads were mislabelled (`wan`, `qwen_image`, `pig`). Read the
   tensor prefixes and block count before wiring a file.

@@ -26,6 +26,14 @@
        the enumeration the /images mount is left open on the assumption nobody
        can perform. The React UI's Gallery tab replaces it and reads the
        authenticated /api/assets instead. #}
+    {# Model gateway: one active image model holds the card. Filled in by
+       generator.js from GET /api/model-gateway; the button opens the switcher. #}
+    <button type="button" id="gw-indicator" class="gw-indicator" onclick="openGatewayModal()"
+            title="Active image model - click to switch">
+      <span class="gw-dot"></span>
+      <span id="gw-indicator-label">model: loading…</span>
+      <span id="gw-indicator-extra" class="gw-extra"></span>
+    </button>
   </nav>
 
 
@@ -49,6 +57,48 @@
       <div class="modal-footer" style="padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px;">
         <button class="btn btn-outline" onclick="closeCropModal()" style="width: auto;">Cancel</button>
         <button class="btn" id="confirm-crop-btn" onclick="saveCrop()" style="width: auto;">✂️ Save as New Core</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model gateway: switcher. Backdrop click closes it (nothing is lost). -->
+  <div id="gw-overlay" class="modal-overlay" style="display: none;"
+       onclick="if (event.target === this) closeGatewayModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 style="margin:0; font-size: 16px;">Active image model</h3>
+        <button class="btn-sm" onclick="closeGatewayModal()" style="padding: 4px 8px;">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="gw-current" class="gw-line"></div>
+        <label for="gw-select" class="gw-label">Switch to</label>
+        <select id="gw-select" class="gw-select"></select>
+        <div id="gw-message" class="gw-message" hidden></div>
+        <div class="gw-label" style="margin-top: 14px;">Pending jobs</div>
+        <div id="gw-pending" class="gw-pending"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeGatewayModal()" style="width: auto;">Close</button>
+        <button class="btn btn-outline" id="gw-force-btn" onclick="gatewaySwitch(true)" style="width: auto;">Force switch</button>
+        <button class="btn" id="gw-switch-btn" onclick="gatewaySwitch(false)" style="width: auto;">Switch</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Model gateway: blocking popup while a switch is in progress. No backdrop
+       close; "Hide" dismisses it for this switch only (keyed by its start). -->
+  <div id="gw-switching" class="modal-overlay" style="display: none; z-index: 1100;">
+    <div class="modal" style="width: 420px;">
+      <div class="modal-header">
+        <h3 id="gw-sw-title" style="margin:0; font-size: 16px;">Model is switching, please wait</h3>
+        <button class="btn-sm" onclick="hideSwitchingPopup()" style="padding: 4px 8px;">Hide</button>
+      </div>
+      <div class="modal-body">
+        <div id="gw-sw-phase" class="gw-line"></div>
+        <div id="gw-sw-time" class="gw-sub"></div>
+        <div class="progress-bg" style="height: 6px; margin-top: 12px;">
+          <div id="gw-sw-bar" class="progress-fill" style="width: 0%"></div>
+        </div>
       </div>
     </div>
   </div>

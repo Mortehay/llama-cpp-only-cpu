@@ -139,6 +139,17 @@ something2's 240 s ceiling. The entity-cutout retry loop (3 attempts,
 synchronous-only, so an async 202-and-poll path is not an option. `a1111.KNOWN_MODELS`
 is unchanged.
 
+**Reversed 2026-09-28, same day, at the owner's request** ("longer, but the
+quality is much better"). The facade budget is 285 s now, not 240. Qwen runs
+through `generate_raw_task` via `tasks._raw_image_gguf`: square only (the
+facade refuses other sizes with 400), rendered at 512 and scaled NEAREST to
+the requested size, followed by the same cutout checks as SDXL. Measured:
+Q3_K_M at 1024x1024 with cutout took **253.5 s** end to end, one clean
+subject, 100% kept, with no time left for a cutout retry. The fast Q2_K +
+Lightning variant (2b) is `KNOWN_MODELS[0]`, measured at 106.8-112.7 s cold.
+Model switching between these and SDXL now goes through the model gateway
+(`.ai/specs/model-gateway/`).
+
 ### D3. Step 2 is already the Qwen-Edit conveyor - nothing to switch
 
 Corrected the same day, after reading the code rather than the docs. Both UIs

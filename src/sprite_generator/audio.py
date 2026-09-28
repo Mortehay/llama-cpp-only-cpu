@@ -34,6 +34,7 @@ from pydantic import BaseModel
 import audio_styles
 import auth
 import generations
+import model_gateway
 from tasks import celery_app, worker_busy_reason
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ def _running_build(kind: str, name: str) -> dict | None:
         return None
 
 
-def _long_job_ahead() -> str | None:
+def _long_job_ahead(model: str) -> str | None:
     """A non-audio job holding the solo worker, described, or None.
 
     Same advisory check as the tile facade: the worker runs one job at a time
@@ -143,7 +144,11 @@ def _long_job_ahead() -> str | None:
     # Both registries - jobs table AND the Redis flag a Qwen-Image core sets.
     # Reading only the table let an audio build queue behind a 4-minute core.
     busy = worker_busy_reason()
-    return busy["detail"] if busy else None
+    if busy:
+        return busy["detail"]
+    # And the model gateway: another model holds the card. model_gateway.py.
+    gate = model_gateway.admit_sync(model)
+    return gate["detail"] if gate else None
 
 
 def _require_kind(kind: str) -> str:
@@ -284,7 +289,8 @@ def generate_audio(req: AudioRequest, request: Request,
         return _await_build(joined["celery_task_id"], str(joined["id"]),
                             kind, name, started, queued=False)
 
-    busy = _long_job_ahead()
+    busy = _long_job_ahead(model_gateway.AUDIO_MUSIC if kind == "music"
+                           else model_gateway.AUDIO_STABLE)
     if busy:
         detail = (f"{kind} {name!r} is not built yet and cannot be built now: "
                   f"{busy}. The GPU worker runs one job at a time.")
@@ -597,7 +603,7 @@ def _serve_sfx(items: list[SfxItem], *, world: str | None, variants: int,
     if not plan:
         return out
 
-    busy = _long_job_ahead()
+    busy = _long_job_ahead(model_gateway.AUDIO_STABLE)
     if busy:
         raise HTTPException(status_code=503, headers={"Retry-After": "120"},
                             detail={"reason": "busy", "kind": "sfx",

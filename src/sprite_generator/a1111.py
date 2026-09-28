@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field, field_validator
 import auth
 import core_models
 import generations
+import model_gateway
 from tasks import (celery_app, generate_raw_task, gpu_fault_block_reason,
                    worker_busy_reason)
 from core_models import is_gguf
@@ -231,6 +232,7 @@ def sd_models(authorization: str | None = Header(default=None)):
     trained = [e["value"] for e in core_models.local_roster()
                if core_models.unavailable_reason(e["value"]) is None]
 
+    active = (model_gateway.get_active() or {}).get("model")
     out = []
     for name in KNOWN_MODELS + trained:
         trigger = core_models.trigger_for(name)
@@ -247,6 +249,9 @@ def sd_models(authorization: str | None = Header(default=None)):
             # because txt2img injects it. See apply_trigger below.
             "trained": bool(trigger),
             "trigger": trigger,
+            # The model gateway's current model: requests for any other entry
+            # may get 503 + Retry-After while it holds the card.
+            "active": name == active,
         })
     return out
 
@@ -647,6 +652,16 @@ def _serve_tile(name: str, req: "Txt2ImgRequest", started: float,
                            duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=503, detail=detail)
 
+    # The spec below names no model, so the worker builds with the default.
+    gate = model_gateway.admit_sync(core_models.default_model())
+    if gate:
+        generations.record(kind="tile", name=name, status="failed",
+                           served_from="generated", prompt=(req.prompt or ""),
+                           error=gate["detail"], caller=caller,
+                           duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=503, detail=gate["detail"],
+                            headers={"Retry-After": str(gate["retry_after_s"])})
+
     spec = tiles.TileSpec(
         prompt=prompt,
         name=name,
@@ -882,6 +897,17 @@ def txt2img(req: Txt2ImgRequest, request: Request,
         raise HTTPException(status_code=503, detail=detail,
                             headers={"Retry-After": str(busy["retry_after_s"])})
 
+    # The model gateway: another model holds the card (its queue is not empty,
+    # or it was selected in the UI). This caller blocks, so waiting here could
+    # only end in its timeout - say so now. model_gateway.py.
+    gate = model_gateway.admit_sync(model)
+    if gate:
+        logger.info("txt2img refused: %s", gate["detail"])
+        generations.fail(gen, gate["detail"],
+                         duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=503, detail=gate["detail"],
+                            headers={"Retry-After": str(gate["retry_after_s"])})
+
     task = generate_raw_task.delay(
         prompt,
         req.negative_prompt,
@@ -920,6 +946,11 @@ def txt2img(req: Txt2ImgRequest, request: Request,
         # either - it stores clean-looking data that is wrong.
         status = 422 if kind == "cutout_failed" else 500
         headers = None
+        if kind == "model_deferred":
+            # Admitted, then a forced switch in the UI took the card before
+            # the worker reached it.
+            status = 503
+            headers = {"Retry-After": str(result.get("retry_after_s") or 60)}
         if kind == "gpu_faulted":
             # 503 + Retry-After, and the header is the point of the whole
             # exercise. Under 500 a bulk runner reasonably retries at once, and
