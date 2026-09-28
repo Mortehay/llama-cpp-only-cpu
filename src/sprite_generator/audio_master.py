@@ -257,12 +257,20 @@ def master_one_shot(samples: np.ndarray, sr: int, *,
 
 def sfx_paths(audio_dir: str, engine: str, cue: str, entity: str | None,
               uid: str, variant: int) -> tuple[str, str]:
-    """`(wav, ogg)` under `<AUDIO_DIR>/sfx/<engine>/<cue>/` for one variant."""
-    d = os.path.join(audio_dir, "sfx", engine, cue)
+    """`(wav, ogg)` under `<AUDIO_DIR>/sfx/<engine>/<cue>/` for one variant.
+
+    `engine` and `cue` are roster-validated before they get here; `entity` is
+    caller text and goes through `safe_stem` - the same rule as `audio_paths`,
+    so one function decides what a caller's words may become on disk, and its
+    length cap stops a long entity failing the write after the GPU work.
+    """
+    d = os.path.join(audio_dir, "sfx", safe_stem(engine), safe_stem(cue))
     os.makedirs(d, exist_ok=True)
-    ent = "".join(ch if ch.isalnum() or ch in "-_" else "-"
-                  for ch in (entity or "generic").strip().lower()) or "generic"
+    ent = safe_stem((entity or "generic").strip().lower(), limit=60)
     stem = os.path.join(d, f"{ent}_{uid}_v{variant}")
+    root = os.path.realpath(d)
+    if os.path.commonpath([root, os.path.realpath(stem)]) != root:
+        raise ValueError(f"sfx entity {entity!r} resolves outside {d}")
     return stem + ".wav", stem + ".ogg"
 
 

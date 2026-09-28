@@ -5,6 +5,9 @@
     SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --submit --kind ambience
     SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --overshoot
     SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --lan 192.168.0.217
+    SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --kind sfx --submit
+    SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --kind sfx --engine realistic --submit
+    SPRITE_API_KEY=sk_... python scripts/verify-audio-api.py --burst 5 --kind ambience
 
 Read-only by default: it checks discovery and the 404 shape without spending
 GPU. `--submit` is the one that generates.
@@ -110,15 +113,108 @@ def probe_ogg(b64: str) -> dict:
     return info
 
 
+def verify_sfx(base: str, engine: str, cue: str, variants: int,
+               submit: bool) -> int:
+    """The one-shot contract (ticket 16/17): what a game engine relies on."""
+    status, cues, _ = call(base, "/api/audio/styles?kind=sfx")
+    ok = status == 200 and isinstance(cues, list) and cues
+    out(ok, f"GET /api/audio/styles?kind=sfx -> {status}, "
+            f"{len(cues) if isinstance(cues, list) else '?'} cues")
+    if ok:
+        foot = next((c for c in cues if c["value"] == "footstep"), {})
+        out(bool(foot) and "retro" not in foot.get("engines", []),
+            f"footstep offers no retro recipe: {foot.get('engines')}")
+
+    status, body, _ = call(base, "/api/audio/sfx",
+                           {"cue": "footstep", "engine": "retro"})
+    d = body.get("detail") if isinstance(body, dict) else ""
+    out(status == 422 and "footstep" in str(d),
+        f"a cue without a recipe for the engine is REFUSED -> {status}: "
+        f"{str(d)[:90]}")
+
+    if not submit:
+        print("\n(read-only; pass --submit to generate)")
+        return 1 if FAILED else 0
+
+    entity = f"verify-{int(time.time())}"
+    req = {"cue": cue, "entity": entity, "engine": engine, "variants": variants}
+    t0 = time.time()
+    status, body, _ = call(base, "/api/audio/sfx", req)
+    build_s = time.time() - t0
+    if status != 200:
+        out(False, f"POST /api/audio/sfx -> {status}: {json.dumps(body)[:300]}")
+        return 1
+    info = body.get("info", {})
+    out(True, f"POST /api/audio/sfx -> 200 in {build_s:.1f}s "
+              f"({info.get('name')}, engine_from={info.get('engine_from')})")
+    audio = body.get("audio") or []
+    out(len(audio) == variants, f"one audio[] entry per variant: {len(audio)}")
+    for n, b64 in enumerate(audio, start=1):
+        p = probe_ogg(b64)
+        out(p["is_ogg"], f"v{n} decodes to Ogg ({p['bytes'] // 1024} KiB)")
+        if "duration_s" in p:
+            out(p["duration_s"] <= 3.5, f"v{n} is a one-shot: {p['duration_s']}s")
+            out(p.get("loop_start", -1) == -1 and p.get("loop_length", -1) == -1,
+                f"v{n} carries NO loop tags (a looping sword swing is the bug)")
+    onsets = [v.get("onset_ms") for v in info.get("variants", [])]
+    out(bool(onsets) and all(o is not None and o <= 10 for o in onsets),
+        f"every onset <= 10 ms: {onsets}")
+
+    t0 = time.time()
+    status, body2, _ = call(base, "/api/audio/sfx", req)
+    info2 = body2.get("info", {}) if isinstance(body2, dict) else {}
+    out(status == 200 and info2.get("cached") is True,
+        f"second call is a cache read in {time.time() - t0:.2f}s")
+    print(f"\n{'FAILED' if FAILED else 'OK'}: {FAILED} failure(s)")
+    return 1 if FAILED else 0
+
+
+def burst(base: str, kind: str, n: int) -> int:
+    """N concurrent requests for N NEW names (ticket 10): how the facade and
+    the solo worker behave when something2 opens several maps at once. Each
+    blocked request holds an API thread; report how long, and what came back."""
+    import concurrent.futures as cf
+    stamp = int(time.time())
+
+    def one(i):
+        t0 = time.time()
+        if kind == "sfx":
+            s, b, h = call(base, "/api/audio/sfx",
+                           {"cue": "hit", "entity": f"burst-{stamp}-{i}",
+                            "variants": 1})
+        else:
+            s, b, h = call(base, "/api/audio",
+                           {"kind": kind, "name": f"burst-{stamp}-{i}"})
+        d = b.get("detail") if isinstance(b, dict) else None
+        reason = d.get("reason") if isinstance(d, dict) else None
+        return i, s, reason, round(time.time() - t0, 1)
+
+    print(f"=== burst of {n} x {kind} ===")
+    with cf.ThreadPoolExecutor(max_workers=n) as ex:
+        rows = sorted(ex.map(one, range(n)))
+    for i, s, reason, secs in rows:
+        print(f"  #{i}: {s} {reason or ''} after {secs}s (thread held {secs}s)")
+    bad = [r for r in rows if r[1] not in (200, 503)]
+    out(not bad, f"every answer is 200 or a 503 with a reason, never a 5xx "
+                 f"crash or a hang: {[(r[1], r[2]) for r in rows]}")
+    return 1 if FAILED else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--lan", help="LAN IP; same checks through the portproxy")
-    ap.add_argument("--kind", default="music", choices=["music", "ambience"])
+    ap.add_argument("--kind", default="music", choices=["music", "ambience", "sfx"])
     ap.add_argument("--submit", action="store_true", help="generate (spends GPU)")
     ap.add_argument("--overshoot", action="store_true",
                     help="expect 503 building; needs AUDIO_GENERATE_TIMEOUT_S=1")
     ap.add_argument("--name", default=None)
+    ap.add_argument("--engine", default="retro", choices=["retro", "realistic"],
+                    help="sfx only; retro spends no GPU")
+    ap.add_argument("--cue", default="pickup", help="sfx only")
+    ap.add_argument("--variants", type=int, default=3, help="sfx only")
+    ap.add_argument("--burst", type=int, default=0,
+                    help="N concurrent requests for new names (spends GPU)")
     args = ap.parse_args()
 
     base = f"http://{args.lan or args.host}:8001"
@@ -127,6 +223,10 @@ def main() -> int:
     if not KEY:
         print("  note: SPRITE_API_KEY is unset; every call will 401 while "
               "enforcement is on")
+    if args.burst:
+        return burst(base, args.kind, args.burst)
+    if args.kind == "sfx":
+        return verify_sfx(base, args.engine, args.cue, args.variants, args.submit)
 
     status, styles, _ = call(base, "/api/audio/styles")
     ok = status == 200 and isinstance(styles, list) and styles

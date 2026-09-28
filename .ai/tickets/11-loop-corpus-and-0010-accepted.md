@@ -72,3 +72,15 @@ a missed bar is written as missed.
 ## Suggested Route
 
 `/implement`, then `/review-code` on 0010 and `corpus.md`.
+
+## Status 2026-09-28
+
+`scripts/build-audio-corpus.py` written: 10 music (5 styles x seeds 11, 42)
++ 5 ambience through the real authenticated `POST /api/audio`, fixed names
+(`corpus-<style>-<seed>`), newest file per name copied to `audio/corpus/`,
+`corpus.json` with EMPTY verdict/vocals/note fields - preserved across
+re-runs, never invented. Waits on 503 building/busy per Retry-After.
+
+- [ ] Run it (needs the same key as ticket 10; ~15-20 min of GPU).
+- [ ] Owner's listening pass fills the verdicts; then `corpus.md` and 0010
+      -> accepted.
