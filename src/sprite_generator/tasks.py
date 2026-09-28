@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # stdlib-only by design, so importing it here adds nothing to worker start.
 from core_models import (unavailable_reason, local_weight_name,
                           local_lora_file, default_model, is_gguf, gguf_file,
-                          gguf_lora)
+                          gguf_lora, persistent_qwen)
 # Module scope, not a lazy import inside the task: a lazy `import tiles` raised
 # ModuleNotFoundError inside the Celery worker while the identical import
 # succeeded from a shell in the same container with the same working directory.
@@ -2161,14 +2161,7 @@ def _read_qwen_stage(task_id, proc, label, tail, timed_out, limit):
         line = line.rstrip()
         if not line:
             continue
-        m = _QWEN_PROGRESS.match(line)
-        if m and m.group(1) in _QWEN_BANDS:
-            lo, hi = _QWEN_BANDS[m.group(1)]
-            i, n = int(m.group(2)), max(int(m.group(3)), 1)
-            pct = int(lo + (hi - lo) * i / n)
-            msg = (f"Qwen: denoising step {i}/{n}" if m.group(1) == "denoise"
-                   else f"Qwen: {label}")
-            update_task_record(task_id, progress_pct=pct, progress_msg=msg)
+        if _qwen_progress_line(task_id, line, label):
             continue
         # Progress bars and warnings are noise; keep the tail for the error.
         tail.append(line)
@@ -2192,6 +2185,147 @@ def _read_qwen_stage(task_id, proc, label, tail, timed_out, limit):
                      "breaker.", label)
         trip_gpu_breaker(RuntimeError(err))
     return err
+
+
+# --- The persistent Qwen process (qwen_server.py, decisions/0012 "2c") --------
+#
+# One child of this worker holds the fast variant's encoder and transformer in
+# host RAM (~17 GiB) and serves requests in ~36-46 s instead of ~100-110 s of
+# fresh subprocesses. It parks everything in RAM after each reply, so the card
+# is free between requests; the gateway stops it on any switch away
+# (_gateway_switch), and it exits by itself after QWEN_SERVER_IDLE_S. The
+# worker is --pool=solo, so one request at a time - no locking needed.
+QWEN_SERVER_READY_S = float(os.environ.get("QWEN_SERVER_READY_S", "420"))
+QWEN_SERVER_REQUEST_S = float(os.environ.get("QWEN_SERVER_REQUEST_S", "300"))
+QWEN_WARM_EXPECTED_S = float(os.environ.get("QWEN_WARM_EXPECTED_S", "60"))
+_qwen_srv = {"proc": None, "model": None}
+
+
+def _qwen_server_alive(model: str | None = None) -> bool:
+    p = _qwen_srv["proc"]
+    return (p is not None and p.poll() is None
+            and (model is None or _qwen_srv["model"] == model))
+
+
+def _qwen_server_stop(reason: str) -> None:
+    """Stop the child and free its RAM. Safe to call when none is running."""
+    p = _qwen_srv["proc"]
+    _qwen_srv["proc"], _qwen_srv["model"] = None, None
+    if p is None or p.poll() is not None:
+        return
+    logger.info("qwen server: stopping (%s)", reason)
+    try:
+        p.stdin.write("QUIT\n")
+        p.stdin.flush()
+        p.wait(timeout=15)
+    except Exception:
+        p.kill()
+        p.wait()
+
+
+def _qwen_read(proc, limit: float, until: str, task_id: str | None, label: str):
+    """Read child lines until one starts with `until`; (line, None) or
+    (None, error). A watchdog kills a child that goes silent past `limit` -
+    the same rule as _run_qwen_stage, for the same solo-worker reason."""
+    import threading
+    fired = threading.Event()
+
+    def _kill():
+        fired.set()
+        proc.kill()
+
+    dog = threading.Timer(limit, _kill)
+    dog.daemon = True
+    dog.start()
+    tail: list = []
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line.startswith(until):
+                return line, None
+            if task_id and _qwen_progress_line(task_id, line, label):
+                continue
+            if line:
+                tail.append(line)
+                del tail[:-8]
+    finally:
+        dog.cancel()
+    why = f"no {until} within {limit:.0f}s" if fired.is_set() else "exited"
+    return None, f"qwen server {why}: " + " | ".join(tail[-4:])
+
+
+def _qwen_server_ensure(llm_name: str) -> str | None:
+    """Start the child for `llm_name` unless it is already serving it.
+    Returns an error string, or None when it is READY."""
+    import subprocess
+    if _qwen_server_alive(llm_name):
+        return None
+    _qwen_server_stop(f"switching it to {llm_name}")
+    lora = gguf_lora(llm_name)
+    cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "qwen_server.py"),
+           "--gguf", gguf_file(llm_name)]
+    if lora:
+        cmd += ["--lora-repo", lora["repo"], "--lora-weight", lora["weight"]]
+    started = time.time()
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1,
+                            env={**os.environ,
+                                 "QWEN_SERVER_PARENT": str(os.getpid())})
+    line, err = _qwen_read(proc, QWEN_SERVER_READY_S, "READY", None, "starting")
+    if err:
+        proc.kill()
+        proc.wait()
+        return err
+    _qwen_srv["proc"], _qwen_srv["model"] = proc, llm_name
+    logger.info("qwen server: ready for %s in %.1fs", llm_name,
+                time.time() - started)
+    return None
+
+
+def _qwen_server_request(task_id, llm_name, prompt, negative, seed, png):
+    """One image through the child. Returns None, or an error string - after
+    which the child is stopped, so the next request starts clean."""
+    err = _qwen_server_ensure(llm_name)
+    if err:
+        return err
+    lora = gguf_lora(llm_name) or {}
+    req = {"prompt": prompt, "negative": negative or "", "seed": int(seed),
+           "png": png, "steps": lora.get("steps", 8), "cfg": lora.get("cfg", 1.0)}
+    proc = _qwen_srv["proc"]
+    try:
+        proc.stdin.write(json.dumps(req) + "\n")
+        proc.stdin.flush()
+    except Exception as e:
+        _qwen_server_stop(f"write failed: {e}")
+        return f"qwen server write failed: {e}"
+    line, err = _qwen_read(proc, QWEN_SERVER_REQUEST_S, "RESULT", task_id,
+                           "loading model")
+    if err:
+        _qwen_server_stop(err)
+        return err
+    res = json.loads(line[len("RESULT "):])
+    if not res.get("ok"):
+        # A refusal (VRAM) leaves a healthy child; anything else restarts it.
+        if "not enough free VRAM" not in res.get("error", ""):
+            _qwen_server_stop(res.get("error", "request failed"))
+        return res.get("error", "qwen server request failed")
+    logger.info("qwen server: %s", res.get("timings"))
+    return None
+
+
+def _qwen_progress_line(task_id: str, line: str, label: str) -> bool:
+    """Turn a `PROGRESS <stage> <i> <n>` line into queue-panel progress.
+    True if the line was one."""
+    m = _QWEN_PROGRESS.match(line)
+    if not (m and m.group(1) in _QWEN_BANDS):
+        return False
+    lo, hi = _QWEN_BANDS[m.group(1)]
+    i, n = int(m.group(2)), max(int(m.group(3)), 1)
+    msg = (f"Qwen: denoising step {i}/{n}" if m.group(1) == "denoise"
+           else f"Qwen: {label}")
+    update_task_record(task_id, progress_pct=int(lo + (hi - lo) * i / n),
+                       progress_msg=msg)
+    return True
 
 
 def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
@@ -2228,9 +2362,21 @@ def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
     extra = (["--lora-repo", lora["repo"], "--lora-weight", lora["weight"],
               "--steps", str(lora["steps"]), "--cfg", str(lora["cfg"])]
              if lora else [])
+    served = persistent_qwen(llm_name)
     mark_long_job(job_label,
-                  QWEN_FAST_EXPECTED_S if lora else QWEN_CORE_EXPECTED_S)
+                  (QWEN_WARM_EXPECTED_S if _qwen_server_alive(llm_name)
+                   else QWEN_FAST_EXPECTED_S) if served
+                  else QWEN_FAST_EXPECTED_S if lora else QWEN_CORE_EXPECTED_S)
     try:
+        if served:
+            err = _qwen_server_request(task_id, llm_name, prompt, negative,
+                                       seed, raw_png)
+            if not err:
+                return Image.open(raw_png).convert("RGB"), None
+            # The per-request path below still works without the child; a
+            # failed child costs this request the old ~100 s, not an error.
+            logger.warning("Task %s: persistent Qwen failed (%s); falling back "
+                           "to per-request subprocesses", task_id, err)
         err = _run_qwen_stage(task_id, ["encode", "--prompt", prompt,
                                         "--negative", negative or "",
                                         "--out", embeds], "encoding prompt")
@@ -4198,10 +4344,20 @@ def _gateway_switch(model: str, pinned: bool) -> None:
     model_gateway.begin_switch(model, "loading")
     started, load_s = time.time(), None
     try:
+        # EVERY switch away stops the persistent Qwen child - including to the
+        # fixed labels (audio, qwen-edit, flux, training), whose own evict
+        # paths know nothing about it. It parks in RAM, not VRAM, but ~17 GiB
+        # of RAM is what an audio or training job may need.
+        if not _qwen_server_alive(model):
+            _qwen_server_stop(f"gateway switch to {model}")
         _evict_pipelines(f"a model switch to {model}")
         release_vram_cache("model switch")
         if model_gateway.preloadable(model) and not unavailable_reason(model):
             if get_sd_pipeline(model):
+                load_s = time.time() - started
+        elif persistent_qwen(model) and not unavailable_reason(model):
+            # Start it ahead of the job, timed for the popup's next estimate.
+            if not _qwen_server_ensure(model):
                 load_s = time.time() - started
     except Exception as e:
         logger.warning("gateway: preload of %s failed (%s); the job will load "

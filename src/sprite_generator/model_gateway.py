@@ -36,6 +36,8 @@ import time
 
 import redis as _redis
 
+from core_models import persistent_qwen
+
 logger = logging.getLogger(__name__)
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
@@ -137,6 +139,14 @@ def preloadable(model: str) -> bool:
     GGUF runs in a subprocess per image and the fixed labels load inside their
     own tasks, so for those a switch only frees the card."""
     return bool(model) and model not in FIXED_LABELS and not model.startswith("gguf:")
+
+
+def warmable(model: str) -> bool:
+    """Does a switch TO this model do real loading worth timing and showing?
+    preloadable() models load a diffusers pipeline; persistent_qwen() models
+    start the long-lived Qwen process (tasks._qwen_server_ensure, ~85 s cold).
+    Everything else only frees the card, so its switch is ~instant."""
+    return preloadable(model) or persistent_qwen(model)
 
 
 # --- The rules --------------------------------------------------------------
@@ -297,7 +307,7 @@ def begin_switch(to_model: str, phase: str) -> dict:
         expected = float(_r.hget(LOAD_S_KEY, to_model) or DEFAULT_SWITCH_S)
     except Exception:
         expected = DEFAULT_SWITCH_S
-    if not preloadable(to_model):
+    if not warmable(to_model):
         expected = min(expected, 2.0)
     state = {"from": (active or {}).get("model"), "to": to_model,
              "started": time.time(), "expected_s": round(expected, 1),
@@ -316,7 +326,7 @@ def set_switch_phase(phase: str) -> None:
 
 
 def end_switch(model: str, load_s: float | None) -> None:
-    if load_s is not None and preloadable(model):
+    if load_s is not None and warmable(model):
         try:
             _r.hset(LOAD_S_KEY, model, round(load_s, 1))
         except Exception:

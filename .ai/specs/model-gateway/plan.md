@@ -171,3 +171,11 @@ popup shows the last measured load for that model, falling back to 10 s.
   a later successful run overwrites that.
 - **Tests:** `make test-model-gateway` - 15 `decide` cases, `retry_after_s`,
   `model_of` labels, and a static check that every GATED name is declared.
+- **Persistent fast Qwen (added 2026-09-28, decisions/0012 "2c").** A switch
+  TO `gguf:qwen-image-2512-Q2_K+lightning8` starts `qwen_server.py` (READY in
+  ~23-35 s) and records that as the switch time: `model_gateway.warmable()`
+  now covers it, while `preloadable()` stays diffusers-only because it gates
+  `get_sd_pipeline`. EVERY switch away - fixed labels included - stops the
+  child first in `_gateway_switch`, freeing its ~16 GiB of host RAM (measured
+  19.5 -> 3.8 GB used). `QWEN_PERSISTENT=0` turns it off; the tests cover
+  `warmable` and that switch.

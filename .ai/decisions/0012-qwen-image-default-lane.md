@@ -271,6 +271,25 @@ sprites that are pixelated to <=128 px. Q2_K is the fallback if 1024 matters.
    model switch. Spike VRAM was measured with the gateway's SD1.5 pipeline
    (2,054 MiB) still resident in the worker, which a real run evicts first.
 
+   **Built the same day** (`qwen_server.py`; `tasks._qwen_server_*`;
+   `.wslconfig` memory 24 -> 36 GB, `free` now 35 GiB). Through the real queue:
+
+   | | end to end | server timings |
+   |---|---|---|
+   | request 1 (starts the child, READY 23.4 s) | 57.7 s | 34.1 s |
+   | request 2 | **38.9 s** | encode 6.2 + place 2.5 + denoise 23.6 |
+   | request 3 | **34.0 s** | 32.0 s |
+   | per-request subprocesses, warm page cache | 57-61 s | - |
+   | per-request subprocesses, cold | 100-130 s | - |
+
+   The honest comparison is ~60 s -> ~35-40 s warm (~40% faster), not the
+   ~100 s cold figure. VRAM parks at ~0.9 GB between requests; a gateway
+   switch to SDXL stopped the child and host RAM used fell 19.5 -> 3.8 GB.
+   Any child failure falls back to the per-request path - proven when a first
+   build died at birth (its orphan check treated the Celery worker, PID 1 in
+   the container, as init) and all three requests still succeeded, slower.
+   The worker now passes its pid in `QWEN_SERVER_PARENT`.
+
 3. **A pixel-style metric that works.** Measure after the production pixelate
    step, or drop the pretence and keep the by-eye grid as the gate.
 4. **Framing misses** (helmet-only, cropped). A prompt/cutout problem to watch,

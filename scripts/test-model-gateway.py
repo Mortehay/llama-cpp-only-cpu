@@ -113,6 +113,34 @@ for name, args, kwargs, want in [
     if not ok:
         failures.append(f"model_of {name}: {got} != {want}")
 
+# preloadable() vs warmable(): only diffusers checkpoints are preloaded through
+# get_sd_pipeline (which refuses gguf), but a switch to the persistent fast
+# Qwen does real loading too - it starts qwen_server.py - so its switch is
+# timed and shown. The 20-step Q3_K_M and the fixed labels only free the card.
+FAST = "gguf:qwen-image-2512-Q2_K+lightning8"
+SLOW = "gguf:Qwen-Image-2512-Q3_K_M"
+SDXL = "stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl"
+os.environ.pop("QWEN_PERSISTENT", None)
+for name, got, want in [
+    ("preloadable(SDXL)", g.preloadable(SDXL), True),
+    ("preloadable(fast gguf)", g.preloadable(FAST), False),
+    ("warmable(SDXL)", g.warmable(SDXL), True),
+    ("warmable(fast gguf)", g.warmable(FAST), True),
+    ("warmable(slow gguf)", g.warmable(SLOW), False),
+    ("warmable(audio label)", g.warmable(g.AUDIO_STABLE), False),
+]:
+    ok = got == want
+    print(("ok  " if ok else "FAIL"), f"{name} -> {got}")
+    if not ok:
+        failures.append(f"{name}: {got} != {want}")
+os.environ["QWEN_PERSISTENT"] = "0"
+if g.warmable(FAST):
+    failures.append("QWEN_PERSISTENT=0 should make the fast gguf not warmable")
+    print("FAIL QWEN_PERSISTENT=0 still warmable")
+else:
+    print("ok   QWEN_PERSISTENT=0 turns the persistent path off")
+os.environ.pop("QWEN_PERSISTENT", None)
+
 # Static: every GATED name is a real task name in the source.
 src = os.path.dirname(g.__file__)
 declared = set()

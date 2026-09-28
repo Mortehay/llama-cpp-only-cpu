@@ -76,6 +76,20 @@ def gguf_file(value: str) -> str | None:
     return os.path.join(GGUF_DIR, _gguf_parts(value)[0] + ".gguf")
 
 
+def persistent_qwen(value: str) -> bool:
+    """Is this value served by the persistent Qwen process (qwen_server.py)?
+
+    Only the step-distilled variants: a request there is ~25 s of denoising,
+    so the ~75 s of per-request re-loading the persistent process removes is
+    most of the wall clock. The 20-step Q3_K_M is left on the per-request
+    subprocess path - its 4.8 + 9.7 GiB would not park in RAM beside anything
+    else. QWEN_PERSISTENT=0 turns it off everywhere. decisions/0012 "2c".
+    """
+    return (os.environ.get("QWEN_PERSISTENT", "1").lower()
+            not in ("0", "false", "no")
+            and gguf_lora(value) is not None)
+
+
 def gguf_lora(value: str) -> dict | None:
     """The LoRA settings a `gguf:<stem>+<key>` value names, or None."""
     if not is_gguf(value):
