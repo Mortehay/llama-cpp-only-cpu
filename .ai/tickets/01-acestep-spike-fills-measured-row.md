@@ -125,3 +125,10 @@ a quality/style fail on part of the set, not on the default. Acted on in
 re-judged against the new templates; the first product music run after
 ticket 15 is the real test. **Vocals per track were not reported** - still
 needed for the gate's vocal rule.
+
+### Gate outcome, 2026-09-28
+
+Superseded by the corpus pass (ticket 11): the owner judged the house-style
+product output "normal for now". Per-track vocal counts were never given;
+the fallback model (acestep-v15-sft) stays on disk, unused, as the
+escalation if vocals are ever reported.

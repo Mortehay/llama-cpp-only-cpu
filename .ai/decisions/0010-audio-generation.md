@@ -1,9 +1,15 @@
 # 0010 - Music and ambience for something2 maps: neural audio, tile-shaped facade
 
 Date: 2026-09-12
-Status: **Proposed, awaiting measurements.** The direction is decided; the
-model is not. Sections marked *to be measured* are empty on purpose and this
-ADR is not final until they hold numbers from this card. Surface in
+Status: **Accepted 2026-09-28, for v1.** Models measured on this card
+(ACE-Step 1.5 turbo for music, Stable Audio Open 1.0 for ambience and
+realistic sfx, a procedural synth for retro sfx), every kind end to end
+through the authenticated API, and the fixed 15-item corpus built
+(`specs/audio/corpus.md`). The owner's listening verdict was an overall
+"sounds normal for now" - **not a per-track verdict**, so the corpus rows,
+the vocal count and the two high-seam ambience loops (cave 5.57 dB,
+village_day 4.50 dB) stay open for a finer pass if a later change needs a
+before/after. Originally proposed 2026-09-12. Surface in
 [specs/audio/contract.md](../specs/audio/contract.md).
 
 ## Why this exists
