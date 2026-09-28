@@ -169,6 +169,7 @@ services:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
+      - ${AUDIO_DIR:-../../audio}:/app/audio
       # Operator tools (API verification, fetch, acceptance checks). Read-only
       # and separate from /app: these are run via `docker exec` or
       # `docker compose run`, not imported by the service.
@@ -189,6 +190,10 @@ services:
       - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      # How long POST /api/audio blocks before answering 503 + Retry-After.
+      # The build is NOT cancelled when it expires, so this is a patience
+      # setting, not a budget. Set it to 1 to exercise that path.
+      - AUDIO_GENERATE_TIMEOUT_S=${AUDIO_GENERATE_TIMEOUT_S:-240}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path
@@ -239,6 +244,7 @@ services:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
+      - ${AUDIO_DIR:-../../audio}:/app/audio
       # Read-only, and separate from /app on purpose: these are operator tools
       # (fetch, acceptance checks, smoke tests) run via `docker compose run`,
       # not modules the worker imports. Mounted so the Makefile's 2D-conveyor
@@ -258,6 +264,10 @@ services:
       - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
       - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      # How long POST /api/audio blocks before answering 503 + Retry-After.
+      # The build is NOT cancelled when it expires, so this is a patience
+      # setting, not a budget. Set it to 1 to exercise that path.
+      - AUDIO_GENERATE_TIMEOUT_S=${AUDIO_GENERATE_TIMEOUT_S:-240}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path

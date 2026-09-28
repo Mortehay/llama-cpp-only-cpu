@@ -56,7 +56,7 @@ IMAGES_DIR = "/app/images"
 # tell them apart from pixels, so it declines to guess. A caller that knows
 # says so with `override_settings.kind`; asking for a cutout is taken as saying
 # "entity", since only an object composited over terrain needs one.
-KINDS = ("raw", "entity", "tile", "map")
+KINDS = ("raw", "entity", "tile", "map", "music", "ambience")
 
 # Terminal states, matching `jobs.TERMINAL` minus the ones a synchronous facade
 # cannot reach: nothing here is queued long enough to be cancelled.
@@ -67,8 +67,22 @@ def _db():
     return psycopg2.connect(DB_URL)
 
 
+AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
+
+
 def _url(path: str | None) -> str | None:
-    return ("/images/" + os.path.basename(path)) if path else None
+    """The open static URL for a file this ledger owns.
+
+    Audio lives in its own tree (`<AUDIO_DIR>/<kind>/...`, served at
+    `/audio/`) and keeps its subfolder in the URL; everything else is flat in
+    IMAGES_DIR and served by basename.
+    """
+    if not path:
+        return None
+    root = AUDIO_DIR.rstrip("/") + "/"
+    if path.startswith(root):
+        return "/audio/" + path[len(root):]
+    return "/images/" + os.path.basename(path)
 
 
 # ---------------------------------------------------------------------------
@@ -222,12 +236,22 @@ def finish(gen_id: str | None, *, file_path: str | None = None,
            job_id: str | None = None, seed: int | None = None,
            duration_ms: float | None = None,
            served_from: str = "generated",
-           celery_task_id: str | None = None) -> None:
+           celery_task_id: str | None = None,
+           params: dict | None = None, prompt: str | None = None) -> None:
     """Close a row as done.
 
     Pass EITHER `file_path` (this request made the image) OR `job_id` (a job
     owns it). Passing both would put the same PNG in the gallery twice; the
     caller knows which it is, so this does not guess.
+
+    `params` MERGES into what `begin` wrote rather than replacing it, so a
+    producer can add what it only learns by producing - an audio loop's real
+    duration, sample rate and loop points - without erasing what the request
+    asked for.
+
+    `prompt` is for the same case: an audio request names a STYLE, and the
+    text actually sent to the model is rendered from the roster inside the
+    worker. Without this the Activity tab shows "(no prompt)" for every track.
     """
     # COALESCE on job_id, because `begin` may already have set it and a caller
     # that only has a file path would otherwise blank it - re-exposing the job
@@ -235,10 +259,12 @@ def finish(gen_id: str | None, *, file_path: str | None = None,
     _update(gen_id,
             "status = 'done', file_path = %s, job_id = COALESCE(%s, job_id), "
             "seed = %s, "
+            "params = params || %s::jsonb, "
+            "prompt = COALESCE(NULLIF(%s, ''), prompt), "
             "duration_ms = %s, served_from = %s, "
             "celery_task_id = COALESCE(%s, celery_task_id), "
             "finished_at = now()",
-            (file_path, job_id, seed,
+            (file_path, job_id, seed, json.dumps(params or {}), prompt or "",
              int(duration_ms) if duration_ms is not None else None,
              served_from, celery_task_id))
 
@@ -256,6 +282,26 @@ def fail(gen_id: str | None, error: object, *,
             "finished_at = now()",
             (str(error)[:2000],
              int(duration_ms) if duration_ms is not None else None))
+
+
+def is_closed(gen_id: str | None) -> bool:
+    """True if this row already reached a terminal state.
+
+    A producer checks this before writing: the audio facade lets a second
+    request JOIN a build in flight, so by the time a task finishes its row may
+    already have been closed by someone else. Unknown ids read as NOT closed,
+    because refusing to record a real result is worse than a duplicate write.
+    """
+    if not gen_id:
+        return False
+    try:
+        with _db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT status FROM generations WHERE id = %s", (gen_id,))
+            row = cur.fetchone()
+    except Exception as e:
+        logger.warning("ledger: could not read %s: %s", gen_id, e)
+        return False
+    return bool(row) and row[0] in TERMINAL
 
 
 def attach_task(gen_id: str | None, celery_task_id: str | None) -> None:
@@ -326,6 +372,8 @@ def _activity_row(r: dict) -> dict:
         "title": r["title"],
         "model": r["model"],
         "url": _url(r["file_path"]),
+        # Filled by `_attach_audio` for audio rows only; images stay None.
+        "audio": None,
         "job_id": str(r["job_id"]) if r["job_id"] else None,
         "error": r["error"],
         "duration_ms": r["duration_ms"],
@@ -339,6 +387,38 @@ def _activity_row(r: dict) -> dict:
         "created_at": _iso(r["created_at"]),
         "finished_at": _iso(r["finished_at"]),
     }
+
+
+AUDIO_KINDS = ("music", "ambience", "sfx")
+_AUDIO_FIELDS = ("style", "seed", "bpm", "time_signature", "duration_s",
+                 "sample_rate", "loop_start", "loop_end", "seam_rms_jump_db",
+                 "author")
+
+
+def _attach_audio(cur, rows: list[dict]) -> None:
+    """Give audio rows the fields a listener needs to judge a loop.
+
+    `activity_v` does not carry `params`, and widening a UNION view is a
+    migration; one extra query for the audio rows on this page is not.
+    """
+    ids = [r["id"] for r in rows
+           if r["source"] == "api" and r["kind"] in AUDIO_KINDS]
+    if not ids:
+        return
+    cur.execute("SELECT id::text AS id, seed, params FROM generations "
+                "WHERE id::text = ANY(%s)", (ids,))
+    found = {}
+    for g in cur.fetchall():
+        p = dict(g["params"] or {})
+        p.setdefault("seed", g["seed"])
+        info = {k: p.get(k) for k in _AUDIO_FIELDS}
+        # A cache read owns no file and learned nothing; an all-null block
+        # would render as a row of dashes.
+        if any(v is not None for v in info.values()):
+            found[g["id"]] = info
+    for r in rows:
+        if r["id"] in found:
+            r["audio"] = found[r["id"]]
 
 
 # Anything still moving. `queued` and `running` are the two the jobs table
@@ -411,6 +491,7 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
             cur.execute("SELECT source, status, count(*) AS n FROM activity_v "
                         "GROUP BY source, status ORDER BY source, status")
             counts = [dict(r) for r in cur.fetchall()]
+            _attach_audio(cur, items + active)
     except psycopg2.Error as e:
         logger.exception("activity listing failed")
         raise HTTPException(status_code=503, detail=f"database error: {e}")

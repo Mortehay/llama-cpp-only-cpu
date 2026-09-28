@@ -18,6 +18,8 @@ core.[0-9]*
 compose/develop/db/data/
 !images
 images/*
+!audio
+audio/*
 # React build
 frontend/node_modules/
 src/sprite_generator/static/app/

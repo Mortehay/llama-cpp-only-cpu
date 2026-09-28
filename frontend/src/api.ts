@@ -491,6 +491,26 @@ export interface CoreList {
  * `requested_by` is the API KEY's name, not a person and not a machine. On this
  * network it is the only identity that separates callers - see `client_addr`.
  */
+/** Ledger kinds whose file is sound, not pixels. Branch on this, not on the
+ * URL's extension: `kind` is what the ledger says the row is. */
+export const AUDIO_KINDS = ['music', 'ambience', 'sfx'] as const
+export const isAudioKind = (kind: string) =>
+  (AUDIO_KINDS as readonly string[]).includes(kind)
+
+/** What a listener needs to judge a loop. Loop points are SAMPLE offsets. */
+export interface AudioInfo {
+  style: string | null
+  seed: number | null
+  bpm: number | null
+  time_signature: number | string | null
+  duration_s: number | null
+  sample_rate: number | null
+  loop_start: number | null
+  loop_end: number | null
+  seam_rms_jump_db: number | null
+  author: string | null
+}
+
 export interface ActivityItem {
   source: 'api' | 'job' | 'ui'
   id: string
@@ -501,6 +521,8 @@ export interface ActivityItem {
   title: string
   model: string | null
   url: string | null
+  /** Set for audio kinds only. */
+  audio?: AudioInfo | null
   job_id: string | null
   error: string | null
   duration_ms: number | null
@@ -872,4 +894,125 @@ export function imageUrl(filePath: string | null): string {
   if (!filePath) return ''
   const name = filePath.split('/').pop()
   return name ? `/images/${name}` : ''
+}
+
+// ---------------------------------------------------------------------------
+// Audio (music / ambience). Kept as its own object rather than inside `api`
+// so the audio surface can be read in one place. See .ai/specs/audio/.
+// ---------------------------------------------------------------------------
+
+export interface AudioSlotSpec {
+  type: 'int' | 'enum'
+  default: number | string
+  min?: number
+  max?: number
+  values?: string[]
+}
+
+export interface AudioStyle {
+  value: string
+  label: string
+  kind: 'music' | 'ambience'
+  default: boolean
+  time_signature: string | null
+  slots: Record<string, AudioSlotSpec>
+}
+
+export interface AudioRow {
+  id: string
+  kind: string
+  name: string | null
+  status: string
+  served_from: string
+  style: string | null
+  prompt: string | null
+  seed: number | null
+  author: string | null
+  duration_s: number | null
+  sample_rate: number | null
+  loop_start: number | null
+  loop_end: number | null
+  bars: number | null
+  seam_rms_jump_db: number | null
+  error: string | null
+  duration_ms: number | null
+  requested_by: string | null
+  created_at: string | null
+  finished_at: string | null
+  /** The open /audio static URL of the OGG; the WAV master sits beside it. */
+  url: string | null
+  download_url: string | null
+}
+
+export interface AudioGenerateBody {
+  kind: 'music' | 'ambience'
+  name: string
+  style?: string
+  prompt?: string
+  slots?: Record<string, string | number>
+  seed?: number
+  duration_s?: number
+}
+
+/**
+ * The outcome of a generate call, NOT thrown: a 503 is a normal answer here.
+ * `reason: building` means the track is still being made and has not been
+ * cancelled - the tab polls the list until it lands. `busy` and `gpu_faulted`
+ * carry a Retry-After and are shown, never auto-retried.
+ */
+export type AudioGenerateOutcome =
+  | { ok: true; info: Record<string, unknown> }
+  | {
+      ok: false
+      status: number
+      reason: 'building' | 'busy' | 'gpu_faulted' | 'error'
+      detail: string
+      retry_after_s: number | null
+    }
+
+export const audioApi = {
+  styles: (kind?: string) =>
+    request<AudioStyle[]>(`/api/audio/styles${kind ? `?kind=${kind}` : ''}`),
+
+  list: (params: { kind?: string; name?: string; limit?: number } = {}) => {
+    const qs = new URLSearchParams()
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== '') qs.set(k, String(v))
+    })
+    return request<{ items: AudioRow[]; count: number }>(`/api/audio?${qs}`)
+  },
+
+  /** Blocks until built, or until the server's budget runs out (a 503). The
+   * base64 body is dropped: the tab plays the file from the static mount. */
+  generate: async (body: AudioGenerateBody): Promise<AudioGenerateOutcome> => {
+    const headers = new Headers({ 'Content-Type': 'application/json' })
+    const token = getToken()
+    if (token) headers.set('Authorization', `Bearer ${token}`)
+    const res = await fetch('/api/audio', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+    let json: any = null
+    try {
+      json = await res.json()
+    } catch {
+      /* non-JSON error page */
+    }
+    if (res.ok) return { ok: true, info: json?.info ?? {} }
+    const d = json?.detail
+    const obj = d && typeof d === 'object' && !Array.isArray(d) ? d : null
+    const reason = obj?.reason
+    return {
+      ok: false,
+      status: res.status,
+      reason:
+        reason === 'building' || reason === 'busy' || reason === 'gpu_faulted'
+          ? reason
+          : 'error',
+      detail: obj?.detail ?? (typeof d === 'string' ? d : describeDetail(d)) ?? `${res.status}`,
+      retry_after_s:
+        obj?.retry_after_s ?? (Number(res.headers.get('retry-after')) || null),
+    }
+  },
 }

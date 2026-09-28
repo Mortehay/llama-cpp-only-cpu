@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { api } from '../api'
-import type { ActivityItem } from '../api'
+import { api, isAudioKind } from '../api'
+import type { ActivityItem, AudioInfo } from '../api'
 import { useAsync, usePoll } from '../hooks'
 
 const PAGE = 50
@@ -182,6 +182,32 @@ function PendingPanel({ active }: { active: ActivityItem[] }) {
   )
 }
 
+/** Loop points arrive as sample offsets; shown as seconds, which is what a
+ * listener scrubbing to the seam needs. */
+function AudioDetails({ a }: { a: AudioInfo }) {
+  const secs = (n: number | null) =>
+    n != null && a.sample_rate ? `${(n / a.sample_rate).toFixed(2)}s` : '—'
+  return (
+    <div>
+      <strong>Audio:</strong> {a.style ?? '—'}
+      {a.bpm != null && ` · ${a.bpm} bpm`}
+      {a.time_signature != null && ` · ${a.time_signature}/4`}
+      {a.duration_s != null && ` · ${a.duration_s.toFixed(1)}s`}
+      {a.sample_rate != null && ` · ${a.sample_rate} Hz`}
+      {a.seed != null && ` · seed ${a.seed}`}
+      <br />
+      <strong>Loop:</strong> {secs(a.loop_start)} → {secs(a.loop_end)}
+      {a.seam_rms_jump_db != null && ` · seam jump ${a.seam_rms_jump_db.toFixed(2)} dB`}
+      {a.author && (
+        <>
+          <br />
+          <strong>Style chosen by:</strong> {a.author}
+        </>
+      )}
+    </div>
+  )
+}
+
 function Row({ item }: { item: ActivityItem }) {
   const [open, setOpen] = useState(false)
 
@@ -189,7 +215,11 @@ function Row({ item }: { item: ActivityItem }) {
     <>
       <tr>
         <td>
-          {item.url ? (
+          {item.url && isAudioKind(item.kind) ? (
+            /* The open /audio mount, so no bearer is needed. preload="none":
+               a page of 50 rows must not fetch 50 tracks to render. */
+            <audio controls preload="none" src={item.url} style={{ width: 220, height: 32 }} />
+          ) : item.url ? (
             <img
               src={item.url}
               alt=""
@@ -287,6 +317,7 @@ function Row({ item }: { item: ActivityItem }) {
                   <strong>Job:</strong> {item.job_id}
                 </div>
               )}
+              {item.audio && <AudioDetails a={item.audio} />}
               {item.error && (
                 <div className="note err" style={{ marginTop: 8 }}>
                   {item.error}

@@ -83,6 +83,32 @@ The first external consumer is the admin panel of
 >
 > Contract in [specs/worlds/contract.md](specs/worlds/contract.md).
 
+> **Extended by [decisions/0010](decisions/0010-audio-generation.md)
+> (2026-09-12, proposed, awaiting measurements): a fifth deliverable, audio.**
+> Music and ambience for something2 maps - two artefact kinds named by the map,
+> OGG Vorbis with loop points over a kept WAV master, requested by something2
+> through a tile-shaped facade (cache first, build within a budget, `503` +
+> `Retry-After` on overshoot, never a placeholder), generated in the **same
+> solo worker** through pipeline eviction. The model is unverified on this
+> card; the ADR's measurement table is empty until it is. Surface in
+> [specs/audio/contract.md](specs/audio/contract.md).
+>
+> **State 2026-09-28:** **music and ambience both run end to end** (music:
+> 56 s cold for a 2-minute loop; ticket 15 put the ACE-Step venv in the
+> worker image, now 25 GB). Audio tab at `#audio`. A third kind, `sfx`, was added (0010
+> D7/D8). Audio files live in `AUDIO_DIR` (`audio/` at the repo root,
+> `/app/audio`, served at `/audio/`), not in `images/`.
+>
+> **Slow WSL downloads were Large Send Offload on `vEthernet (WSL)`** -
+> measured 2026-09-28 on the same file: 72 KB/s from WSL with LSO on,
+> **11 MB/s** with it off, ~8 MB/s from Windows throughout (`hf-xet` was not
+> the cause). The adapter is recreated at boot with LSO on, so
+> `scripts/lan-expose.ps1` (already re-run elevated after every reboot) now
+> disables it. Switching it live **broke WSL's DNS** (the Windows DNS proxy at
+> the adapter gateway stopped answering; traffic by IP was fine); the script
+> then points `/mnt/wsl/resolv.conf` at 1.1.1.1 / 8.8.8.8, which WSL
+> regenerates on its next start. The ~0.6 MB/s PyPI figure in 0010 was this.
+
 ## Measured hardware (2026-08-19)
 
 These are measured, not assumed, and several are binding constraints:

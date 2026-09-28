@@ -60,6 +60,29 @@ if ($wslIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') {
 }
 Write-Output "WSL ($Distro) address: $wslIp"
 
+# Large Send Offload on the WSL adapter throttles WSL downloads ~150x.
+# Measured 2026-09-28 on the same file: 72 KB/s with LSO on, 11 MB/s off,
+# while Windows itself got ~8 MB/s throughout. The adapter is recreated at
+# boot with LSO back on, which is why this lives in a script re-run after
+# every restart.
+#
+# Side effect seen the one time it was switched live: the Windows DNS proxy
+# WSL uses (the adapter's gateway) stopped answering. Traffic by IP still
+# worked; only names failed. So after switching, check DNS and, if it is
+# dead, point WSL at public resolvers. /mnt/wsl/resolv.conf is regenerated at
+# every WSL start, so that override never outlives the session.
+$lso = Get-NetAdapterLso -Name 'vEthernet (WSL)' -ErrorAction SilentlyContinue
+if ($lso -and ($lso.IPv4Enabled -or $lso.IPv6Enabled)) {
+    Disable-NetAdapterLso -Name 'vEthernet (WSL)' -IPv4 -IPv6
+    Write-Output "disabled Large Send Offload on vEthernet (WSL)"
+    Start-Sleep -Seconds 3
+    $resolved = wsl -d $Distro -- getent ahostsv4 pypi.org
+    if (-not $resolved) {
+        wsl -d $Distro -u root -- sh -c 'printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /mnt/wsl/resolv.conf'
+        Write-Output "WSL DNS stopped answering after the LSO change; pointed it at 1.1.1.1 / 8.8.8.8 until the next WSL restart"
+    }
+}
+
 foreach ($p in $Ports) {
     netsh interface portproxy delete v4tov4 listenport=$p listenaddress=0.0.0.0 2>$null | Out-Null
     netsh interface portproxy add v4tov4 listenport=$p listenaddress=0.0.0.0 `

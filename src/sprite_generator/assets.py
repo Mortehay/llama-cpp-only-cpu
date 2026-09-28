@@ -46,10 +46,14 @@ def _db():
 
 
 def to_url(file_path: str | None) -> str | None:
-    """`/app/images/sheet_x.png` -> `/images/sheet_x.png`."""
-    if not file_path:
-        return None
-    return "/images/" + os.path.basename(file_path)
+    """`/app/images/sheet_x.png` -> `/images/sheet_x.png`.
+
+    Delegates to the ledger's mapping, which also knows the audio tree
+    (`/app/audio/<kind>/x.ogg` -> `/audio/<kind>/x.ogg`); two copies of this
+    rule is how gallery links to audio broke when that tree was added.
+    """
+    import generations
+    return generations._url(file_path)
 
 
 def _row(r: dict) -> dict:

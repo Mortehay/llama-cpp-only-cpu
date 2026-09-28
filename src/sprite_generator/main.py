@@ -75,6 +75,11 @@ import generations
 from generations import router as generations_router
 app.include_router(generations_router)
 
+# Music and ambience loops for something2 maps. Cache-first like the tile
+# facade, but an over-budget build is never revoked - see audio.py.
+from audio import router as audio_router
+app.include_router(audio_router)
+
 # Reference examples and the style profiles measured from them. A tile upload
 # is how the camera angle stops being a guess.
 from references import router as references_router
@@ -139,6 +144,13 @@ class NoStoreStaticFiles(StaticFiles):
 
 # Mount static files for serving saved images
 app.mount("/images", NoStoreStaticFiles(directory=IMAGES_DIR), name="images")
+
+# Music, ambience and sfx have their own tree, `<AUDIO_DIR>/<kind>/`, rather
+# than sitting flat among the PNGs. Open for the same reason as /images: a
+# browser <audio> tag sends no bearer, and the names are unguessable.
+AUDIO_DIR = os.environ.get("AUDIO_DIR", "/app/audio")
+os.makedirs(AUDIO_DIR, exist_ok=True)
+app.mount("/audio", NoStoreStaticFiles(directory=AUDIO_DIR), name="audio")
 
 def _db_target():
     """Host:port/name from DB_URL, without the credentials — safe to log."""

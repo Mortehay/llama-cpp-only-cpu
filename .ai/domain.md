@@ -140,6 +140,49 @@ Note the inversion that makes this design work and reads as backwards: the
 here inverts the dependency and produces a picture the ground does not match -
 the exact property the design exists to guarantee.
 
+## Style (of audio) is a roster entry, not a string
+
+In the audio surface a **style** is one entry in a Python roster - a prompt
+template with slots and a negative list - the way a checkpoint is one entry in
+`core_models.CORE_MODELS`. The LLM *selects* a style and fills its slots; it
+never writes the model prompt from nothing. A free-text `prompt` is an explicit
+**override** that bypasses the roster, and it is the exception.
+
+Kept apart because "the style" in a request can mean the roster key
+(`medieval_fantasy`), the filled template actually sent to the model, or the
+caller's free text, and only the first is reproducible across re-rolls.
+
+## Track vs ambience, and loop points
+
+- **Track** - a `music` artefact: a musical bed for one map, minutes long,
+  looped endlessly by the player.
+- **Ambience** - a stationary texture under it (wind, birds, drips), tens of
+  seconds, its own artefact and its own `kind`. Never mixed into the track.
+- **Loop points** - `loop_start` / `loop_end` as SAMPLE offsets into the WAV
+  master, carried both as OGG tags and in `info`. The **seam** is the place
+  they meet, and it is the property under test - "the loop is fine" means the
+  seam passed the fixed-set listening bar, not that the file plays twice.
+
+Both are named by the map, like `map:<name>`. Do not say "the map's audio" when
+one of the two is meant - they are fetched, looped and re-rolled separately.
+
+## Cue and engine (sfx)
+
+- **Cue** - one `sfx` roster entry: a one-shot sound for a game event
+  (`slash`, `hit`, `pickup`). Deliberately NOT called an *action*: **action**
+  already means one sprite-sheet row (above), and "the attack action" vs "the
+  attack sound" would collide in every plan that touches both.
+- **Engine** - how a cue is rendered: `realistic` (neural, Stable Audio Open)
+  or `retro` (procedural sfxr-style, no GPU). Applies to `sfx` only; music and
+  ambience have one model each and no engine field.
+
+## Audio provider (something2's side)
+
+A new connector kind on something2's side, distinct from their **image
+provider**. Their image provider decodes `images[0]` as a PNG and slices it,
+so it cannot carry audio; the audio one reads `audio[0]`. When both are in
+scope say which, because "the provider" has meant the image one for a month.
+
 ## Entity asset vs entity placement
 
 The Entity Generation tab produces **entity assets** - sprites, rows in the

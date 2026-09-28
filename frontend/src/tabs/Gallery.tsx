@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api } from '../api'
+import { api, isAudioKind } from '../api'
 import type { ReferenceKind } from '../api'
 import { useAsync } from '../hooks'
 
@@ -124,7 +124,11 @@ export default function Gallery() {
         {page.data?.items.map((a) => (
           <div className="thumb" key={`${a.source}-${a.id}`}>
             <div className="pic">
-              {a.url && <img src={a.url} alt={a.title} loading="lazy" />}
+              {a.url && isAudioKind(a.kind) ? (
+                <audio controls preload="none" src={a.url} style={{ width: '100%' }} />
+              ) : (
+                a.url && <img src={a.url} alt={a.title} loading="lazy" />
+              )}
             </div>
             <div className="meta">
               <button

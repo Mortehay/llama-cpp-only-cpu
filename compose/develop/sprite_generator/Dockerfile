@@ -1,4 +1,5 @@
-FROM python:3.10-slim
+# 3.11 to match Dockerfile.cuda (ACE-Step 1.5 needs 3.11-3.12; see decisions/0010).
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -15,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     postgresql-client \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY compose/develop/sprite_generator/requirements.txt .

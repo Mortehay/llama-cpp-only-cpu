@@ -4057,3 +4057,78 @@ def run_command_job(self, name: str):
         result["error"] = "\n".join(tail[-12:]) or f"exit code {rc}"
         logger.warning("command %s exited %d", name, rc)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Audio: music and ambience for something2 maps. See .ai/specs/audio/.
+# ---------------------------------------------------------------------------
+
+@celery_app.task(name="tasks.generate_audio_task", bind=True)
+def generate_audio_task(self, kind: str, name: str, style: str = None,
+                        prompt: str = None, slots: dict = None,
+                        seed: int = None, duration_s: float = None,
+                        gen_id: str = None):
+    """One music track or ambience texture, mastered into a seamless loop.
+
+    Closes its own ledger row. The audio facade may give up waiting and answer
+    503 while this is still running - by design, so the build survives the
+    request and the next one cache-reads it - and a row nobody closes shows as
+    "on the worker" forever.
+
+    The model runs in `audio_engine`, not here: ACE-Step lives in its own venv
+    and Stable Audio in this one, and neither belongs in a Celery module that
+    must not touch CUDA at import.
+    """
+    import generations
+
+    blocked = _gpu_breaker_admit()
+    if blocked:
+        generations.fail(gen_id, blocked["error"])
+        return blocked
+
+    if generations.is_closed(gen_id):
+        # A second request joined this build and its row was already closed,
+        # or an operator cancelled it. Reopening would resurrect a finished
+        # row with a second finished_at.
+        logger.info("audio %s %r: ledger row %s is already closed; running "
+                    "without it", kind, name, gen_id)
+        gen_id = None
+
+    start = time.time()
+    try:
+        import audio_engine
+        result = audio_engine.generate(kind, name, style=style, prompt=prompt,
+                                       slots=slots, seed=seed,
+                                       duration_s=duration_s)
+    except Exception as e:
+        logger.error("audio %s %r failed: %s", kind, name, e, exc_info=True)
+        if is_cuda_fault(e):
+            trip_gpu_breaker(e)
+            release_vram_cache("a CUDA fault", floor_mb=0)
+            msg = (f"GPU context faulted during {kind} generation; refusing new "
+                   f"work for {GPU_FAULT_COOLDOWN_S}s.")
+            generations.fail(gen_id, msg,
+                             duration_ms=(time.time() - start) * 1000)
+            return {"error": msg, "error_kind": "gpu_faulted",
+                    "retry_after_s": GPU_FAULT_COOLDOWN_S}
+        generations.fail(gen_id, str(e),
+                         duration_ms=(time.time() - start) * 1000)
+        return {"error": str(e)}
+
+    # Merge in what only generating could establish: the real loop length, the
+    # sample rate the model chose, the seam figure. `_info` in audio.py reads
+    # these back, so a row without them serves nulls to something2.
+    generations.finish(
+        gen_id, file_path=result["file_path"], seed=result["seed"],
+        prompt=result.get("prompt"),
+        duration_ms=(time.time() - start) * 1000,
+        params={k: result[k] for k in (
+            "style", "prompt", "duration_s", "sample_rate", "loop_start",
+            "loop_end", "bars", "seam_rms_jump_db", "bpm", "time_signature",
+            "master_path", "model_seconds", "load_seconds", "peak_alloc_mb")
+            if k in result})
+    logger.info("audio %s %r done in %.1fs: %s (%.1fs, seam %.2f dB)",
+                kind, name, time.time() - start,
+                os.path.basename(result["file_path"]),
+                result["duration_s"], result["seam_rms_jump_db"])
+    return result

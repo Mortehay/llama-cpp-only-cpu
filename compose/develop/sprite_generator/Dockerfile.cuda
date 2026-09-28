@@ -5,7 +5,11 @@
 # their own CUDA runtime libraries, so the container only needs the host driver
 # exposed by nvidia-container-toolkit. That keeps this image close to the CPU one
 # and avoids a ~3GB CUDA base layer.
-FROM python:3.10-slim
+# 3.11, not 3.10, since 2026-09-12: ACE-Step 1.5 (the audio model, decisions/0010)
+# requires Python 3.11-3.12. The bump alone changed nothing in the image except
+# the re-resolved wheels (torch 2.13->2.14, numpy 2.2->2.4); gpu-health, the
+# world-gen smoke and an SDXL+LoRA txt2img all passed on it.
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -14,7 +18,7 @@ WORKDIR /app
 # build-essential is NOT optional on this image, and the reason is not obvious:
 # torch dispatches some ops (bmm_outer_product among them) to Triton, and Triton
 # JIT-COMPILES its CUDA driver shim at first use with the system C compiler.
-# python:3.10-slim has none, so the failure lands at inference time rather than
+# python:3.11-slim has none, so the failure lands at inference time rather than
 # build time, deep in a stack of torch -> triton -> driver frames:
 #
 #   RuntimeError: Failed to find C compiler. Please specify via CC environment
@@ -23,11 +27,15 @@ WORKDIR /app
 # Nothing about that message suggests a missing apt package, and it does not
 # appear until a model actually runs - measured 2026-08-23, on the first
 # Qwen-Image-Edit turnaround, after a 16GB download.
+#
+# libsndfile1 backs `soundfile`, which is how audio_master writes the OGG
+# Vorbis loop. Without it the import succeeds and the write fails.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     libgl1 \
     libglib2.0-0 \
     build-essential \
+    libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # torch in its own layer: it is large and changes rarely, unlike the app deps
@@ -57,6 +65,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install torch torchvision
 
+# ACE-Step 1.5, the music model, in an ISOLATED venv at /opt/acestep/.venv.
+# It pins torch 2.10.0+cu128 and transformers <4.58; the layers above carry
+# torch 2.14/cu130 and transformers 5.x for diffusers. One site-packages cannot
+# hold both, so audio_engine spawns this venv's python as a subprocess after
+# evicting the diffusers pipelines - still one process on the card at a time,
+# because the solo worker blocks on the child (decisions/0010, D6).
+#
+# Placed BEFORE requirements.txt on purpose: that file changes often and this
+# layer is ~14 GB of wheels, so a routine requirements edit must hit the cache
+# here instead of re-downloading it. Pinned to the commit 0010 was measured on,
+# not `main` - `uv sync --frozen` is only reproducible if the lockfile is.
+# ffmpeg backs torchcodec in their stack, as in their own Dockerfile.
+ARG ACESTEP_REF=ca1e85f
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+RUN apt-get update && apt-get install -y --no-install-recommends git ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && git clone --filter=blob:none https://github.com/ace-step/ACE-Step-1.5 /opt/acestep \
+    && git -C /opt/acestep checkout ${ACESTEP_REF}
+ENV UV_HTTP_TIMEOUT=900
+RUN --mount=type=cache,target=/root/.cache/uv \
+    cd /opt/acestep && uv sync --frozen --no-dev --python /usr/local/bin/python3.11 \
+    && /opt/acestep/.venv/bin/python -c "import torch, transformers; \
+       print('acestep venv:', torch.__version__, torch.version.cuda, transformers.__version__)"
+ENV ACESTEP_PROJECT_ROOT=/opt/acestep
+
 COPY compose/develop/sprite_generator/requirements.cuda.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install -r requirements.txt
@@ -68,6 +101,13 @@ RUN python -c "import torch, sys; \
     v = torch.version.cuda; \
     print('torch', torch.__version__, 'built for CUDA', v); \
     sys.exit(0 if v else 1)"
+
+# And prove the two stacks still coexist after requirements.txt resolved:
+# the worker's diffusers stack at its versions, the venv's at its own.
+RUN python -c "import torch, diffusers, transformers; \
+    print('worker :', torch.__version__, diffusers.__version__, transformers.__version__)" \
+    && /opt/acestep/.venv/bin/python -c "import torch, transformers; \
+    print('acestep:', torch.__version__, torch.version.cuda, transformers.__version__)"
 
 COPY src/sprite_generator/ .
 

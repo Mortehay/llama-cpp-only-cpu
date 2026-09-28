@@ -10,6 +10,7 @@ import Training from './tabs/Training'
 import Tiles from './tabs/Tiles'
 import Maps from './tabs/Maps'
 import Worlds from './tabs/Worlds'
+import Audio from './tabs/Audio'
 import Commands from './tabs/Commands'
 import Activity from './tabs/Activity'
 
@@ -23,6 +24,7 @@ const TABS = [
   { id: 'tiles', label: 'Tiles' },
   { id: 'maps', label: 'Maps' },
   { id: 'worlds', label: 'Worlds' },
+  { id: 'audio', label: 'Audio' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
   // "Activity", never "Actions": `actions.py` already means animation actions
@@ -111,6 +113,7 @@ export default function App() {
         {tab === 'tiles' && <Tiles />}
         {tab === 'maps' && <Maps />}
         {tab === 'worlds' && <Worlds />}
+        {tab === 'audio' && <Audio />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'activity' && <Activity />}

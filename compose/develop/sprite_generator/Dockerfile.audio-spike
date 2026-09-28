@@ -1,0 +1,43 @@
+# syntax=docker/dockerfile:1
+# Throwaway spike image for .ai/tickets/01: ACE-Step 1.5 beside the worker's
+# own stack, in an ISOLATED venv. Not a product image; delete after the
+# measurements land in .ai/decisions/0010.
+#
+# Why a venv and not `pip install` into the worker's site-packages: ACE-Step
+# 1.5 pins transformers 4.51-4.57 and torch 2.10.0+cu128 (its pyproject,
+# read 2026-09-12); the worker runs transformers 5.17 / torch 2.14+cu130 and
+# diffusers depends on them. One environment cannot hold both, so the product
+# shape is "venv + subprocess after eviction" and this image is that shape.
+FROM llama-cpp-only-cpu-sprite-worker:latest
+
+# git for the clone; ffmpeg + libsndfile for torchcodec/soundfile, as in
+# ACE-Step's own Dockerfile.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ffmpeg libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+ARG ACESTEP_REF=main
+RUN git clone --depth 1 --branch ${ACESTEP_REF} \
+    https://github.com/ace-step/ACE-Step-1.5 /opt/acestep
+
+WORKDIR /opt/acestep
+
+# `--frozen` installs exactly their uv.lock (torch 2.10.0+cu128 on linux
+# x86_64; the wheels vendor their CUDA runtime, so the host's 13.3 driver is
+# all that is needed). Long timeout: this network measured ~0.6 MB/s.
+ENV UV_HTTP_TIMEOUT=900
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --python /usr/local/bin/python3.11
+
+# Prove the two stacks coexist: the worker's python still imports diffusers
+# at its version, and the venv's python has ACE-Step's torch.
+RUN python -c "import torch, diffusers, transformers; \
+    print('worker :', torch.__version__, diffusers.__version__, transformers.__version__)" \
+    && /opt/acestep/.venv/bin/python -c "import torch, transformers; \
+    print('acestep:', torch.__version__, torch.version.cuda, transformers.__version__)"
+
+ENV ACESTEP_PROJECT_ROOT=/opt/acestep
+ENV ACESTEP_CHECKPOINTS_DIR=/checkpoints
+WORKDIR /app

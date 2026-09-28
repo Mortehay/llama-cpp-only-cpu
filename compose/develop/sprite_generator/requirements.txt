@@ -38,3 +38,9 @@ gguf>=0.10.0
 # GGUF exists for it (GGUFQuantizationConfig covers transformers, not text
 # encoders). See .ai/decisions/0002.
 bitsandbytes>=0.43.0
+
+# Audio loop mastering (.ai/specs/audio). soundfile encodes the OGG Vorbis
+# delivery file and the WAV master; mutagen writes LOOPSTART/LOOPLENGTH, which
+# soundfile cannot. Both need libsndfile1 from the Dockerfile.
+soundfile>=0.12.1
+mutagen>=1.47.0
