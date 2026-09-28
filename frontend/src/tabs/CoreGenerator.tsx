@@ -45,12 +45,15 @@ export default function CoreGenerator() {
   const total = cores.data?.total ?? 0
   const shown = cores.data?.items.length ?? 0
 
-  // Default to whichever model the roster marks default AND available; an
-  // archived checkpoint is rendered but not selectable, because the failure it
-  // used to produce arrived minutes later as "model failed to load".
+  // Default to whichever model the roster marks as the UI default, then the
+  // API default, and only then the first available one; an archived checkpoint
+  // is rendered but not selectable, because the failure it used to produce
+  // arrived minutes later as "model failed to load". `ui_default` comes first
+  // on purpose - see CoreModel.ui_default.
   useEffect(() => {
     if (model || !models.data) return
-    const d = models.data.models.find((m) => m.default && m.available)
+    const d = models.data.models.find((m) => m.ui_default && m.available)
+      ?? models.data.models.find((m) => m.default && m.available)
       ?? models.data.models.find((m) => m.available)
     if (d) setModel(d.value)
   }, [models.data, model])

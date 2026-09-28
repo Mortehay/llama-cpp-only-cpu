@@ -361,7 +361,14 @@ export interface Job {
 export interface CoreModel {
   value: string
   label: string
+  /** What default_model() returns - scripts and API callers get this one. */
   default: boolean
+  /**
+   * What the entity tab preselects. Deliberately NOT the same as `default`:
+   * the UI wants the best image (Qwen, ~4 min), a batch caller must not get
+   * that silently. See .ai/decisions/0012.
+   */
+  ui_default?: boolean
   available: boolean
   reason: string | null
   missing: string[]
@@ -369,6 +376,13 @@ export interface CoreModel {
   trained?: boolean
   trigger?: string | null
 }
+
+/**
+ * A GGUF image model (`gguf:<stem>`) runs only as a step-1 core, in its own
+ * subprocesses. Tiles and the warm panel load through get_sd_pipeline and
+ * cannot use one, so they filter it out.
+ */
+export const isGguf = (m: CoreModel) => m.value.startsWith('gguf:')
 
 export interface TrainingRun {
   id: string

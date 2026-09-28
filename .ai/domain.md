@@ -206,6 +206,35 @@ enough to walk on and will improve without being re-requested. A caller that
 treats it as an error abandons a usable map; a caller that treats it as final
 caches a placeholder forever.
 
+## `llm_name` is the image model, not an LLM
+
+A legacy name from the llama.cpp era. In `tasks.py`, `main.py`, the
+`sprite_images.llm_name` column and the form fields, **`llm_name` holds a
+diffusion checkpoint string** (`"<base>+<lora>"`), never a language model.
+
+| Term | Means | Where |
+|---|---|---|
+| **Image model** | The diffusion checkpoint that draws the PNG | `llm_name`, `core_models.CORE_MODELS`, `a1111.KNOWN_MODELS` |
+| **Brain** | A text or vision language model that plans (region graphs, biome plans, audio styles) or judges images. Never draws | `llm-server` via `LLM_URL`; `decisions/0011` |
+
+**Rule:** say *image model* or *brain*, never bare "the model" or "the LLM",
+where both are in scope. The confusion is not theoretical: on 2026-09-27 a
+plan to improve sprite quality by upgrading the LLM got as far as choosing a
+runtime before it surfaced that no LLM touches the sprite path at all.
+
+It happened again on 2026-09-27 from the other side: a batch of files
+described as "LLM images" were all diffusion transformers - *image models*.
+A `.gguf` extension says nothing about which kind a file is; read
+`general.architecture` and the tensor names (`decisions/0012`).
+
+## Activity, never "Actions"
+
+The UI tab listing every generation (API, job queue, browser) is **Activity**.
+Owners call it "the actions tab"; translate, do not rename. `actions.py` and
+`action_prompts.json` already mean animation actions (walk, idle, attack), and
+`frontend/src/tabs/Activity.tsx` explains the choice. It reads the
+`generations` ledger through `activity_v`.
+
 ## "Finding" is already taken - use *claim* for the cross-agent log
 
 Reserved before the cross-agent log is built, because this repo has lost this

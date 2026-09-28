@@ -29,9 +29,13 @@
         dropped) moved into core_models.py with the list.
       -->
       <select id="core-llm" class="select-field" onchange="updateCoreModelState()">
+        {# ui_default first, then default - they differ on purpose, see
+           core_models.UI_DEFAULT_WHY and .ai/decisions/0012. #}
+        {% set pick = (core_models | selectattr('ui_default') | selectattr('available') | first)
+                      or (core_models | selectattr('default') | selectattr('available') | first) %}
         {% for m in core_models %}
         <option value="{{ m.value }}"
-                {% if m.default and m.available %}selected{% endif %}
+                {% if pick and m.value == pick.value %}selected{% endif %}
                 {% if not m.available %}disabled{% endif %}
                 data-available="{{ 'true' if m.available else 'false' }}"
                 data-reason="{{ m.reason or '' }}">

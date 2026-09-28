@@ -111,6 +111,29 @@ The first external consumer is the admin panel of
 
 ## Measured hardware (2026-08-19)
 
+> **Superseded 2026-09-27: the host was upgraded.** Read with
+> `Get-CimInstance` / `Get-PhysicalDisk` that day:
+>
+> | | |
+> |---|---|
+> | CPU | **AMD Ryzen 5 5500 - 6 cores / 12 threads**, AVX2 |
+> | Host RAM | **47.8 GB** |
+> | GPU | unchanged, RTX 3060 12 GB - still the binding constraint |
+> | Disks | three **SATA** SSDs, no NVMe: C: 477 GB (260 free), **D: 223 GB, empty**, **E: 112 GB (69 free)** |
+>
+> Consequences:
+> - **Drive letters moved.** The old 111.8 GB D: that held the models VHD
+>   appears to be E: now. Check `scripts/setup-models-vhd.ps1 -AttachOnly`
+>   before trusting that models are mounted.
+> - `.wslconfig` still says `processors=4` and `memory=24GB`, with comments
+>   describing the i3. The VM uses a third of the CPU until that changes.
+> - "CPU inference is not viable here" below was true of the i3 and is **no
+>   longer established**. A RAM-resident mixture-of-experts LLM is now
+>   plausible; unmeasured - see `decisions/0011` and ticket 13.
+>
+> The original table is kept below because the consequences listed under it
+> were measured on that hardware.
+
 These are measured, not assumed, and several are binding constraints:
 
 | | |
@@ -695,10 +718,22 @@ Rules that are easy to get wrong:
 - **Each checkpoint needs its own trigger word** — see `CORE_TRIGGERS`. A trigger
   from a different checkpoint is inert at best; `PixelartFSS` actively requests a
   four-character sheet.
-- **Dedicated image-editing models do not fit.** Their transformers quantise to
-  ~9 GB but their text encoders (15.45 GB for Qwen-Image-Edit, T5 for FLUX
-  Kontext) have no GGUF and exceed both the 12 GB card and the 11 GB WSL cap.
-  SDXL img2img plus ControlNet already covers image-to-image at zero extra cost.
+- ~~**Dedicated image-editing models do not fit.**~~ **Superseded.** This was
+  written against the full-precision text encoder. An NF4 encoder (5 GB) in a
+  separate process from a GGUF transformer fits: `qwen_edit.py` runs
+  Qwen-Image-Edit that way (ADR 0005), and Qwen-Image-2512 text-to-image runs
+  the same way at 9.55 GiB peak (ADR 0012).
+- **Qwen-Image-2512 (added 2026-09-28, ADR 0012).** The transformer is
+  `/models/gguf/Qwen-Image-2512-Q3_K_M.gguf` (9.69 GB, host
+  `/home/markunn/sprite-data/models/gguf/`). It reuses the Edit repo's NF4
+  encoder and VAE (hash-identical), with config from `Qwen/Qwen-Image-2512`.
+  512 px, 20 steps: ~144 s/image, 1.3 GiB VRAM spare. **UI default for step 1;
+  deliberately NOT `default_model()` and NOT offered to something2** (240 s
+  ceiling).
+- **The 86.6% / 74.7% figures above are not reproducible.** No script for them
+  was committed, and the 2026-09-28 bench could not get a discriminating
+  number from `measure.pixel_scale` or top-32 colour coverage. Treat them as
+  history, not as a bar to measure against.
 - **Sizing intuition from chat LLMs does not transfer.** GGUF quant tiers give
   chat models a smooth 4/8/16 GB ladder; image models jump 4 -> 6.5 -> 10 -> 20
   -> 24 GB, and quality tracked style-fit rather than size in every test here.

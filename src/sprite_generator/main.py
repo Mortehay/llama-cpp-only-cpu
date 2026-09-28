@@ -20,7 +20,8 @@ from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    read_device_snapshot,
                    warm_model_task, edit_image_task, EDIT_LORAS,
                    EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
-from core_models import roster as core_model_roster, unavailable_reason
+from core_models import (roster as core_model_roster, unavailable_reason,
+                         default_model, is_gguf)
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -289,7 +290,7 @@ async def legacy_index(request: Request):
 
 
 @app.post("/api/warm")
-def warm_model(model: str = Form("stabilityai/sdxl-turbo"),
+def warm_model(model: str = Form(default_model()),
                authorization: str | None = Header(None)):
     """Queue a model download+load. Returns immediately with a task id.
 
@@ -298,6 +299,13 @@ def warm_model(model: str = Form("stabilityai/sdxl-turbo"),
     Poll /api/task-status/{task_id} for completion.
     """
     auth.require(authorization, "generate")
+    if is_gguf(model):
+        # warm_model_task loads through get_sd_pipeline, which cannot load a
+        # GGUF image model - and there is nothing to warm: a GGUF core runs in
+        # its own subprocesses and releases the card when it exits.
+        raise HTTPException(status_code=400, detail=(
+            f"'{model}' is a GGUF image model; it loads per job and cannot be "
+            "warmed. See .ai/decisions/0012."))
     task = warm_model_task.delay(model)
     return JSONResponse({"status": "queued", "task_id": task.id, "model": model})
 
@@ -426,7 +434,10 @@ def _ledger(request, principal, row, kind, route, prompt, model):
 @app.post("/api/generate_core")
 def generate_core(request: Request,
                   prompt: str = Form(...),
-                  llm_name: str = Form("stabilityai/sdxl-turbo"),
+                  # The roster default, not sdxl-turbo: turbo was dropped from
+                  # the roster (distilled, guidance 0, lost the bench) but this
+                  # fallback kept serving it to any caller that omitted the field.
+                  llm_name: str = Form(default_model()),
                   authorization: str | None = Header(None)):
     principal = auth.require(authorization, "generate")
     # Refuse a model that is not on disk instead of queueing work that cannot

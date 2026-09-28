@@ -40,14 +40,23 @@ from pydantic import BaseModel, Field, field_validator
 import auth
 import core_models
 import generations
-from tasks import celery_app, generate_raw_task, gpu_fault_block_reason
+from tasks import (celery_app, generate_raw_task, gpu_fault_block_reason,
+                   long_job_block_reason)
+from core_models import is_gguf
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Their AI_PROVIDER_GENERATE_TIMEOUT_MS defaults to 5 minutes. Stay under it so
 # the failure surfaces as our error message, not their opaque timeout.
-GENERATE_TIMEOUT_S = int(os.environ.get("A1111_GENERATE_TIMEOUT_S", "240"))
+#
+# 285, raised from 240 on 2026-09-28 at the owner's request (decisions/0012):
+# 15s under their 300 leaves room for our error to reach them before they give
+# up. Raising it further only helps if something2 raises theirs first - past
+# 300 we would just be waiting on a connection they already closed. It does
+# NOT cover a request queued behind a Qwen core (~230s + an SDXL cold reload);
+# long_job_block_reason() turns that case away up front instead.
+GENERATE_TIMEOUT_S = int(os.environ.get("A1111_GENERATE_TIMEOUT_S", "285"))
 
 # The legacy shared secret is no longer read here. `auth.py` owns it - it still
 # honours SPRITE_API_TOKEN as a valid credential, but an UNSET one no longer
@@ -848,6 +857,26 @@ def txt2img(req: Txt2ImgRequest, request: Request,
                          duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=503, detail=detail,
                             headers={"Retry-After": str(blocked["retry_after_s"])})
+
+    # A GGUF image model cannot meet this route's budget (~230s before the
+    # queue wait), and _generate_raw_once would hand it to get_sd_pipeline,
+    # which cannot load it. Refuse by name. decisions/0012 D2.
+    if is_gguf(model):
+        detail = (f"'{model}' is a slow GGUF model offered in the UI only; it "
+                  f"cannot finish inside this API's {GENERATE_TIMEOUT_S}s budget.")
+        generations.fail(gen, detail, duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=400, detail=detail)
+
+    # Same idea for a long job already holding the one worker: queueing behind
+    # it can only time out late, so say "busy" now and when to come back.
+    busy = long_job_block_reason()
+    if busy:
+        detail = ("GPU is busy with a %s (running %ds); retry in %ds."
+                  % (busy["kind"], busy["running_for_s"], busy["retry_after_s"]))
+        logger.info("txt2img refused: %s", detail)
+        generations.fail(gen, detail, duration_ms=(time.time() - started) * 1000)
+        raise HTTPException(status_code=503, detail=detail,
+                            headers={"Retry-After": str(busy["retry_after_s"])})
 
     task = generate_raw_task.delay(
         prompt,

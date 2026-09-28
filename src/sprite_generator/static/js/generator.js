@@ -475,10 +475,10 @@ async function generateCore() {
 
   try {
     const llmElem = document.getElementById('core-llm');
-    const llm_name = llmElem ? llmElem.value : 'stabilityai/sdxl-turbo';
     const fd = new FormData();
     fd.append('prompt', promptVal);
-    fd.append('llm_name', llm_name);
+    // No select -> omit the field so the server applies the roster default.
+    if (llmElem && llmElem.value) fd.append('llm_name', llmElem.value);
     const req = await fetch('/api/generate_core', { method: 'POST', body: fd });
 
     if (req.ok) {

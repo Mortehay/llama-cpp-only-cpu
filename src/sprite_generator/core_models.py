@@ -24,10 +24,50 @@ import os
 # make this module quietly report everything missing.
 HF_CACHE = os.environ.get("HF_HUB_CACHE") or "/models"
 
+# GGUF diffusion transformers: files, not Hub repos, like trained LoRAs.
+# `gguf:<stem>` names /models/gguf/<stem>.gguf. They are NOT loaded by
+# get_sd_pipeline - tasks.generate_core_task routes them to qwen_t2i.py.
+GGUF_PREFIX = "gguf:"
+GGUF_DIR = os.path.join(HF_CACHE, "gguf")
+
+# Everything a Qwen-Image GGUF needs besides itself. The Edit repo's NF4 text
+# encoder and VAE are hash-identical to Qwen-Image-2512's; the 2512 repo
+# supplies only the transformer/scheduler config. See decisions/0012.
+GGUF_COMPANION_REPOS = ("ovedrive/Qwen-Image-Edit-2511-4bit",
+                        "Qwen/Qwen-Image-2512")
+
+
+def is_gguf(value: str) -> bool:
+    return (value or "").strip().startswith(GGUF_PREFIX)
+
+
+def gguf_file(value: str) -> str | None:
+    """Absolute path for a `gguf:<stem>` value, or None if it is not one."""
+    if not is_gguf(value):
+        return None
+    return os.path.join(GGUF_DIR, value.strip()[len(GGUF_PREFIX):] + ".gguf")
+
+
+# UI_DEFAULT_WHY: `ui_default` is what the browser preselects; `default` is what
+# default_model() returns, and default_model() is also main.py's Form default
+# for every script and API caller that omits llm_name. They differ on purpose:
+# the UI wants the best image, a batch caller must not silently get a model
+# that takes ~4 minutes. Do not merge them. See decisions/0012 D1.
+
 # The roster. `value` is the string the worker receives: "<base>" or
-# "<base>+<lora>", parsed by get_sd_pipeline. Comments that used to sit beside
-# the <option> tags travelled here with them.
+# "<base>+<lora>", parsed by get_sd_pipeline, or "gguf:<stem>" (above).
+# Comments that used to sit beside the <option> tags travelled here with them.
 CORE_MODELS = [
+    {
+        # Benched 2026-09-28 against the default below, 4 subjects x 3 seeds:
+        # 0/12 contact sheets vs 2/12, cutout kept 98.2% vs 77.4%, and judged
+        # "much better" by the owner. ~3.5-4 min per core (512px, 20 steps,
+        # true CFG 4), so the UI preselects it but default_model() does not,
+        # and a1111 refuses it - something2's ceiling is 300s. decisions/0012.
+        "value": "gguf:Qwen-Image-2512-Q3_K_M",
+        "label": "Qwen-Image-2512 (GGUF) - best quality, ~4 min per image",
+        "ui_default": True,
+    },
     {
         # Default, measured 2026-08-21. SDXL base with a pixel-art LoRA fused on
         # top is the only configuration that produced structurally real pixel
@@ -75,6 +115,8 @@ def repos_for(value: str) -> list[str]:
     Hub repos, and treating one as a repo id would report a perfectly good
     adapter as "not in the local cache".
     """
+    if is_gguf(value):
+        return list(GGUF_COMPANION_REPOS)
     return [part.strip() for part in (value or "").split("+")
             if part.strip() and not part.strip().startswith("local:")]
 
@@ -156,6 +198,14 @@ def unavailable_reason(value: str) -> str | None:
     Worded for whoever has to fix it: it names the restore command when the
     weights were archived, and the fetch route when they were never here.
     """
+    # A GGUF transformer is a file too. Its companions (encoder, VAE, config)
+    # ARE Hub repos, and fall through to the cache check below.
+    path = gguf_file(value)
+    if path and not os.path.isfile(path):
+        return (f"GGUF transformer {os.path.basename(path)} is missing from "
+                f"{GGUF_DIR}. Copy it there from where it was downloaded - "
+                f"see .ai/decisions/0012.")
+
     # A trained adapter is a file, not a repo: check it exists before the Hub
     # cache questions below, which know nothing about it.
     for part in (value or "").split("+"):
@@ -193,6 +243,9 @@ def roster() -> list[dict]:
             "value": entry["value"],
             "label": entry["label"],
             "default": bool(entry.get("default")),
+            # What the UI preselects. Distinct from `default` on purpose -
+            # see UI_DEFAULT_WHY below.
+            "ui_default": bool(entry.get("ui_default")),
             "available": reason is None,
             "reason": reason,
             "missing": missing_repos(entry["value"]),

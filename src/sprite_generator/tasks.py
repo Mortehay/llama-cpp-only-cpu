@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Shared with the API process: the step-1 roster and the cache probes behind it.
 # stdlib-only by design, so importing it here adds nothing to worker start.
 from core_models import (unavailable_reason, local_weight_name,
-                          local_lora_file, default_model)
+                          local_lora_file, default_model, is_gguf, gguf_file)
 # Module scope, not a lazy import inside the task: a lazy `import tiles` raised
 # ModuleNotFoundError inside the Celery worker while the identical import
 # succeeded from a shell in the same container with the same working directory.
@@ -405,6 +405,74 @@ def gpu_fault_block_reason():
     return {"retry_after_s": int(remaining) + 1,
             "faulted_for_s": int(waited),
             "error": fault.get("error", "")}
+
+
+# A long single-image job holding the one worker (decisions/0012).
+#
+# The queue is one chain: --pool=solo, one card. A Qwen-Image core holds it for
+# ~3.5-4 minutes, and a something2 request queued behind it spends that wait
+# out of its own budget - the facade gives up at A1111_GENERATE_TIMEOUT_S and
+# something2 at 300s - and then also pays an SDXL cold reload, because the Qwen
+# job evicted it. It cannot succeed; it can only fail late and silently.
+#
+# So the worker announces the job here, with the time it expects to finish,
+# and the facade answers 503 + Retry-After up front instead of queueing. Same
+# shape and same split as the CUDA breaker above: the worker writes, anything
+# may read. Advisory, not a lock - see a1111._long_job_ahead for why that is
+# the right trade on this box. The TTL is the safety net: a worker that dies
+# mid-job cannot leave the facade refusing forever.
+_LONG_JOB_KEY = "gpu:long_job"
+
+
+def mark_long_job(kind: str, expected_s: float) -> None:
+    try:
+        _redis_client.setex(
+            _LONG_JOB_KEY, int(expected_s * 2) + 60,
+            json.dumps({"kind": kind, "started": time.time(),
+                        "expected_s": float(expected_s)}))
+    except Exception as e:  # bookkeeping must never fail the job itself
+        logger.warning("could not mark long job: %s", e)
+
+
+def clear_long_job() -> None:
+    try:
+        _redis_client.delete(_LONG_JOB_KEY)
+    except Exception as e:
+        logger.warning("could not clear long job: %s", e)
+
+
+def long_job_block_reason():
+    """A long job holds the worker: {retry_after_s, kind, running_for_s}, or None.
+
+    READ-ONLY and CUDA-free, like gpu_fault_block_reason, so the API may call
+    it. Retry-After is the job's remaining expected time plus a margin for the
+    SDXL reload the caller will need afterwards.
+    """
+    try:
+        raw = _redis_client.get(_LONG_JOB_KEY)
+        job = json.loads(raw) if raw else None
+    except Exception:
+        return None
+    if not job:
+        return None
+    running = time.time() - float(job.get("started", 0))
+    remaining = max(float(job.get("expected_s", 0)) - running, 0)
+    return {"retry_after_s": int(remaining) + 30,
+            "kind": job.get("kind", "long job"),
+            "running_for_s": int(running)}
+
+
+def _evict_pipelines(reason: str) -> None:
+    """Drop every cached pipeline off the card - the same four lines
+    get_sd_pipeline runs before a model switch. release_vram_cache() is NOT
+    this: it returns allocator cache but leaves resident pipelines resident."""
+    if DEVICE == "cuda" and pipes:
+        logger.info("Evicting %d pipeline(s) for %s: %s", len(pipes), reason,
+                    sorted(pipes.keys()))
+        pipes.clear()
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 def _gpu_breaker_admit():
@@ -1040,6 +1108,15 @@ def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
+
+    # A GGUF image model is not a diffusers checkpoint and only step-1 cores
+    # run it (via qwen_t2i.py). Anything else that receives one - a tile, the
+    # SD1.5 sheet, a warm - gets a named refusal instead of an HF lookup for a
+    # repo called "gguf:...". decisions/0012.
+    if is_gguf(llm_name):
+        logger.error("'%s' is a GGUF image model; only step-1 cores can use it "
+                     "(%s pipeline refused).", llm_name, pipeline_type)
+        return None
 
     # "<base>+<lora>" selects a base checkpoint with a LoRA fused on top.
     #
@@ -1850,6 +1927,8 @@ def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
 def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turbo"):
     task_id = self.request.id
     logger.info(f"Task {task_id} generated core with llm {llm_name}")
+    if is_gguf(llm_name):
+        return _generate_core_gguf(task_id, prompt, llm_name)
     p = get_sd_pipeline(llm_name)
     if not p:
         # "Model failed to load on worker" was the only thing the queue panel
@@ -1867,9 +1946,59 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     seed = random.randint(0, 10**9)
     generator = torch.Generator("cpu").manual_seed(seed)
     negative = NEGATIVE_SINGLE
+    clean_prompt, full_prompt = _core_prompt(prompt, llm_name)
 
+    start_time = time.time()
+
+    # Dynamic parameters based on model type. resolve_sampling_params also drops
+    # the negative prompt when guidance is 0 — on a distilled checkpoint there is
+    # no classifier-free guidance for it to act through, so the long exclusion
+    # list below is inert and would otherwise look like it was being applied.
+    is_turbo = any(k in llm_name.lower() for k in DISTILLED_MARKERS)
+    num_steps = 4 if is_turbo else 35
+    guidance = 0.0 if is_turbo else 9.0
+    num_steps, guidance, negative = resolve_sampling_params(
+        llm_name, num_steps, guidance, negative
+    )
+
+    try:
+        update_task_record(task_id, progress_pct=0, progress_msg="Generating core image...", seed=seed)
+
+        def progress_callback(pipe, i, t, callback_kwargs):
+            pct = int((i / num_steps) * 100)
+            logger.info(f"  > Core generation progress: {pct}%")
+            if i % 1 == 0:
+                update_task_record(task_id, progress_pct=pct, progress_msg=f"Generating: {int(pct)}%")
+                self.update_state(state="PROGRESS", meta={"pct": pct, "msg": "Generating core image"})
+            return callback_kwargs
+
+        img = p(
+            full_prompt,
+            negative_prompt=negative or None,
+            height=512,
+            width=512,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance,
+            generator=generator,
+            callback_on_step_end=progress_callback
+        ).images[0]
+
+    except Exception as e:
+        logger.error(f"Task {task_id} failed: {str(e)}", exc_info=True)
+        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
+        return {"error": str(e)}
+
+    end_time = time.time()
+    total_duration_ms = (end_time - start_time) * 1000
+    log_stats(task_id, llm_name, clean_prompt, num_steps, start_time, end_time, total_duration_ms)
+    return _finish_core(task_id, img, total_duration_ms, seed)
+
+
+def _core_prompt(prompt: str, llm_name: str):
+    """(clean_prompt, full_prompt) for a step-1 core. Shared by every model
+    family so a Qwen core and an SDXL core are asked for the same thing."""
     clean_prompt = prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
-    
+
     # Strictly aligned prefix: "PixelartFSS, idle front,"
     # Duplicate suppression lives HERE, in the positive prompt, and is worded
     # as an assertion rather than a negation.
@@ -1904,51 +2033,120 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
                    f"a single {clean_prompt}, one character alone, full body, "
                    f"standing, centered, pixel art sprite, 16-bit, sharp focus"
                    f"{background}")
+    return clean_prompt, full_prompt
+
+
+# Expected wall clock of one Qwen core, for the long-job flag and Retry-After:
+# encode ~35s + transformer load 20-59s (warm/cold file cache) + 20 steps x
+# 7.33s + decode. End to end through the worker: 257.6s cold. Measured
+# 2026-09-28 (decisions/0012); override if the quant or step count changes.
+QWEN_CORE_EXPECTED_S = float(os.environ.get("QWEN_CORE_EXPECTED_S", "260"))
+
+# Progress bands for the queue panel. Denoising is ~65% of the wall clock.
+_QWEN_BANDS = {"encode": (2, 15), "load": (15, 25), "denoise": (25, 88)}
+_QWEN_PROGRESS = re.compile(r"^PROGRESS (\w+) (\d+) (\d+)$")
+
+
+def _run_qwen_stage(task_id: str, argv: list, label: str) -> str | None:
+    """Run one qwen_t2i.py stage as a subprocess. Returns an error or None.
+
+    A subprocess, not an import: the encoder and the transformer must never
+    share a process (qwen_t2i.py docstring), and process exit is the only VRAM
+    release that is guaranteed complete - the worker's own CUDA context stays
+    clean for the next SDXL job.
+    """
+    import subprocess
+    cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "qwen_t2i.py")] + argv
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    tail: list = []
+    for line in proc.stdout:
+        line = line.rstrip()
+        if not line:
+            continue
+        m = _QWEN_PROGRESS.match(line)
+        if m and m.group(1) in _QWEN_BANDS:
+            lo, hi = _QWEN_BANDS[m.group(1)]
+            i, n = int(m.group(2)), max(int(m.group(3)), 1)
+            pct = int(lo + (hi - lo) * i / n)
+            msg = (f"Qwen: denoising step {i}/{n}" if m.group(1) == "denoise"
+                   else f"Qwen: {label}")
+            update_task_record(task_id, progress_pct=pct, progress_msg=msg)
+            continue
+        # Progress bars and warnings are noise; keep the tail for the error.
+        tail.append(line)
+        del tail[:-15]
+        if line.startswith(("[", "DONE", "Traceback")) or "Error" in line:
+            logger.info("qwen %s: %s", label, line)
+    rc = proc.wait()
+    if rc == 0:
+        return None
+    return f"Qwen {label} stage failed (exit {rc}): " + " | ".join(tail[-6:])
+
+
+def _generate_core_gguf(task_id: str, prompt: str, llm_name: str):
+    """Step-1 core from a GGUF image model (Qwen-Image-2512). decisions/0012."""
+    reason = unavailable_reason(llm_name)
+    if reason:
+        msg = f"Could not load '{llm_name}': {reason}"
+        logger.error(msg)
+        update_task_record(task_id, error_msg=msg)
+        return {"error": msg}
+
+    # Same gate SD jobs pass through in _generate_raw_once: never start a 4
+    # minute job on a card the breaker says is faulted.
+    refusal = _gpu_breaker_admit()
+    if refusal:
+        update_task_record(task_id, error_msg=refusal["error"])
+        return refusal
+
+    seed = random.randint(0, 10**9)
+    clean_prompt, full_prompt = _core_prompt(prompt, llm_name)
+    work = f"/tmp/qwen_t2i/{task_id}"
+    os.makedirs(work, exist_ok=True)
+    embeds, raw_png = f"{work}/embeds.pt", f"{work}/raw.png"
 
     start_time = time.time()
-    
-    # Dynamic parameters based on model type. resolve_sampling_params also drops
-    # the negative prompt when guidance is 0 — on a distilled checkpoint there is
-    # no classifier-free guidance for it to act through, so the long exclusion
-    # list below is inert and would otherwise look like it was being applied.
-    is_turbo = any(k in llm_name.lower() for k in DISTILLED_MARKERS)
-    num_steps = 4 if is_turbo else 35
-    guidance = 0.0 if is_turbo else 9.0
-    num_steps, guidance, negative = resolve_sampling_params(
-        llm_name, num_steps, guidance, negative
-    )
-
+    update_task_record(task_id, progress_pct=1, seed=seed,
+                       progress_msg="Qwen: freeing the card...")
+    # The resident SDXL pipeline would leave the subprocess ~6.8 GB short.
+    _evict_pipelines("a Qwen-Image core")
+    release_vram_cache("qwen core")
+    mark_long_job("Qwen-Image core", QWEN_CORE_EXPECTED_S)
     try:
-        update_task_record(task_id, progress_pct=0, progress_msg="Generating core image...", seed=seed)
-
-        def progress_callback(pipe, i, t, callback_kwargs):
-            pct = int((i / num_steps) * 100)
-            logger.info(f"  > Core generation progress: {pct}%")
-            if i % 1 == 0:
-                update_task_record(task_id, progress_pct=pct, progress_msg=f"Generating: {int(pct)}%")
-                self.update_state(state="PROGRESS", meta={"pct": pct, "msg": "Generating core image"})
-            return callback_kwargs
-
-        img = p(
-            full_prompt,
-            negative_prompt=negative or None,
-            height=512,
-            width=512,
-            num_inference_steps=num_steps,
-            guidance_scale=guidance,
-            generator=generator,
-            callback_on_step_end=progress_callback
-        ).images[0]
-            
-    except Exception as e:
-        logger.error(f"Task {task_id} failed: {str(e)}", exc_info=True)
-        update_task_record(task_id, error_msg=f"Generation failed: {str(e)}")
-        return {"error": str(e)}
+        err = _run_qwen_stage(task_id, ["encode", "--prompt", full_prompt,
+                                        "--negative", NEGATIVE_SINGLE,
+                                        "--out", embeds], "encoding prompt")
+        if not err:
+            err = _run_qwen_stage(task_id, ["denoise", "--embeds", embeds,
+                                            "--gguf", gguf_file(llm_name),
+                                            "--png", raw_png,
+                                            "--seed", str(seed)],
+                                  "loading model")
+        if err:
+            logger.error("Task %s failed: %s", task_id, err)
+            update_task_record(task_id, error_msg=f"Generation failed: {err}")
+            return {"error": err}
+        img = Image.open(raw_png).convert("RGB")
+    finally:
+        clear_long_job()
+        for f in (embeds, raw_png):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
 
     end_time = time.time()
     total_duration_ms = (end_time - start_time) * 1000
-    log_stats(task_id, llm_name, clean_prompt, num_steps, start_time, end_time, total_duration_ms)
+    log_stats(task_id, llm_name, clean_prompt,
+              int(os.environ.get("QWEN_T2I_STEPS", "20")), start_time,
+              end_time, total_duration_ms)
+    return _finish_core(task_id, img, total_duration_ms, seed)
 
+
+def _finish_core(task_id: str, img, total_duration_ms: float, seed: int):
+    """Background removal, ground-patch strip, save, and close the task row.
+    Model-independent - every step-1 path ends here."""
     update_task_record(task_id, progress_pct=90, progress_msg="Finalizing: Removing background...")
     # keep_largest: a core MUST be a single character. See the note in
     # _isolate_largest_sprite - on a distilled checkpoint the negative

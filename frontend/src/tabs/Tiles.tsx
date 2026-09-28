@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, type Job } from '../api'
+import { api, isGguf, type Job } from '../api'
 import { useAsync, useAuthedObjectUrl, usePoll } from '../hooks'
 
 /**
@@ -164,7 +164,7 @@ export default function Tiles() {
         <select id="tile-model" value={model} onChange={(e) => setModel(e.target.value)}>
           <option value="">Default (SDXL + pixel-art LoRA)</option>
           {models.data?.models
-            .filter((m) => m.available)
+            .filter((m) => m.available && !isGguf(m))
             .map((m) => (
               <option key={m.value} value={m.value}>
                 {m.label}

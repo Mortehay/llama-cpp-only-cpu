@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api, getToken, setToken, type NewApiKey } from '../api'
+import { api, getToken, isGguf, setToken, type NewApiKey } from '../api'
 import { useAsync } from '../hooks'
 
 const SCOPES = ['read', 'generate', 'admin'] as const
@@ -390,7 +390,7 @@ function WarmPanel() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  const available = models.data?.models.filter((m) => m.available) ?? []
+  const available = models.data?.models.filter((m) => m.available && !isGguf(m)) ?? []
   const chosen = model || available[0]?.value || ''
 
   return (

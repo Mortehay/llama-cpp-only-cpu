@@ -294,6 +294,11 @@ def _host_ram_available() -> int:
 
 
 def _gguf_url() -> str:
+    # An absolute QWEN_EDIT_GGUF_FILE is a local file (e.g. /models/gguf/...,
+    # decisions/0012) and goes to from_single_file as-is. Building a Hub URL out
+    # of it would produce a malformed "blob/main//models/..." path.
+    if os.path.isabs(GGUF_FILE):
+        return GGUF_FILE
     return f"https://huggingface.co/{GGUF_REPO}/blob/main/{GGUF_FILE}"
 
 

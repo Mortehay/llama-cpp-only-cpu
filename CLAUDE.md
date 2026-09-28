@@ -25,6 +25,8 @@ with a Jinja/vanilla-JS UI, a React app under `frontend/`, and Postgres history.
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
 | Why both trained adapters failed | `.ai/decisions/0009` |
+| Bigger LLMs / Colibri; `llm_name` is the *image* model | `.ai/decisions/0011` |
+| Qwen-Image-2512 GGUF lane; the downloaded-GGUF verdicts | `.ai/decisions/0012` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so
@@ -114,6 +116,14 @@ fragment of it.
   checkpoint is actually on disk, which archiving to cold storage makes matter.
 - `POSED_STRENGTH` below ~0.75 silently disables pose conditioning while every
   log line still says "pose-conditioned".
+- **The UI's preselected model and `core_models.default_model()` differ on
+  purpose** (0012). The UI defaults to Qwen-Image-2512 (~144 s/image);
+  `default_model()` is also `main.py`'s `Form` default for every script that
+  omits `llm_name`, so it stays SDXL + nerijs. Do not "fix" them to match. Qwen
+  is also not in `a1111.KNOWN_MODELS` - it cannot meet something2's 240 s.
+- **A GGUF's `general.architecture` label is not evidence.** Four of the
+  2026-09 downloads were mislabelled (`wan`, `qwen_image`, `pig`). Read the
+  tensor prefixes and block count before wiring a file.
 - **"no frame, no border, no card" in a POSITIVE prompt asks for a frame.** A
   CLIP text encoder has no negation operator, so each of those nouns lands in
   the conditioning. something2's entity prompts arrive carrying nine of them;

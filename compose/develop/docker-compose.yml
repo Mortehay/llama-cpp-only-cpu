@@ -189,7 +189,7 @@ services:
       # Setting PYTHONPATH makes /app importable for the whole process life.
       - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
-      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-285}
       # How long POST /api/audio blocks before answering 503 + Retry-After.
       # The build is NOT cancelled when it expires, so this is a patience
       # setting, not a budget. Set it to 1 to exercise that path.
@@ -263,7 +263,7 @@ services:
       # ModuleNotFoundError. This makes /app importable for the process life.
       - PYTHONPATH=/app
       - SPRITE_API_TOKEN=${SPRITE_API_TOKEN:-}
-      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-240}
+      - A1111_GENERATE_TIMEOUT_S=${A1111_GENERATE_TIMEOUT_S:-285}
       # How long POST /api/audio blocks before answering 503 + Retry-After.
       # The build is NOT cancelled when it expires, so this is a patience
       # setting, not a budget. Set it to 1 to exercise that path.

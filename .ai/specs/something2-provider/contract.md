@@ -146,9 +146,16 @@ exercises the portproxy.
 
 something2's `AI_PROVIDER_GENERATE_TIMEOUT_MS` defaults to 5 minutes and it does
 **not** support submit/poll queues (their SOMET-334), so this service blocks
-until the image is ready. `A1111_GENERATE_TIMEOUT_S` (default 240) is set below
-their limit deliberately, so a slow job surfaces as our 504 with a message
-rather than their opaque timeout. If jobs legitimately need longer, raise both.
+until the image is ready. `A1111_GENERATE_TIMEOUT_S` (default **285**, raised
+from 240 on 2026-09-28) is set below their limit deliberately, so a slow job
+surfaces as our 504 with a message rather than their opaque timeout. If jobs
+legitimately need longer, raise both.
+
+**Two new refusals (decisions/0012), both before anything is queued:**
+- `503` + `Retry-After` when a long job (a Qwen-Image core, ~4 min) holds the
+  one worker. Queueing behind it could only time out late.
+- `400` if `sd_model_checkpoint` names a `gguf:` model - UI-only, too slow for
+  this route.
 
 ## Troubleshooting, mapped to their error text
 
