@@ -64,6 +64,31 @@ PRESETS: dict[str, dict] = {
                  "slide": 0.0, "attack": 0.0, "sustain": (0.008, 0.015),
                  "decay": (0.02, 0.04), "punch": 0.3, "lowpass": 1.0,
                  "highpass": 0.0, "crush_bits": 5},
+    # A whiff: thinner and quicker than a slash, no punch - nothing landed.
+    "miss": {"wave": "noise", "freq": (3000, 4800), "slide": (-3.0, -1.5),
+             "attack": (0.01, 0.02), "sustain": (0.01, 0.03),
+             "decay": (0.07, 0.12), "punch": 0.0, "lowpass": 1.0,
+             "highpass": (0.15, 0.25), "crush_bits": 7},
+    # A chest: a low saw creak sliding up, then the classic rising reward
+    # arpeggio on top.
+    "chest_open": {"wave": "saw", "freq": (180, 260), "slide": (0.6, 1.1),
+                   "arp_at": (0.12, 0.18), "arp_mult": (2.0, 3.0),
+                   "attack": (0.01, 0.03), "sustain": (0.15, 0.25),
+                   "decay": (0.2, 0.3), "punch": 0.2, "lowpass": (0.4, 0.6),
+                   "highpass": 0.0, "crush_bits": 6},
+    # A death: the long descending square every 8-bit game uses.
+    "death": {"wave": "square", "duty": (0.4, 0.5), "freq": (500, 700),
+              "slide": (-2.5, -1.6), "vib_depth": (0.02, 0.05),
+              "vib_rate": (6.0, 10.0), "attack": 0.0, "sustain": (0.25, 0.4),
+              "decay": (0.35, 0.5), "punch": 0.2, "lowpass": (0.5, 0.8),
+              "highpass": 0.0, "crush_bits": 5},
+    # A waypoint: a bright sine chime that jumps up an octave and rings.
+    "waypoint": {"wave": "sine", "freq": (600, 800), "slide": (0.2, 0.5),
+                 "arp_at": (0.08, 0.12), "arp_mult": 2.0,
+                 "vib_depth": (0.01, 0.02), "vib_rate": (5.0, 8.0),
+                 "attack": (0.005, 0.01), "sustain": (0.2, 0.3),
+                 "decay": (0.4, 0.6), "punch": 0.3, "lowpass": 1.0,
+                 "highpass": 0.0, "crush_bits": 7},
     # No "footstep": an 8-bit footstep is a weak blip. The cue has no retro
     # recipe, so asking for one is refused by resolve_engine (ticket 17).
 }
