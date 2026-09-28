@@ -277,6 +277,8 @@ export default function Audio() {
         </>)}
       </div>
 
+      <BatchPanel onProgress={list.reload} />
+
       <div className="card">
         <h2>Takes</h2>
         {list.error && <div className="note err">{list.error}</div>}
@@ -451,6 +453,194 @@ function SfxPanel({ onBuilt }: { onBuilt: () => void }) {
         {packNote && <p className="hint">{packNote}</p>}
       </details>
     </>
+  )
+}
+
+type BatchKind = 'music' | 'ambience' | 'sfx'
+type BatchState = 'waiting' | 'running' | 'done' | 'cached' | 'failed' | 'stopped'
+interface BatchRow {
+  line: string
+  state: BatchState
+  note: string
+}
+
+/**
+ * Many takes from one list - the batch counterpart of the form above.
+ *
+ * music/ambience: one line = `name` or `name, style`, sent ONE AT A TIME (the
+ * GPU runs one job; parallel requests would only queue). A 503 `building` is
+ * not a failure - the build continues server-side - so the row waits and asks
+ * again, which is then a cache hit. `busy` waits out its Retry-After.
+ * sfx: one line = `cue` or `cue/entity`, sent as `sfx-pack` calls of up to 40,
+ * so the whole list shares one model load.
+ */
+function BatchPanel({ onProgress }: { onProgress: () => void }) {
+  const [kind, setKind] = useState<BatchKind>('music')
+  const [text, setText] = useState('')
+  const [engine, setEngine] = useState('')
+  const [variants, setVariants] = useState(3)
+  const [rows, setRows] = useState<BatchRow[]>([])
+  const [running, setRunning] = useState(false)
+  const stop = useRef(false)
+
+  const lines = text
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+
+  function set(i: number, state: BatchState, note = '') {
+    setRows((rs) => rs.map((r, j) => (j === i ? { ...r, state, note } : r)))
+  }
+  const sleep = (s: number) => new Promise((ok) => window.setTimeout(ok, s * 1000))
+
+  async function runTracks(k: 'music' | 'ambience') {
+    for (let i = 0; i < lines.length; i++) {
+      if (stop.current) {
+        setRows((rs) => rs.map((r, j) => (j >= i && r.state === 'waiting' ? { ...r, state: 'stopped' } : r)))
+        return
+      }
+      const [name, style] = lines[i].split(',').map((s) => s.trim())
+      set(i, 'running')
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const res = await audioApi.generate({ kind: k, name, style: style || undefined })
+        if (res.ok) {
+          const cached = (res.info as { cached?: boolean }).cached
+          set(i, cached ? 'cached' : 'done')
+          break
+        }
+        if (res.reason === 'building' || res.reason === 'busy') {
+          set(i, 'running', `${res.reason}; retrying in ${res.retry_after_s ?? 60}s`)
+          await sleep(res.retry_after_s ?? 60)
+          if (stop.current) break
+          continue
+        }
+        set(i, 'failed', res.detail)
+        break
+      }
+      onProgress()
+    }
+  }
+
+  async function runCues() {
+    const items = lines.map((l) => {
+      const [cue, ...rest] = l.split('/')
+      return { cue: cue.trim(), entity: rest.join('/').trim() || undefined,
+               engine: engine || undefined }
+    })
+    for (let start = 0; start < items.length; start += 40) {
+      if (stop.current) break
+      const chunk = items.slice(start, start + 40)
+      chunk.forEach((_, n) => set(start + n, 'running'))
+      const res = await audioApi.sfxPack({ items: chunk, variants })
+      if (!res.ok) {
+        chunk.forEach((_, n) => set(start + n, 'failed', res.detail))
+        continue
+      }
+      const out = (res.info as { items?: { error?: string; served_from?: string }[] }).items ?? []
+      out.forEach((it, n) =>
+        set(start + n, it.error ? 'failed' : it.served_from === 'cache' ? 'cached' : 'done', it.error ?? ''),
+      )
+      onProgress()
+    }
+  }
+
+  async function run() {
+    stop.current = false
+    setRows(lines.map((line) => ({ line, state: 'waiting', note: '' })))
+    setRunning(true)
+    try {
+      if (kind === 'sfx') await runCues()
+      else await runTracks(kind)
+    } finally {
+      setRunning(false)
+      onProgress()
+    }
+  }
+
+  const done = rows.filter((r) => r.state === 'done' || r.state === 'cached').length
+  const placeholder =
+    kind === 'sfx'
+      ? 'hit/slime\nhit/orc\nslash/an axe\npickup/a gold coin\ndeath/skeleton\nui_click'
+      : kind === 'music'
+        ? 'emerald-reach:explore:1, medieval_fantasy\nemerald-reach:combat:1, battle\nemerald-reach:village:1, village'
+        : 'emerald-reach:forest, forest\nemerald-reach:cave, cave'
+
+  return (
+    <div className="card">
+      <h2>Batch</h2>
+      <p className="hint">
+        One item per line (<code>#</code> starts a comment). Music and ambience:{' '}
+        <code>name</code> or <code>name, style</code>, built one at a time. Sound
+        effects: <code>cue</code> or <code>cue/entity</code>, built in packs sharing one
+        model load. Names already built come back from cache instantly.
+      </p>
+      <div className="row tight">
+        <div style={{ flex: '1 1 150px' }}>
+          <label htmlFor="b-kind">Kind</label>
+          <select id="b-kind" value={kind} disabled={running}
+                  onChange={(e) => setKind(e.target.value as BatchKind)}>
+            <option value="music">music</option>
+            <option value="ambience">ambience</option>
+            <option value="sfx">sound effects</option>
+          </select>
+        </div>
+        {kind === 'sfx' && (
+          <>
+            <div style={{ flex: '1 1 150px' }}>
+              <label htmlFor="b-engine">Engine</label>
+              <select id="b-engine" value={engine} disabled={running}
+                      onChange={(e) => setEngine(e.target.value)}>
+                <option value="">auto</option>
+                <option value="realistic">realistic</option>
+                <option value="retro">retro</option>
+              </select>
+            </div>
+            <div style={{ flex: '0 1 90px' }}>
+              <label htmlFor="b-var">Variants</label>
+              <input id="b-var" type="number" min={1} max={5} value={variants}
+                     disabled={running}
+                     onChange={(e) => setVariants(Math.max(1, Math.min(5, Number(e.target.value) || 1)))} />
+            </div>
+          </>
+        )}
+      </div>
+      <textarea
+        rows={6}
+        style={{ width: '100%', marginTop: 8, fontFamily: 'monospace' }}
+        value={text}
+        disabled={running}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+      />
+      <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+        <button className="btn" disabled={running || lines.length === 0} onClick={() => void run()}>
+          {running ? `Working… ${done}/${rows.length}` : `Run batch (${lines.length})`}
+        </button>
+        {running && (
+          <button className="btn ghost" onClick={() => (stop.current = true)}>
+            Stop after current
+          </button>
+        )}
+      </div>
+      {rows.length > 0 && (
+        <table style={{ marginTop: 10 }}>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td><code>{r.line}</code></td>
+                <td>
+                  <span className={`tag ${r.state === 'failed' ? 'no'
+                    : r.state === 'done' || r.state === 'cached' ? 'ok' : 'neutral'}`}>
+                    {r.state}
+                  </span>
+                </td>
+                <td className="muted">{r.note}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   )
 }
 

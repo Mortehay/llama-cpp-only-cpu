@@ -336,11 +336,39 @@ CUES: list[dict[str, Any]] = [
      "recipes": {"realistic": {"template":
          "a soft short click of {entity}, crisp and subtle, "
          + _SFX_SUFFIX}}},
+    # The four below exist so every something2 moment has a sound
+    # (.ai/specs/something2-audio/integration.md, "Vocabulary"): `miss`,
+    # `chestOpened`, a death event, `waypointActivated`.
+    {"value": "miss", "label": "Miss - a swing that connects with nothing",
+     "default_engine": "realistic", "duration_s": 0.5,
+     "entity_default": "a blade",
+     "recipes": {"realistic": {"template":
+         "{entity} swinging through empty air, a quick light whoosh, "
+         + _SFX_SUFFIX}}},
+    {"value": "chest_open", "label": "Chest open - a lid creaks up",
+     "default_engine": "realistic", "duration_s": 1.2,
+     "entity_default": "an old wooden chest",
+     "recipes": {"realistic": {"template":
+         "opening {entity}, creaking hinge and a soft thud of the lid, "
+         + _SFX_SUFFIX}}},
+    {"value": "death", "label": "Death - a creature falls",
+     "default_engine": "realistic", "duration_s": 1.5,
+     "entity_default": "a creature",
+     "recipes": {"realistic": {"template":
+         "{entity} collapsing to the ground, a final groan and a soft fall, "
+         + _SFX_SUFFIX}}},
+    {"value": "waypoint", "label": "Waypoint - a shrine activates",
+     "default_engine": "realistic", "duration_s": 1.5,
+     "entity_default": "a stone shrine",
+     "recipes": {"realistic": {"template":
+         "activating {entity}, a warm magical chime rising and fading, "
+         + _SFX_SUFFIX}}},
 ]
 
 # The cues `audio_retro.PRESETS` can render. Named here rather than imported
 # so this module stays dependency-free; smoke-audio asserts the two agree.
-RETRO_CUES = ("slash", "hit", "pickup", "spell", "ui_click")
+RETRO_CUES = ("slash", "hit", "pickup", "spell", "ui_click",
+              "miss", "chest_open", "death", "waypoint")
 for _c in CUES:
     if _c["value"] in RETRO_CUES:
         _c["recipes"]["retro"] = {"preset": _c["value"]}

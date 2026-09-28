@@ -81,8 +81,12 @@ tells callers apart.
 - Styles (music): `medieval_fantasy` (default), `tavern`, `dungeon`, `battle`,
   `village`. Ambience: `forest` (default), `cave`, `village_day`, `night`,
   `rain`. All in a smooth medieval house style.
-- Cues (sfx): `slash`, `hit`, `pickup`, `spell`, `ui_click` (realistic and
-  retro), `footstep` (realistic only). Engine precedence: request `engine` >
+- Cues (sfx): `slash`, `hit`, `pickup`, `spell`, `ui_click`, `miss`,
+  `chest_open`, `death`, `waypoint` (realistic and retro), `footstep`
+  (realistic only).
+- Batches: the generator keeps Stable Audio resident between consecutive
+  ambience/sfx jobs (measured 2026-09-28: a warm cue 8.5 s vs 41 s cold), so
+  the art console's one-request-per-item queue does not pay a load per item. Engine precedence: request `engine` >
   the generator-side world's `sfx_engine` > cue default > `realistic`.
 - Full surface: `.ai/specs/audio/contract.md` in the generator repo.
 
@@ -93,9 +97,11 @@ tells callers apart.
 | `attack` (melee) | `slash` | entity = the weapon or creature |
 | `attack` (caster/skill) | `spell` | entity = the spell ("an ice spell") |
 | `impact` | `hit` | entity = the thing hit |
-| `miss` | `slash` | a whoosh; a dedicated `miss` cue is generator-side future work |
+| `miss` | `miss` | a light whoosh; added 2026-09-28 |
 | `picked` | `pickup` | entity = the item |
-| `chestOpened`, death, `waypointActivated` | - | **no cue yet** - generator-side future work; bind nothing rather than a wrong cue |
+| `chestOpened` | `chest_open` | added 2026-09-28 |
+| death (needs a new event on their wire) | `death` | added 2026-09-28; entity = the creature |
+| `waypointActivated` | `waypoint` | added 2026-09-28 |
 | UI clicks (client-only) | `ui_click` | |
 | footsteps (client-only, movement) | `footstep` | realistic only |
 

@@ -89,6 +89,58 @@ def _evict_pipelines() -> None:
         torch.cuda.empty_cache()
 
 
+# Stable Audio stays RESIDENT between audio jobs, under the same key the model
+# gateway uses for it (model_gateway.AUDIO_STABLE). A batch of cues from
+# something2's art console arrives one request at a time; reloading per
+# request cost 3-46 s each (measured 2026-09-28), against ~8 s of actual work.
+#
+# No idle timer of its own, on purpose: the gateway already decides which
+# model owns the card, and every other model's load path clears `tasks.pipes`
+# (get_sd_pipeline, the Qwen and edit paths, music below) - so the first job
+# for anything else evicts it, exactly as a warm SDXL is evicted today.
+# AUDIO_KEEP_WARM=0 restores load-and-drop per job.
+SAO_KEY = "audio:stable-audio"
+KEEP_WARM = os.environ.get("AUDIO_KEEP_WARM", "1") != "0"
+
+
+def _sao_pipeline(kind: str):
+    """(pipeline, load_seconds). Reuses the resident one; loads otherwise.
+
+    The window size is restored to the model's full length on every hand-out:
+    sfx shrinks it (SFX_LATENT_FRAMES) and ambience must never inherit that.
+    """
+    import torch
+    from diffusers import StableAudioPipeline
+
+    import tasks
+    pipe = tasks.pipes.get(SAO_KEY)
+    if pipe is not None:
+        pipe.transformer.register_to_config(sample_size=pipe._full_sample_size)
+        logger.info("audio: Stable Audio already resident - no load")
+        return pipe, 0.0
+    _evict_pipelines()
+    _preflight(kind)
+    t0 = time.time()
+    pipe = StableAudioPipeline.from_pretrained(AMBIENCE_MODEL,
+                                               torch_dtype=torch.float16).to("cuda")
+    pipe._full_sample_size = int(pipe.transformer.config.sample_size)
+    if KEEP_WARM:
+        tasks.pipes[SAO_KEY] = pipe
+    return pipe, round(time.time() - t0, 2)
+
+
+def _done_with_sao(pipe) -> None:
+    """Restore the full window; free the card only if not keeping it warm."""
+    pipe.transformer.register_to_config(sample_size=pipe._full_sample_size)
+    if not KEEP_WARM:
+        import gc
+
+        import torch
+        del pipe
+        gc.collect()
+        torch.cuda.empty_cache()
+
+
 def _preflight(kind: str) -> None:
     import torch
     if not torch.cuda.is_available():
@@ -161,12 +213,8 @@ def _generate_ambience(rendered: dict, duration_s: float, seed: int,
                        work_dir: str) -> dict:
     import numpy as np
     import torch
-    from diffusers import StableAudioPipeline
 
-    t0 = time.time()
-    pipe = StableAudioPipeline.from_pretrained(AMBIENCE_MODEL,
-                                               torch_dtype=torch.float16).to("cuda")
-    load_s = time.time() - t0
+    pipe, load_s = _sao_pipeline("ambience")
     try:
         t0 = time.time()
         gen = torch.Generator("cuda").manual_seed(seed)
@@ -181,10 +229,7 @@ def _generate_ambience(rendered: dict, duration_s: float, seed: int,
         sr = pipe.vae.sampling_rate
         peak = round(torch.cuda.max_memory_allocated() / 2 ** 20)
     finally:
-        del pipe
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
+        _done_with_sao(pipe)
 
     path = os.path.join(work_dir, f"take_{uuid.uuid4().hex[:8]}.wav")
     am.write_wav(path, np.asarray(wav), sr, subtype="FLOAT")
@@ -238,21 +283,15 @@ def generate_sfx(items: list[dict], *, audio_dir: str | None = None) -> list[dic
     """
     import numpy as np
     import torch
-    from diffusers import StableAudioPipeline
 
     audio_dir = audio_dir or AUDIO_DIR
-    _evict_pipelines()
-    _preflight("sfx")
-
-    t0 = time.time()
-    pipe = StableAudioPipeline.from_pretrained(AMBIENCE_MODEL,
-                                               torch_dtype=torch.float16).to("cuda")
-    load_s = round(time.time() - t0, 2)
+    pipe, load_s = _sao_pipeline("sfx")
     sr = pipe.vae.sampling_rate
     # Shrink the denoised window to what a cue needs (see SFX_LATENT_FRAMES).
-    # This pipeline instance is discarded after the batch, so nothing else
-    # ever sees the changed config.
-    full = int(pipe.transformer.config.sample_size)
+    # The pipeline may stay RESIDENT for the next job, so `_done_with_sao`
+    # restores the full window in the finally below - ambience must never
+    # inherit a 6 s window.
+    full = pipe._full_sample_size
     frames = min(full, max(SFX_LATENT_FRAMES, 32))
     pipe.transformer.register_to_config(sample_size=frames)
     out: list[dict] = []
@@ -316,10 +355,7 @@ def generate_sfx(items: list[dict], *, audio_dir: str | None = None) -> list[dic
         for o in out:
             o.setdefault("peak_alloc_mb", peak)
     finally:
-        del pipe
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
+        _done_with_sao(pipe)
         from tasks import release_vram_cache
         release_vram_cache("audio sfx")
     return out
@@ -350,8 +386,12 @@ def generate(kind: str, name: str, *, style: str | None = None,
     work_dir = os.path.join(audio_dir, "_takes")
     os.makedirs(work_dir, exist_ok=True)
 
-    _evict_pipelines()
-    _preflight(kind)
+    if kind == "music":
+        # ACE-Step runs in its own process and needs ~7.5 GB: EVERYTHING in
+        # this one goes, a resident Stable Audio included. Ambience does its
+        # own evict-if-loading in _sao_pipeline, so a warm one is reused.
+        _evict_pipelines()
+        _preflight(kind)
 
     started = time.time()
     if kind == "music":
