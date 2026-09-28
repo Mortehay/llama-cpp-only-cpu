@@ -72,3 +72,21 @@ substitute) and that the timeout number is derived, not guessed.
 ## Suggested Route
 
 `/implement`, then `/review-code` on the contract table.
+
+## Status 2026-09-28
+
+Written: `contract.md` "For something2's operator" - admin values for music,
+ambience and sfx (base URLs, auth, discovery pointers, `audio[0]` vs
+`audio[*]`, request templates), the timeout to keep (300000 ms; ours answers
+503 at 240 s with the build still running), and the operator error table.
+It says plainly that **their side has no audio provider kind yet** - the
+image provider decodes `images[0]` as a PNG and cannot carry audio.
+
+`verify-audio-api.py` gained `--kind sfx` (one-shot checks: a base64 OGG per
+variant, no loop tags, <= 3.5 s, onset <= 10 ms, cache hit, retro-footstep
+refusal) and `--burst N`. Dry-run confirmed it reaches the API and gets 401
+without a key.
+
+- [ ] Every check needs a key: `scripts/mint-key.py --name something2-audio
+      --scopes read,generate` - to be run by the owner, not the agent.
+- [ ] `--lan` from a second LAN machine; `--burst 5`.

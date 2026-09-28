@@ -118,6 +118,15 @@ export default function Settings({ onModeChange }: { onModeChange?: () => void }
           mode.reload()
           onModeChange?.()
         }}
+        onAdopt={(t) => {
+          // Rotating this browser's own key revoked the token it was using;
+          // adopt the new one at once, as Generate does, or the next request
+          // 401s and the only way back in is the recovery command.
+          setTok(t)
+          setToken(t)
+          setStored(t)
+          setSaved(true)
+        }}
       />
 
       <div className="card">
@@ -211,7 +220,15 @@ export default function Settings({ onModeChange }: { onModeChange?: () => void }
   )
 }
 
-function ApiKeys({ nonce, onChange }: { nonce: number; onChange: () => void }) {
+function ApiKeys({
+  nonce,
+  onChange,
+  onAdopt,
+}: {
+  nonce: number
+  onChange: () => void
+  onAdopt: (token: string) => void
+}) {
   // `nonce` so that minting a token from the card below shows up here too,
   // rather than leaving a table that quietly disagrees with reality.
   const keys = useAsync(() => api.listKeys(), [nonce])
@@ -228,6 +245,32 @@ function ApiKeys({ nonce, onChange }: { nonce: number; onChange: () => void }) {
       const k = await api.createKey(name.trim(), scopes)
       setMinted(k)
       setName('')
+      keys.reload()
+      onChange()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * Update a key: a new secret under the same name and scopes, the old one
+   * revoked in the same server transaction. Whoever holds the old token
+   * (something2, a script's .env) stops working until they get the new one -
+   * hence the confirm. If it is THIS browser's key, the new token is adopted.
+   */
+  async function rotate(id: string, keyName: string, prefix: string) {
+    if (!window.confirm(
+      `Rotate "${keyName}"? Its current token stops working immediately; ` +
+      `whatever uses it must be given the new one.`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      const k = await api.rotateKey(id)
+      const mine = getToken().startsWith(prefix)
+      if (mine) onAdopt(k.token)
+      setMinted({ ...k, bootstrap: false, rotated: true, adopted: mine })
       keys.reload()
       onChange()
     } catch (e) {
@@ -278,8 +321,10 @@ function ApiKeys({ nonce, onChange }: { nonce: number; onChange: () => void }) {
       {minted && (
         <div className="note ok">
           <div>
-            <strong>{minted.name}</strong> created
-            {minted.bootstrap && ' — admin scope added automatically'}.
+            <strong>{minted.name}</strong> {minted.rotated ? 'rotated' : 'created'}
+            {minted.bootstrap && ' — admin scope added automatically'}
+            {minted.rotated && ' — the old token no longer works'}
+            {minted.adopted && '; this browser now uses the new token'}.
           </div>
           <div className="row tight" style={{ margin: '8px 0', alignItems: 'center' }}>
             <div style={{ flex: '1 1 260px', minWidth: 0 }}>
@@ -363,9 +408,19 @@ function ApiKeys({ nonce, onChange }: { nonce: number; onChange: () => void }) {
                   {k.revoked ? (
                     <span className="tag no">revoked</span>
                   ) : (
-                    <button className="btn danger sm" disabled={busy} onClick={() => void revoke(k.id)}>
-                      Revoke
-                    </button>
+                    <span style={{ display: 'inline-flex', gap: 6 }}>
+                      <button
+                        className="btn ghost sm"
+                        disabled={busy}
+                        title="New secret, same name and scopes; the old one is revoked"
+                        onClick={() => void rotate(k.id, k.name, k.key_prefix)}
+                      >
+                        Rotate
+                      </button>
+                      <button className="btn danger sm" disabled={busy} onClick={() => void revoke(k.id)}>
+                        Revoke
+                      </button>
+                    </span>
                   )}
                 </td>
               </tr>

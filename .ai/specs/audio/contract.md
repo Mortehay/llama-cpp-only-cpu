@@ -290,7 +290,75 @@ pickup, spell, ui_click; **footstep has no retro recipe** and is refused
 `<cue>/<entity>`, so a name always yields the same sound; variants use
 `seed..seed+n-1`, each recorded in `info.variants`. Measured: 218 ms for a
 3-variant cue end to end, 25 ms of synthesis per variant; a pack mixing a
-cached realistic cue with three retro cues in 566 ms with no GPU.
+cached realistic cue with three retro cues in 566 ms with no GPU. A freshly
+restarted API pays ~0.8 s once, on its first filtered retro cue (the scipy
+import); every cue after that is the 25 ms figure.
+
+## For something2's operator: values to enter in the admin (ticket 10)
+
+**Their side has no audio provider kind yet.** Their image provider decodes
+`images[0]` as a PNG and slices it, so it cannot carry audio - pointing it at
+these routes fails on their side, not ours. The table below is what an audio
+provider kind needs when they build one; until then, audio reaches their game
+by download from the Audio tab (milestone 1 in 0010 "Open").
+
+Same shape as the image provider (`specs/something2-provider/contract.md`),
+and the same two traps apply: use the **Windows** LAN address, and the auth
+value is sent **verbatim**, so it must include the word `Bearer`.
+
+| Field | Music / ambience | Sound effects |
+|---|---|---|
+| Base URL | `http://<windows-lan-ip>:8001/api/audio` | `http://<windows-lan-ip>:8001/api/audio/sfx` (pack: `/api/audio/sfx-pack`) |
+| Method | `POST`, JSON body | `POST`, JSON body |
+| Auth header | `Authorization` | `Authorization` |
+| Auth value | `Bearer <key>` - a key minted with `scripts/mint-key.py --name something2-audio --scopes read,generate` | same key |
+| Styles / cues discovery | `GET /api/audio/styles?kind=music` (or `ambience`), pointer `$[*].value` | `GET /api/audio/styles?kind=sfx`, pointer `$[*].value` |
+| Response pointer | `audio[0]` - base64 OGG Vorbis, loop tags inside | `audio[*]` - one base64 OGG per variant, **no** loop tags |
+| Loop points | `info.loop_start` / `info.loop_end` (SAMPLE offsets, equal to the OGG's `LOOPSTART` / `LOOPLENGTH`) | none - one-shots |
+
+Request templates, with their `{{...}}` placeholders:
+
+```json
+{"kind": "music", "name": "{{map}}", "context": "{{map_description}}"}
+{"kind": "ambience", "name": "{{map}}", "context": "{{map_description}}"}
+{"cue": "{{cue}}", "entity": "{{entity}}", "world": "{{world}}", "variants": 3}
+```
+
+`name` is the cache key: the same map name returns the same track in
+milliseconds with no GPU. `context` lets the brain pick a style; send `style`
+instead to pin one (it wins). For sfx, leave `engine` out to let the world's
+`sfx_engine` decide - that is how one game keeps one look.
+
+**Timeout for their side: keep `AI_PROVIDER_GENERATE_TIMEOUT_MS` at 300000**
+(their 5-minute default). Ours blocks for at most `AUDIO_GENERATE_TIMEOUT_S`
+= 240 s and then answers `503 building` with the build still running, so a
+slow build shows as our message, never as their opaque abort. Measured cold:
+a 2-minute music loop 56 s, an ambience loop 40-70 s, a realistic sfx pack of
+3 cues / 8 variants 79 s, retro sfx under 1 s - all well inside 240 s when
+the worker is free. The worst case is a map's first request landing behind a
+Qwen-Image core (~4 min): that is refused up front with `503 busy`, not
+queued.
+
+### What their operator sees, mapped to the cause here
+
+| Their side sees | Cause here | What to do |
+|---|---|---|
+| `503`, body `reason: building`, `Retry-After: 60` | The build ran past 240 s and is **still running** | Ask again after Retry-After; it will be a cache hit |
+| `503`, `reason: busy`, `Retry-After: 120` | A long GPU job (Qwen core, sheet build) holds the one worker; nothing was queued | Ask again later |
+| `503`, `reason: gpu_faulted` | The CUDA breaker is open after a fault | Do NOT retry in a loop; the breaker re-probes itself |
+| `422` "has no 'retro' recipe (engine from world)" | The world's `sfx_engine` names an engine that cue does not offer (e.g. retro footstep) | Pick another cue, or send `engine` explicitly |
+| `422` "unknown cue" | Cue not in `GET /api/audio/styles?kind=sfx` | Use a listed `value` |
+| `404` on `GET /api/audio/{kind}/{name}` | Nothing finished under that name yet - the normal state for a new map | Play nothing; request it with `POST` |
+| `404` "no world named" | `world` does not exist in `/api/worlds` | Fix the world name |
+| `401` | Auth value missing `Bearer`, or the key revoked | Re-enter `Bearer <key>` |
+| Connection refused from another machine | `scripts/lan-expose.ps1` not re-run since the WSL IP changed | Run it elevated |
+
+Verify from ANOTHER LAN machine before touching their admin (that is what
+exercises the portproxy):
+
+    SPRITE_API_KEY=<key> python scripts/verify-audio-api.py --lan <windows-lan-ip> --kind ambience --submit
+    SPRITE_API_KEY=<key> python scripts/verify-audio-api.py --lan <windows-lan-ip> --kind sfx --submit
+    SPRITE_API_KEY=<key> python scripts/verify-audio-api.py --lan <windows-lan-ip> --burst 5 --kind ambience
 
 ## Non-goals for v1
 

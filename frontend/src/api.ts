@@ -168,6 +168,11 @@ export interface ApiKey {
 export interface NewApiKey extends Omit<ApiKey, 'revoked' | 'last_used_at'> {
   token: string
   bootstrap: boolean
+  /** Set by a rotation: the id whose secret this replaced (now revoked). */
+  rotated_from?: string
+  /** UI-only: this was a rotation, and whether this browser adopted it. */
+  rotated?: boolean
+  adopted?: boolean
 }
 
 export interface Asset {
@@ -594,6 +599,9 @@ export const api = {
     }),
   revokeKey: (id: string) =>
     request<unknown>(`/api/auth/keys/${id}`, { method: 'DELETE' }),
+  /** New secret for an existing key: same name and scopes, old one revoked. */
+  rotateKey: (id: string) =>
+    request<NewApiKey>(`/api/auth/keys/${id}/rotate`, { method: 'POST' }),
 
   assets: (params: { kind?: string; source?: string; q?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams()

@@ -382,6 +382,12 @@ def _retro():
     assert ar.seed_for("hit", "slime") != ar.seed_for("hit", "knight")
     worst, lengths = 0.0, []
     with tempfile.TemporaryDirectory() as tmp:
+        # Warm up first. A fresh process pays scipy's import on its first
+        # filtered cue (measured ~0.9 s here, cold) - a once-per-process cost,
+        # not a per-cue one, and it would make this timing flaky.
+        t0 = _t.time()
+        ar.build("hit", None, 1, 1, tmp)
+        cold = _t.time() - t0
         for cue in ar.PRESETS:
             t0 = _t.time()
             res = ar.build(cue, "slime", None, 3, tmp)
@@ -400,7 +406,8 @@ def _retro():
         assert (sf.read(again["master_path"])[0] == sf.read(first["master_path"])[0]).all()
     # Ticket 17's bar is "under 1 s"; a variant is far below it.
     assert worst < 0.5, f"{worst:.3f}s per variant"
-    return (f"{len(ar.PRESETS)} cues x 3 variants, worst {worst * 1000:.0f} ms/variant, "
+    return (f"{len(ar.PRESETS)} cues x 3 variants, worst {worst * 1000:.0f} ms/variant "
+            f"warm (first call {cold:.2f}s cold), "
             f"{min(lengths):.2f}-{max(lengths):.2f} s long")
 
 
@@ -428,7 +435,14 @@ def _one_shot():
     with tempfile.TemporaryDirectory() as tmp:
         wav, ogg = am.sfx_paths(tmp, "realistic", "hit", "Big Slime!", "ab12", 2)
         assert ogg.endswith(os.path.join("sfx", "realistic", "hit",
-                                         "big-slime-_ab12_v2.ogg")), ogg
+                                         "big-slime_ab12_v2.ogg")), ogg
+        # The entity is caller text: it must never leave the cue directory,
+        # and a long one must not fail the write after the GPU work.
+        cue_dir = os.path.realpath(os.path.join(tmp, "sfx", "realistic", "hit"))
+        for evil in ("../../../../tmp/x", "/etc/passwd", "a/b\\c", "x" * 500):
+            _, p = am.sfx_paths(tmp, "realistic", "hit", evil, "ab12", 1)
+            assert os.path.dirname(os.path.realpath(p)) == cue_dir, (evil, p)
+            assert len(os.path.basename(p)) < 100, (evil, p)
         am.write_ogg(ogg, x, sr, loop=False)
         assert "LOOPSTART" not in OggVorbis(ogg), "a cue carries loop tags"
     return (f"lead {out['trimmed_lead_ms']} ms trimmed, onset "
