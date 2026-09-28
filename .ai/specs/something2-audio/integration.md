@@ -69,7 +69,7 @@ tells callers apart.
 | music | `POST /api/audio {"kind":"music","name":N,"style"?:S,"context"?:TEXT,"seed"?}` | `audio[0]` base64 OGG, loop tags inside; `info.loop_start/loop_end` (samples), `sample_rate` 48000 |
 | ambience | same with `"kind":"ambience"` | `audio[0]`, 44100 Hz, loop tags |
 | sfx | `POST /api/audio/sfx {"cue","entity"?,"engine"?,"world"?,"variants":1-5}` | `audio[*]` one base64 OGG per variant, **no** loop tags; `info.variants[].url` |
-| sfx pack | `POST /api/audio/sfx-pack {"items":[{cue,entity?,engine?}],"variants"}` | `items[*]` as above |
+| sfx pack | `POST /api/audio/sfx-pack {"items":[{cue,entity?,engine?}],"engine"?,"variants"}` | `items[*]` as above; a top-level `engine` is the default for items without one |
 | discovery | `GET /api/audio/styles?kind=music|ambience|sfx` | pointer `$[*].value` |
 
 - **Synchronous, cache-first by name.** A repeated name is a ~0.1 s cache hit;
