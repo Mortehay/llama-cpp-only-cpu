@@ -285,8 +285,9 @@ STYLES: list[dict[str, Any]] = [
 #
 # Each cue carries one RECIPE PER ENGINE. `realistic` is Stable Audio Open 1.0
 # (the ambience model, already proven here); `retro` is procedural 8-bit
-# synthesis and arrives with ticket 17 - until then no cue has a retro recipe,
-# so asking for one is refused by `resolve_engine`, never faked.
+# synthesis (`audio_retro`, ticket 17). A cue without a recipe for the chosen
+# engine is refused by `resolve_engine`, never faked - `footstep` has no retro
+# recipe on purpose, because an 8-bit footstep is a weak blip.
 
 SFX_KIND = "sfx"
 ENGINES = ("realistic", "retro")
@@ -337,6 +338,13 @@ CUES: list[dict[str, Any]] = [
          + _SFX_SUFFIX}}},
 ]
 
+# The cues `audio_retro.PRESETS` can render. Named here rather than imported
+# so this module stays dependency-free; smoke-audio asserts the two agree.
+RETRO_CUES = ("slash", "hit", "pickup", "spell", "ui_click")
+for _c in CUES:
+    if _c["value"] in RETRO_CUES:
+        _c["recipes"]["retro"] = {"preset": _c["value"]}
+
 
 class NoRecipe(ValueError):
     """The chosen engine has no recipe for this cue - refused, not faked."""
@@ -377,9 +385,9 @@ def resolve_engine(cue: str, requested: str | None = None,
             raise NoRecipe(f"unknown engine {value!r} (from {source}); "
                            f"expected one of {', '.join(ENGINES)}")
         if value not in entry["recipes"]:
-            later = " - the retro engine is ticket 17" if value == "retro" else ""
             raise NoRecipe(f"cue {cue!r} has no {value!r} recipe (engine from "
-                           f"{source}){later}")
+                           f"{source}); it offers "
+                           f"{', '.join(sorted(entry['recipes']))}")
         return value, source
     raise NoRecipe(f"no engine resolved for {cue!r}")  # unreachable: default
 
@@ -396,6 +404,12 @@ def render_cue(cue: str, entity: str | None, engine: str) -> dict[str, Any]:
     if not recipe:
         raise NoRecipe(f"cue {cue!r} has no {engine!r} recipe")
     subject = (entity or "").strip() or entry["entity_default"]
+    if "template" not in recipe:
+        # A procedural recipe has no text prompt; this line is what the
+        # ledger and Activity show for it.
+        return {"cue": cue, "entity": (entity or "").strip() or None,
+                "engine": engine, "duration_s": entry["duration_s"],
+                "prompt": f"{engine} {cue} ({subject})", "negative": ""}
     return {"cue": cue, "entity": (entity or "").strip() or None,
             "engine": engine, "duration_s": entry["duration_s"],
             "prompt": recipe["template"].format(entity=subject),

@@ -201,6 +201,20 @@ def _generate_ambience(rendered: dict, duration_s: float, seed: int,
 # cues). Variants come from ONE call with `num_waveforms_per_prompt`, so 1-5
 # variants cost about one generation, not five.
 
+def sfx_ledger_params(item: dict, res: dict) -> dict:
+    """What a finished cue's ledger row records. ONE definition for both
+    engines - the worker (realistic) and the API (retro) - so a row reads the
+    same whichever built it. Torch-free: the API process calls it."""
+    first = res["variants"][0]
+    return {"cue": res["cue"], "entity": res["entity"],
+            "engine": res["engine"], "engine_from": item.get("engine_from"),
+            "sample_rate": res["sample_rate"],
+            "duration_s": first["duration_s"], "variants": res["variants"],
+            "model_seconds": res["model_seconds"],
+            "load_seconds": res["load_seconds"],
+            "peak_alloc_mb": res.get("peak_alloc_mb")}
+
+
 SFX_TAKE_SLACK_S = 0.7      # generated past the cue so the release is not cut
 SFX_STEPS = int(os.environ.get("SFX_STEPS", "100"))
 MAX_VARIANTS = 5

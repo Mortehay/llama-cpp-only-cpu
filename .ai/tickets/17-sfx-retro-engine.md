@@ -31,3 +31,27 @@ milliseconds, deterministic from the seed.
 ## Suggested Route
 
 `/implement`, then `/review-code`.
+
+## Status 2026-09-28
+
+Implemented: `audio_retro.py` - written here, not vendored (no licence
+question): per-cue PRESETS of parameter ranges, a seeded draw, and an
+sfxr-style synth (square/saw/sine/held-noise, attack/sustain/decay with
+punch, exponential slide, arpeggio, vibrato, one-pole low/high-pass,
+bit-crush). Recipes: slash, hit, pickup, spell, ui_click. **footstep has
+none, on purpose** - refused with the level named. Retro renders INLINE in
+the API process, before the worker/busy check; a mixed pack sends only its
+realistic cues to the worker. No seed -> seed derived from `<cue>/<entity>`,
+so a name is always the same sound. `audio_engine.sfx_ledger_params` is the
+one ledger shape for both engines.
+
+- [x] smoke-audio 19/19 in the API image: determinism (byte-identical),
+      name-seeding, every recipe audible with onset <= 10 ms, 25 ms/variant
+      worst, roster and presets agree.
+- [x] `POST /api/audio/sfx {"cue":"pickup","engine":"retro"}` in 218 ms
+      end to end (ledger included); cache 143 ms.
+- [x] World with `sfx_engine: retro` -> `engine_from: world`.
+- [x] Mixed pack (1 cached realistic + 3 retro) in 566 ms, no GPU.
+- [ ] "with the worker busy on an image job" - not staged; the retro path
+      never reads the worker or the queue, so it cannot wait on it.
+- [ ] Listening pass - files in `audio/sfx/retro/`.

@@ -567,6 +567,45 @@ def _serve_sfx(items: list[SfxItem], *, world: str | None, variants: int,
                         "retry_after_s": 60})
         plan.append((i, it, engine, source, name))
 
+    # RETRO renders here, in the API process, before any worker check: it is
+    # milliseconds of numpy and must never queue behind a GPU job (ticket 17).
+    # With no seed, audio_retro derives one from the name - same name, same
+    # sound. Only realistic cues continue to the worker below.
+    gpu_plan = []
+    for n, (i, it, engine, source, name) in enumerate(plan):
+        if engine != "retro":
+            gpu_plan.append((i, it, engine, source, name))
+            continue
+        gen = generations.begin(
+            kind="sfx", name=name, route="/api/audio/sfx", seed=seed,
+            params={"cue": it.cue, "entity": it.entity, "engine": engine,
+                    "engine_from": source, "requested_variants": variants,
+                    "world": world},
+            caller=caller)
+        t0 = time.time()
+        try:
+            import audio_engine
+            import audio_retro
+            res = audio_retro.build(it.cue, it.entity,
+                                    (seed + n) if seed else None, variants,
+                                    audio_engine.AUDIO_DIR)
+        except Exception as e:  # noqa: BLE001 - one cue fails, not the pack
+            generations.fail(gen, str(e), duration_ms=(time.time() - t0) * 1000)
+            out[i] = {"cue": it.cue, "entity": it.entity, "engine": engine,
+                      "engine_from": source, "name": name, "error": str(e)}
+            continue
+        generations.finish(gen, file_path=res["variants"][0]["file_path"],
+                           seed=res["seed"], prompt=res["prompt"],
+                           duration_ms=(time.time() - t0) * 1000,
+                           params=audio_engine.sfx_ledger_params(
+                               {"engine_from": source}, res))
+        row = generations.resolve_name(name, kind="sfx")
+        out[i] = (_sfx_entry(row, cached=False, want=variants,
+                             engine_from=source) if row else
+                  {"cue": it.cue, "name": name,
+                   "error": "built but not readable back from the ledger"})
+    plan = gpu_plan
+
     if not plan:
         return out
 

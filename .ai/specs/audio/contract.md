@@ -283,6 +283,15 @@ variant after a ~3-4 s load; a 3-cue / 8-variant pack in 79 s; onset 0-5 ms
 on every variant; 2.85 GB peak. Two findings made that possible - see 0010
 "sfx".
 
+**Retro (ticket 17).** Procedural 8-bit, rendered in the API process - never
+queued on the worker, so it answers while a GPU job runs. Cues: slash, hit,
+pickup, spell, ui_click; **footstep has no retro recipe** and is refused
+(422, "it offers realistic"). Without a `seed` the seed is derived from
+`<cue>/<entity>`, so a name always yields the same sound; variants use
+`seed..seed+n-1`, each recorded in `info.variants`. Measured: 218 ms for a
+3-variant cue end to end, 25 ms of synthesis per variant; a pack mixing a
+cached realistic cue with three retro cues in 566 ms with no GPU.
+
 ## Non-goals for v1
 
 Vocals or lyrics; adaptive or per-area music within a map; MIDI export; iOS;

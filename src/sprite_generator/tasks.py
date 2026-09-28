@@ -4180,19 +4180,10 @@ def generate_sfx_task(self, items: list):
         if res.get("error"):
             generations.fail(g, res["error"], duration_ms=ms)
             continue
-        first = res["variants"][0]
         generations.finish(
-            g, file_path=first["file_path"], seed=res["seed"],
+            g, file_path=res["variants"][0]["file_path"], seed=res["seed"],
             prompt=res["prompt"], duration_ms=ms,
-            params={"cue": res["cue"], "entity": res["entity"],
-                    "engine": res["engine"],
-                    "engine_from": item.get("engine_from"),
-                    "sample_rate": res["sample_rate"],
-                    "duration_s": first["duration_s"],
-                    "variants": res["variants"],
-                    "model_seconds": res["model_seconds"],
-                    "load_seconds": res["load_seconds"],
-                    "peak_alloc_mb": res.get("peak_alloc_mb")})
+            params=audio_engine.sfx_ledger_params(item, res))
     logger.info("sfx batch of %d done in %.1fs (%d failed)", len(items),
                 time.time() - start, sum(1 for r in results if r.get("error")))
     return {"items": results}

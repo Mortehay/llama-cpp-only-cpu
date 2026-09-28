@@ -327,17 +327,21 @@ def _sfx_engine():
     assert st.resolve_engine("hit") == ("realistic", "cue")
     assert st.resolve_engine("hit", "realistic") == ("realistic", "request")
     assert st.resolve_engine("hit", None, "realistic") == ("realistic", "world")
+    assert st.resolve_engine("hit", "retro") == ("retro", "request")
+    assert st.resolve_engine("hit", None, "retro") == ("retro", "world")
+    assert st.resolve_engine("hit", "realistic", "retro") == ("realistic", "request")
     # A level that names an engine the cue cannot render is REFUSED, never
     # passed down - a silent fall-through would mix looks within one game.
+    # footstep has no retro recipe on purpose (ticket 17).
     for req, world, where in (("retro", None, "request"),
                               (None, "retro", "world"),
                               ("retro", "realistic", "request")):
         try:
-            st.resolve_engine("hit", req, world)
+            st.resolve_engine("footstep", req, world)
         except st.NoRecipe as e:
-            assert where in str(e) and "ticket 17" in str(e), e
+            assert where in str(e) and "offers realistic" in str(e), e
         else:
-            raise AssertionError(f"retro from {where} was not refused")
+            raise AssertionError(f"retro footstep from {where} was not refused")
     try:
         st.resolve_engine("hit", "chiptune")
     except st.NoRecipe as e:
@@ -359,6 +363,45 @@ def _sfx_engine():
     assert "a creature" in st.render_cue("hit", None, "realistic")["prompt"]
     assert {c["value"] for c in st.cue_roster()} >= {"slash", "hit", "pickup"}
     return f"{len(st.CUES)} cues, 3 levels + 3 refusals"
+
+
+@case("retro engine: deterministic, fast, every recipe audible, name-seeded")
+def _retro():
+    import time as _t
+    import audio_retro as ar
+    # The roster and the synth agree on which cues exist in 8-bit.
+    assert set(st.RETRO_CUES) == set(ar.PRESETS), (st.RETRO_CUES, list(ar.PRESETS))
+    assert "footstep" not in ar.PRESETS
+    # Same cue + seed -> byte-identical samples.
+    a = ar.synth(ar.draw("hit", 7), 7)
+    b = ar.synth(ar.draw("hit", 7), 7)
+    assert a.tobytes() == b.tobytes(), "retro is not deterministic"
+    assert a.tobytes() != ar.synth(ar.draw("hit", 8), 8).tobytes()
+    # The name gives the seed: stable, and different per entity.
+    assert ar.seed_for("hit", "Slime ") == ar.seed_for("hit", "slime")
+    assert ar.seed_for("hit", "slime") != ar.seed_for("hit", "knight")
+    worst, lengths = 0.0, []
+    with tempfile.TemporaryDirectory() as tmp:
+        for cue in ar.PRESETS:
+            t0 = _t.time()
+            res = ar.build(cue, "slime", None, 3, tmp)
+            worst = max(worst, (_t.time() - t0) / 3)
+            for v in res["variants"]:
+                assert v["onset_ms"] <= 10, (cue, v["onset_ms"])
+                assert os.path.exists(v["file_path"]), v["file_path"]
+                lengths.append(v["duration_s"])
+            assert res["engine"] == "retro" and res["seed"] == ar.seed_for(cue, "slime")
+            assert [v["seed"] for v in res["variants"]] == [res["seed"] + k
+                                                            for k in range(3)]
+        # Rebuilding by name reproduces the same audio (the cache contract).
+        again = ar.build("pickup", "slime", None, 1, tmp)["variants"][0]
+        first = ar.build("pickup", "slime", None, 1, tmp)["variants"][0]
+        import soundfile as sf
+        assert (sf.read(again["master_path"])[0] == sf.read(first["master_path"])[0]).all()
+    # Ticket 17's bar is "under 1 s"; a variant is far below it.
+    assert worst < 0.5, f"{worst:.3f}s per variant"
+    return (f"{len(ar.PRESETS)} cues x 3 variants, worst {worst * 1000:.0f} ms/variant, "
+            f"{min(lengths):.2f}-{max(lengths):.2f} s long")
 
 
 @case("one-shot mastering: onset <=10 ms, faded tail, -1 dBFS, no loop tags")
