@@ -71,6 +71,14 @@ GENERATE_TIMEOUT_S = int(os.environ.get("A1111_GENERATE_TIMEOUT_S", "285"))
 # no longer has to be NAMED "sdxl" to be loaded as one. That constraint used to
 # rule out stable-diffusion-xl-base-1.0 entirely. See .ai/decisions/0002.
 KNOWN_MODELS = [
+    # [0] is what something2 gets when it names no model. Owner's choice,
+    # 2026-09-28: Qwen-Image-2512 Q2_K + 8-step Lightning LoRA. Benched 0/12
+    # contact sheets against SDXL + nerijs's 2/12, 24 s/image warm, ~130 s
+    # cold (it evicts SDXL, so a model change pays a load). It is step-
+    # distilled and runs at CFG 1, so the negative prompt - including what
+    # split_negations moves there - is INERT; the bench measured the sheets
+    # anyway. Square only (see txt2img). decisions/0012 2b.
+    "gguf:qwen-image-2512-Q2_K+lightning8",
     # Non-distilled. Turbo and friends run at guidance 0, so the negative_prompt
     # something2 sends is a silent no-op; these honour it at 20-30 steps.
     # Measured 2026-08-21, same prompt and seed across all four - see
@@ -104,6 +112,12 @@ KNOWN_MODELS = [
     # about the checkpoint's scheduler/prediction config does not survive this
     # diffusers version. Left out rather than handing something2 a model that
     # fails silently with a 200.
+    #
+    # Qwen-Image-2512 GGUF: best quality on this box, and slow - ~200-260s per
+    # image, close to GENERATE_TIMEOUT_S, so a cold run can time out and a
+    # rejected cutout gets no retry. Added 2026-09-28 at the owner's request,
+    # knowing that. Square only; see txt2img. decisions/0012 D2.
+    "gguf:Qwen-Image-2512-Q3_K_M",
 ]
 
 
@@ -844,12 +858,14 @@ def txt2img(req: Txt2ImgRequest, request: Request,
         raise HTTPException(status_code=503, detail=detail,
                             headers={"Retry-After": str(blocked["retry_after_s"])})
 
-    # A GGUF image model cannot meet this route's budget (~230s before the
-    # queue wait), and _generate_raw_once would hand it to get_sd_pipeline,
-    # which cannot load it. Refuse by name. decisions/0012 D2.
-    if is_gguf(model):
-        detail = (f"'{model}' is a slow GGUF model offered in the UI only; it "
-                  f"cannot finish inside this API's {GENERATE_TIMEOUT_S}s budget.")
+    # Qwen-Image is offered here at the owner's request (2026-09-28), slow
+    # budget and all: ~200-260s per image against GENERATE_TIMEOUT_S, and no
+    # room for a cutout retry. decisions/0012 D2. It renders square only, so a
+    # multi-frame or non-square request is refused here rather than stretched.
+    if is_gguf(model) and width != height:
+        detail = (f"'{model}' renders square images only; got {width}x{height}"
+                  f"{' (%d frames)' % frames if frames > 1 else ''}. Use an "
+                  f"SDXL model for sheets or non-square sizes.")
         generations.fail(gen, detail, duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=400, detail=detail)
 

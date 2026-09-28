@@ -82,8 +82,31 @@ def encode(prompt: str, negative: str, out: str) -> None:
     torch.save(res, out)
 
 
+# The scheduler a step-distilled Lightning LoRA was trained against (shift=3),
+# verbatim from ModelTC/Qwen-Image-Lightning generate_with_diffusers.py. The
+# stock 2512 scheduler is not what the distillation learned.
+def _lightning_scheduler():
+    import math
+    from diffusers import FlowMatchEulerDiscreteScheduler
+    return FlowMatchEulerDiscreteScheduler.from_config({
+        "base_image_seq_len": 256, "base_shift": math.log(3),
+        "invert_sigmas": False, "max_image_seq_len": 8192,
+        "max_shift": math.log(3), "num_train_timesteps": 1000, "shift": 1.0,
+        "shift_terminal": None, "stochastic_sampling": False,
+        "time_shift_type": "exponential", "use_beta_sigmas": False,
+        "use_dynamic_shifting": True, "use_exponential_sigmas": False,
+        "use_karras_sigmas": False})
+
+
 def denoise(embeds: str, gguf: str, png: str, seed: int,
-            steps: int = STEPS, cfg: float = CFG, size: int = SIZE) -> None:
+            steps: int = STEPS, cfg: float = CFG, size: int = SIZE,
+            lora_repo: str = "", lora_weight: str = "") -> None:
+    """`lora_repo`/`lora_weight` load a step-distilled Lightning LoRA and its
+    scheduler. Measured with the 7.33 GB Q2_K transformer at 8 steps, true CFG
+    1: 3.12 GiB free, 24 s/image. On the 9.69 GB Q3_K_M the same LoRA left 0.00
+    GiB free with 30-330 s spikes - do not pair them (decisions/0012 2b).
+    At CFG 1 the negative embedding is unused: the SDXL-Turbo trap, accepted
+    because the bench still measured 0/12 contact sheets."""
     from diffusers import (FlowMatchEulerDiscreteScheduler,
                            GGUFQuantizationConfig, QwenImagePipeline,
                            QwenImageTransformer2DModel)
@@ -94,11 +117,15 @@ def denoise(embeds: str, gguf: str, png: str, seed: int,
         gguf, quantization_config=GGUFQuantizationConfig(compute_dtype=DTYPE),
         config=CONFIG_REPO, subfolder="transformer", dtype=DTYPE,
         cache_dir=CACHE)
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        CONFIG_REPO, subfolder="scheduler", cache_dir=CACHE)
+    scheduler = (_lightning_scheduler() if lora_weight else
+                 FlowMatchEulerDiscreteScheduler.from_pretrained(
+                     CONFIG_REPO, subfolder="scheduler", cache_dir=CACHE))
     pipe = QwenImagePipeline.from_pretrained(
         REPO, transformer=transformer, scheduler=scheduler,
         text_encoder=None, tokenizer=None, dtype=DTYPE, cache_dir=CACHE)
+    if lora_weight:
+        pipe.load_lora_weights(lora_repo, weight_name=lora_weight,
+                               cache_dir=CACHE)
     # Resident, not offloaded: offload moves the 9 GB transformer back through
     # host RAM at the end of the pass, which is what OOM-killed qwen_edit.
     pipe.to("cuda")
@@ -139,13 +166,16 @@ def main(argv=None) -> int:
     d.add_argument("--steps", type=int, default=STEPS)
     d.add_argument("--cfg", type=float, default=CFG)
     d.add_argument("--size", type=int, default=SIZE)
+    d.add_argument("--lora-repo", default="")
+    d.add_argument("--lora-weight", default="")
     a = ap.parse_args(argv)
 
     t0 = time.time()
     if a.mode == "encode":
         encode(a.prompt, a.negative, a.out)
     else:
-        denoise(a.embeds, a.gguf, a.png, a.seed, a.steps, a.cfg, a.size)
+        denoise(a.embeds, a.gguf, a.png, a.seed, a.steps, a.cfg, a.size,
+                a.lora_repo, a.lora_weight)
     print(f"DONE {a.mode} {time.time() - t0:.1f}s", flush=True)
     return 0
 

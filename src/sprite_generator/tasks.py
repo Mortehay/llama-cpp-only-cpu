@@ -42,7 +42,8 @@ logger = logging.getLogger(__name__)
 # Shared with the API process: the step-1 roster and the cache probes behind it.
 # stdlib-only by design, so importing it here adds nothing to worker start.
 from core_models import (unavailable_reason, local_weight_name,
-                          local_lora_file, default_model, is_gguf, gguf_file)
+                          local_lora_file, default_model, is_gguf, gguf_file,
+                          gguf_lora)
 # Module scope, not a lazy import inside the task: a lazy `import tiles` raised
 # ModuleNotFoundError inside the Celery worker while the identical import
 # succeeded from a shell in the same container with the same working directory.
@@ -2085,6 +2086,9 @@ def _core_prompt(prompt: str, llm_name: str):
 # 7.33s + decode. End to end through the worker: 257.6s cold. Measured
 # 2026-09-28 (decisions/0012); override if the quant or step count changes.
 QWEN_CORE_EXPECTED_S = float(os.environ.get("QWEN_CORE_EXPECTED_S", "260"))
+# The Q2_K + Lightning-8 variant: encode ~35s + placement 51s + 24s denoise +
+# decode, cold (decisions/0012 2b). Separate so its busy window is honest.
+QWEN_FAST_EXPECTED_S = float(os.environ.get("QWEN_FAST_EXPECTED_S", "130"))
 
 # Progress bands for the queue panel. Denoising is ~65% of the wall clock.
 _QWEN_BANDS = {"encode": (2, 15), "load": (15, 25), "denoise": (25, 88)}
@@ -2174,6 +2178,65 @@ def _read_qwen_stage(task_id, proc, label, tail, timed_out, limit):
     return err
 
 
+def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
+                seed: int, job_label: str):
+    """One Qwen-Image picture, as (RGB image, None) or (None, error dict).
+
+    Shared by the UI's core path and the A1111 facade. Neither availability
+    nor the breaker is checked here - both callers do that first. The prompt
+    goes in exactly as given; styling it is the caller's decision.
+    """
+    work = f"/tmp/qwen_t2i/{task_id}"
+    os.makedirs(work, exist_ok=True)
+    embeds, raw_png = f"{work}/embeds.pt", f"{work}/raw.png"
+
+    # The resident SDXL pipeline would leave the subprocess ~6.8 GB short.
+    _evict_pipelines(f"a {job_label}")
+    release_vram_cache(job_label)
+
+    # Refuse in a millisecond rather than after a minute of encode + load.
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        if free < QWEN_MIN_FREE_MB * 2 ** 20:
+            msg = (f"Not enough free VRAM for Qwen-Image: {free / 2**30:.1f} GiB "
+                   f"free of {total / 2**30:.1f}, needs "
+                   f"{QWEN_MIN_FREE_MB / 1024:.1f} GiB. Another process holds "
+                   f"the card - usually llm-server's chat model, which unloads "
+                   f"after 2 idle minutes. Retry then.")
+            logger.error("Task %s refused: %s", task_id, msg)
+            return None, {"error": msg}
+
+    # A `+lightning8` value carries its own steps/CFG/LoRA (core_models
+    # GGUF_LORAS); without one, qwen_t2i.py runs its benched 20 steps / CFG 4.
+    lora = gguf_lora(llm_name)
+    extra = (["--lora-repo", lora["repo"], "--lora-weight", lora["weight"],
+              "--steps", str(lora["steps"]), "--cfg", str(lora["cfg"])]
+             if lora else [])
+    mark_long_job(job_label,
+                  QWEN_FAST_EXPECTED_S if lora else QWEN_CORE_EXPECTED_S)
+    try:
+        err = _run_qwen_stage(task_id, ["encode", "--prompt", prompt,
+                                        "--negative", negative or "",
+                                        "--out", embeds], "encoding prompt")
+        if not err:
+            err = _run_qwen_stage(task_id, ["denoise", "--embeds", embeds,
+                                            "--gguf", gguf_file(llm_name),
+                                            "--png", raw_png,
+                                            "--seed", str(seed)] + extra,
+                                  "loading model")
+        if err:
+            logger.error("Task %s failed: %s", task_id, err)
+            return None, {"error": err}
+        return Image.open(raw_png).convert("RGB"), None
+    finally:
+        clear_long_job()
+        for f in (embeds, raw_png):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+
+
 def _generate_core_gguf(task_id: str, prompt: str, llm_name: str):
     """Step-1 core from a GGUF image model (Qwen-Image-2512). decisions/0012."""
     reason = unavailable_reason(llm_name)
@@ -2192,59 +2255,22 @@ def _generate_core_gguf(task_id: str, prompt: str, llm_name: str):
 
     seed = random.randint(0, 10**9)
     clean_prompt, full_prompt = _core_prompt(prompt, llm_name)
-    work = f"/tmp/qwen_t2i/{task_id}"
-    os.makedirs(work, exist_ok=True)
-    embeds, raw_png = f"{work}/embeds.pt", f"{work}/raw.png"
 
     start_time = time.time()
     update_task_record(task_id, progress_pct=1, seed=seed,
                        progress_msg="Qwen: freeing the card...")
-    # The resident SDXL pipeline would leave the subprocess ~6.8 GB short.
-    _evict_pipelines("a Qwen-Image core")
-    release_vram_cache("qwen core")
-
-    # Refuse in a millisecond rather than after a minute of encode + load.
-    if torch.cuda.is_available():
-        free, total = torch.cuda.mem_get_info()
-        if free < QWEN_MIN_FREE_MB * 2 ** 20:
-            msg = (f"Not enough free VRAM for Qwen-Image: {free / 2**30:.1f} GiB "
-                   f"free of {total / 2**30:.1f}, needs "
-                   f"{QWEN_MIN_FREE_MB / 1024:.1f} GiB. Another process holds "
-                   f"the card - usually llm-server's chat model, which unloads "
-                   f"after 2 idle minutes. Retry then.")
-            logger.error("Task %s refused: %s", task_id, msg)
-            update_task_record(task_id, error_msg=msg)
-            return {"error": msg}
-
-    mark_long_job("Qwen-Image core", QWEN_CORE_EXPECTED_S)
-    try:
-        err = _run_qwen_stage(task_id, ["encode", "--prompt", full_prompt,
-                                        "--negative", NEGATIVE_SINGLE,
-                                        "--out", embeds], "encoding prompt")
-        if not err:
-            err = _run_qwen_stage(task_id, ["denoise", "--embeds", embeds,
-                                            "--gguf", gguf_file(llm_name),
-                                            "--png", raw_png,
-                                            "--seed", str(seed)],
-                                  "loading model")
-        if err:
-            logger.error("Task %s failed: %s", task_id, err)
-            update_task_record(task_id, error_msg=f"Generation failed: {err}")
-            return {"error": err}
-        img = Image.open(raw_png).convert("RGB")
-    finally:
-        clear_long_job()
-        for f in (embeds, raw_png):
-            try:
-                os.remove(f)
-            except OSError:
-                pass
+    img, err = _qwen_image(task_id, full_prompt, NEGATIVE_SINGLE, llm_name,
+                           seed, "Qwen-Image core")
+    if err:
+        update_task_record(task_id, error_msg=f"Generation failed: {err['error']}")
+        return err
 
     end_time = time.time()
     total_duration_ms = (end_time - start_time) * 1000
+    lora = gguf_lora(llm_name)
     log_stats(task_id, llm_name, clean_prompt,
-              int(os.environ.get("QWEN_T2I_STEPS", "20")), start_time,
-              end_time, total_duration_ms)
+              lora["steps"] if lora else int(os.environ.get("QWEN_T2I_STEPS", "20")),
+              start_time, end_time, total_duration_ms)
     return _finish_core(task_id, img, total_duration_ms, seed)
 
 
@@ -3139,9 +3165,56 @@ def _generate_raw_once(task_id, prompt: str, negative_prompt: str,
         logger.warning("refusing generation %s: %s", task_id, refusal["error"])
         return refusal
 
+    if is_gguf(llm_name):
+        img, seed, duration_ms, err = _raw_image_gguf(
+            task_id, prompt, negative_prompt, llm_name, width, height, seed,
+            strip_background)
+        if err:
+            return err
+    else:
+        img, seed, duration_ms, err = _raw_image_sd(
+            task_id, prompt, negative_prompt, llm_name, width, height, steps,
+            cfg_scale, seed, strip_background, lora_scale)
+        if err:
+            return err
+
+    return _finish_raw(img, seed, duration_ms, strip_background)
+
+
+def _raw_image_gguf(task_id, prompt, negative_prompt, llm_name, width, height,
+                    seed, strip_background):
+    """A1111-facade image from Qwen-Image. decisions/0012 D2 (superseded).
+
+    Steps and cfg from the caller are ignored: they arrive as A1111 defaults
+    (20 / 7) and qwen_t2i.py runs its own benched values. Qwen renders square
+    at QWEN_T2I_SIZE (512); the facade refuses non-square before queueing, and
+    the result is scaled NEAREST to the requested size, which keeps pixel art
+    crisp at the 2x something2 asks for.
+    """
+    reason = unavailable_reason(llm_name)
+    if reason:
+        return None, seed, 0, {"error": f"Could not load '{llm_name}': {reason}"}
+    if seed is None or seed < 0:
+        seed = random.randint(0, 10**9)
+    if strip_background:
+        prompt, negative_prompt = split_negations(prompt, negative_prompt)
+    start_time = time.time()
+    img, err = _qwen_image(task_id, prompt, negative_prompt, llm_name, seed,
+                           "Qwen-Image entity (something2)")
+    if err:
+        return None, seed, 0, err
+    if img.size != (width, height):
+        img = img.resize((width, height), Image.NEAREST)
+    return img, seed, (time.time() - start_time) * 1000, None
+
+
+def _raw_image_sd(task_id, prompt, negative_prompt, llm_name, width, height,
+                  steps, cfg_scale, seed, strip_background, lora_scale):
+    """A1111-facade image from a diffusers pipeline.
+    Returns (img, seed, duration_ms, error dict or None)."""
     p = get_sd_pipeline(llm_name, lora_scale=lora_scale)
     if not p:
-        return {"error": f"Model '{llm_name}' failed to load"}
+        return None, seed, 0, {"error": f"Model '{llm_name}' failed to load"}
 
     if seed is None or seed < 0:
         seed = random.randint(0, 10**9)
@@ -3201,9 +3274,9 @@ def _generate_raw_once(task_id, prompt: str, negative_prompt: str,
             logger.error("CUDA context faulted; refusing new work for %ds. "
                          "Do not restart the worker yet - let it go quiet and "
                          "re-probe (see CLAUDE.md).", GPU_FAULT_COOLDOWN_S)
-            return {"error": str(e), "error_kind": "gpu_faulted",
-                    "retry_after_s": GPU_FAULT_COOLDOWN_S}
-        return {"error": str(e)}
+            return None, seed, 0, {"error": str(e), "error_kind": "gpu_faulted",
+                                   "retry_after_s": GPU_FAULT_COOLDOWN_S}
+        return None, seed, 0, {"error": str(e)}
 
     # The image is a PIL object on the CPU from here on, so the card's working
     # set is dead weight until the next request. Release before the cutout
@@ -3212,8 +3285,11 @@ def _generate_raw_once(task_id, prompt: str, negative_prompt: str,
     # reclaim in.
     release_vram_cache("generation")
 
-    duration_ms = (time.time() - start_time) * 1000
+    return img, seed, (time.time() - start_time) * 1000, None
 
+
+def _finish_raw(img, seed, duration_ms, strip_background):
+    """Cutout, the refusal checks, and the save - model-independent."""
     cutout_stats = None
     if strip_background:
         # keep_largest, matching every other cutout in this file (1380, 1593,

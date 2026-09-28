@@ -50,11 +50,38 @@ def is_gguf(value: str) -> bool:
     return (value or "").strip().startswith(GGUF_PREFIX)
 
 
+# Step-distilled LoRAs a GGUF value may name as `gguf:<stem>+<key>`. The
+# settings travel with the key because they are not optional: a Lightning LoRA
+# run at 20 steps / CFG 4 on the stock scheduler is not what it was trained for.
+GGUF_LORAS = {
+    "lightning8": {
+        "repo": "lightx2v/Qwen-Image-2512-Lightning",
+        "weight": "Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors",
+        "steps": 8, "cfg": 1.0,
+    },
+}
+
+
+def _gguf_parts(value: str) -> tuple[str, str | None]:
+    """`gguf:<stem>[+<lora key>]` -> (stem, key or None)."""
+    body = (value or "").strip()[len(GGUF_PREFIX):]
+    stem, _, key = body.partition("+")
+    return stem, (key or None)
+
+
 def gguf_file(value: str) -> str | None:
     """Absolute path for a `gguf:<stem>` value, or None if it is not one."""
     if not is_gguf(value):
         return None
-    return os.path.join(GGUF_DIR, value.strip()[len(GGUF_PREFIX):] + ".gguf")
+    return os.path.join(GGUF_DIR, _gguf_parts(value)[0] + ".gguf")
+
+
+def gguf_lora(value: str) -> dict | None:
+    """The LoRA settings a `gguf:<stem>+<key>` value names, or None."""
+    if not is_gguf(value):
+        return None
+    key = _gguf_parts(value)[1]
+    return GGUF_LORAS.get(key) if key else None
 
 
 # UI_DEFAULT_WHY: `ui_default` is what the browser preselects; `default` is what
@@ -68,6 +95,17 @@ def gguf_file(value: str) -> str | None:
 # Comments that used to sit beside the <option> tags travelled here with them.
 CORE_MODELS = [
     {
+        # Benched 2026-09-28 (decisions/0012 2b): 7.33 GB Q2_K transformer +
+        # lightx2v 8-step Lightning LoRA, true CFG 1. 0/12 contact sheets,
+        # 24 s/image flat, 3.12 GiB VRAM free; knights 3/3 full-body. Rougher
+        # textures than the 20-step entry below, and less variety between
+        # seeds. The owner chose it as the UI preselection and something2's
+        # default (a1111.KNOWN_MODELS[0]) - speed over the last bit of polish.
+        "value": "gguf:qwen-image-2512-Q2_K+lightning8",
+        "label": "Qwen-Image-2512 fast (Lightning) - ~30 s, slightly rougher",
+        "ui_default": True,
+    },
+    {
         # Benched 2026-09-28 against the default below, 4 subjects x 3 seeds:
         # 0/12 contact sheets vs 2/12, cutout kept 98.2% vs 77.4%, and judged
         # "much better" by the owner. ~3.5-4 min per core (512px, 20 steps,
@@ -75,7 +113,6 @@ CORE_MODELS = [
         # and a1111 refuses it - something2's ceiling is 300s. decisions/0012.
         "value": "gguf:Qwen-Image-2512-Q3_K_M",
         "label": "Qwen-Image-2512 (GGUF) - best quality, ~4 min per image",
-        "ui_default": True,
     },
     {
         # Default, measured 2026-08-21. SDXL base with a pixel-art LoRA fused on
@@ -125,7 +162,8 @@ def repos_for(value: str) -> list[str]:
     adapter as "not in the local cache".
     """
     if is_gguf(value):
-        return list(GGUF_COMPANION_REPOS)
+        lora = gguf_lora(value)
+        return list(GGUF_COMPANION_REPOS) + ([lora["repo"]] if lora else [])
     return [part.strip() for part in (value or "").split("+")
             if part.strip() and not part.strip().startswith("local:")]
 
@@ -209,6 +247,9 @@ def unavailable_reason(value: str) -> str | None:
     """
     # A GGUF transformer is a file too. Its companions (encoder, VAE, config)
     # ARE Hub repos, and fall through to the cache check below.
+    if is_gguf(value) and _gguf_parts(value)[1] and not gguf_lora(value):
+        return (f"Unknown LoRA key '{_gguf_parts(value)[1]}' in '{value}'; "
+                f"known: {', '.join(GGUF_LORAS)}.")
     path = gguf_file(value)
     if path and not os.path.isfile(path):
         return (f"GGUF transformer {os.path.basename(path)} is missing from "
