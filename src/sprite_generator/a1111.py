@@ -79,6 +79,11 @@ KNOWN_MODELS = [
     # distilled and runs at CFG 1, so the negative prompt - including what
     # split_negations moves there - is INERT; the bench measured the sheets
     # anyway. Square only (see txt2img). decisions/0012 2b.
+    #
+    # Asked for "transparent background" it paints the transparency checker
+    # into the pixels (9/9 opaque cutouts, 2026-09-29). tasks.rewrite_transparency
+    # now swaps that phrase for "plain white background" before generating,
+    # which measured 12/12 clean. .ai/specs/transparent-cutouts/.
     "gguf:qwen-image-2512-Q2_K+lightning8",
     # Non-distilled. Turbo and friends run at guidance 0, so the negative_prompt
     # something2 sends is a silent no-op; these honour it at 20-30 steps.

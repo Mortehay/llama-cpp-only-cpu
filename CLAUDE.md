@@ -157,6 +157,17 @@ fragment of it.
   problem, it does not solve it — some subjects still come back as item sheets
   and `_isolate_largest_sprite` keeps the largest, so "obsidian boots" can
   return a knight.
+- **"transparent background" in a POSITIVE prompt makes the model PAINT the
+  transparency checkerboard** into the pixels, and the flood-fill cutout
+  (one corner colour) cannot clear a two-tone grid. Measured 2026-09-29 on
+  fast Qwen, production path: 9/9 opaque "successes" (3–18% transparent) vs
+  12/12 clean with "plain white background". `rewrite_transparency()` swaps
+  the phrase before generating, and asking for transparency makes the request
+  a cutout. `CUTOUT_MIN_CLEAR` (25%) refuses what still comes back opaque,
+  which triggers a retry on a new seed. Do not colour-match the checker
+  instead: white subjects are the same colour as its light squares
+  (`scripts/key-checkerboard.py` learned that). Spec
+  `.ai/specs/transparent-cutouts/`.
 - Two fixes for that were measured and **rejected**: adding `NEGATIVE_SINGLE`
   changed 3/12 → 3/12, and dropping `lora_scale` to 0.7 made it markedly worse
   (2/12 → 5/12). The pixel-art adapter at full strength holds the subject

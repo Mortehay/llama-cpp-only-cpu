@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: gpu-health lan-check lan-expose test-model-gateway test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
+.PHONY: gpu-health lan-check lan-expose test-model-gateway test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -457,6 +457,14 @@ test-auth-scopes:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-auth-scopes.py
+
+# "transparent background" in a prompt makes the model PAINT a checkerboard;
+# rewrite_transparency swaps it for a keyable plain white backdrop. Checks the
+# wordings that must fire and the subject-transparency ones that must not.
+test-transparency-rewrite:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-transparency-rewrite.py
 
 # The model gateway's rules (model_gateway.decide), table-tested with no
 # Redis, GPU or database, plus a static check that every gated task name is a

@@ -304,6 +304,63 @@ def split_negations(prompt: str, negative: str = ""):
     return cleaned, merged
 
 
+# "Transparent background" in a POSITIVE prompt makes the model PAINT the
+# transparency checkerboard into the pixels - it is how every image editor
+# draws "empty", so that is what the words look like. The flood fill that cuts
+# the object out keys ONE corner colour and cannot clear a two-tone grid.
+#
+# MEASURED 2026-09-29 (.ai/specs/transparent-cutouts/), fast Qwen, production
+# cutout path, 1024px:
+#
+#   "... with transparent background ..."  9/9 checkered, 3.4-17.9% transparent
+#   "... plain white background ..."      12/12 clean,   41.4-64.4% transparent
+#
+# Same model, same remover; only the phrase differs. So the phrase is swapped
+# for the one the remover can key. The request still COUNTS as asking for a
+# cutout (generate_raw_task) - the caller said the background must be empty.
+# Qwen-Image-2.1 renders real alpha but was far cruder in the same bench, so
+# the fix is here rather than in a model switch.
+_TRANSPARENCY_PHRASE = re.compile(
+    r"(?:\b(?:with|on|in|over|against|and|has|having)\s+(?:an?\s+|the\s+)?)?"
+    r"(?:\b(?:solid|fully|full|clean|pure|plain|empty)\s+)?"
+    r"(?:\btransparent|\btransparency|\balpha|\bclear|\bempty|\bno)\s+"
+    r"(?:\bpng\s+)?(?:background|backdrop|bg)\b"
+    r"|\b(?:png\s+)?with\s+(?:transparency|alpha(?:\s+channel)?)\b"
+    r"|\btransparent\s+png\b",
+    re.IGNORECASE)
+TRANSPARENCY_REPLACEMENT = "isolated on a plain white background"
+TRANSPARENCY_NEGATIVE = "checkerboard, checkered background, transparency grid"
+
+
+def rewrite_transparency(prompt: str, negative: str = ""):
+    """Swap "transparent background" (and kin) for a keyable plain backdrop.
+
+    Returns (positive, negative, asked): `asked` is True when the prompt
+    asked for transparency, so the caller must treat the request as a cutout.
+    A prompt that did not ask comes back unchanged with asked=False.
+    """
+    hits = _TRANSPARENCY_PHRASE.findall(prompt or "")
+    if not hits:
+        return prompt, negative, False
+    first = [True]
+
+    def swap(_m):
+        # One replacement, even when the caller said it three ways.
+        if first[0]:
+            first[0] = False
+            return TRANSPARENCY_REPLACEMENT
+        return ""
+
+    cleaned = _TRANSPARENCY_PHRASE.sub(swap, prompt)
+    cleaned = re.sub(r"\s*,(\s*,)+", ",", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip().strip(",").strip()
+    merged = ", ".join(t for t in [(negative or "").strip().strip(","),
+                                   TRANSPARENCY_NEGATIVE] if t)
+    logger.info("transparency asked for (%d phrase(s)); asking for a plain "
+                "white background instead, which the cutout can key", len(hits))
+    return cleaned, merged, True
+
+
 def release_vram_cache(reason: str = "", floor_mb: int = 1024) -> int:
     """Hand torch's unused cached VRAM back to the driver. Returns MB released.
 
@@ -1986,7 +2043,37 @@ def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
 
 @celery_app.task(name="tasks.generate_core_task", bind=True)
 def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turbo"):
+    """A step-1 core, regenerated on a new seed when its background survives.
+
+    A core is the source image of every sprite sheet, so an opaque one carries
+    its backdrop into the game. 38 of the last 200 cores (2026-09-29) came out
+    under CUTOUT_MIN_CLEAR - painted checkers, scenes, item sheets - with no
+    check at all. Each attempt already draws a fresh random seed, so the retry
+    is the same lever generate_raw_task uses. Nothing here waits on the caller,
+    so the loop is bounded by attempt count only.
+    """
     task_id = self.request.id
+    attempts = max(1, ENTITY_CUTOUT_ATTEMPTS)
+    result = {}
+    for attempt in range(1, attempts + 1):
+        result = _generate_core_once(self, task_id, prompt, llm_name)
+        if result.get("error_kind") != "cutout_failed":
+            return result
+        logger.info("core %s: background survived the cutout on attempt %d/%d "
+                    "(%s); regenerating on a new seed", task_id, attempt,
+                    attempts, str(result.get("error"))[:90])
+        if attempt < attempts:
+            update_task_record(task_id, progress_msg=(
+                f"Background did not come off - retrying on a new seed "
+                f"({attempt + 1}/{attempts})"))
+    msg = (f"{result.get('error')} Tried {attempts} seeds; every one kept its "
+           f"background. Reword the subject, or retry.")
+    update_task_record(task_id, error_msg=msg)
+    return {**result, "error": msg}
+
+
+def _generate_core_once(self, task_id: str, prompt: str, llm_name: str):
+    """One core attempt: generate, cut out, check. See generate_core_task."""
     logger.info(f"Task {task_id} generated core with llm {llm_name}")
     if is_gguf(llm_name):
         return _generate_core_gguf(task_id, prompt, llm_name)
@@ -2059,6 +2146,10 @@ def _core_prompt(prompt: str, llm_name: str):
     """(clean_prompt, full_prompt) for a step-1 core. Shared by every model
     family so a Qwen core and an SDXL core are asked for the same thing."""
     clean_prompt = prompt.replace("PixelartFSS", "").strip().lstrip(",").strip()
+    # A core is always cut out. Without this, a user who typed "transparent
+    # background" skipped the plain-white default below (it contains the word
+    # "background") and got the painted checker. See rewrite_transparency.
+    clean_prompt = rewrite_transparency(clean_prompt)[0]
 
     # Strictly aligned prefix: "PixelartFSS, idle front,"
     # Duplicate suppression lives HERE, in the positive prompt, and is worded
@@ -2450,6 +2541,20 @@ def _finish_core(task_id: str, img, total_duration_ms: float, seed: int):
     # does anyway, so a core is clean the moment it is saved rather than being
     # repaired on every sheet that later uses it.
     img = strip_ground_patch(img)
+
+    # Refuse a core whose background survived; generate_core_task retries on a
+    # new seed. Everything below CUTOUT_MIN_CLEAR in the last 200 cores was
+    # broken (checkers, scenes, sheets - looked at, 2026-09-29), so the floor
+    # has no false alarms there. It does NOT catch everything: scenes and
+    # walls also sit at 26-42%, next to legit frame-filling subjects - that
+    # needs a segmenter, not a threshold (.ai/specs/transparent-cutouts/).
+    import numpy as _np
+    clear = float((_np.asarray(img.convert("RGBA"))[..., 3] < 128).mean())
+    if clear < CUTOUT_MIN_CLEAR:
+        return {"error": (f"core background did not come off: only "
+                          f"{clear * 100:.1f}% transparent (floor "
+                          f"{CUTOUT_MIN_CLEAR * 100:.0f}%)."),
+                "error_kind": "cutout_failed"}
 
     # Smart Aspect Ratio Detection:
     # If the model natively generates a 4x1 animation sequence, strip out Frame 1.
@@ -3188,6 +3293,10 @@ ENTITY_CUTOUT_ATTEMPTS = int(os.environ.get("ENTITY_CUTOUT_ATTEMPTS", "3"))
 # is exactly the failure it exists to prevent.
 ENTITY_CUTOUT_BUDGET_S = int(os.environ.get("ENTITY_CUTOUT_BUDGET_S", "180"))
 
+# Least transparent share a single-object cutout may have. See the measured gap
+# at its use in _finish_raw before moving it.
+CUTOUT_MIN_CLEAR = float(os.environ.get("CUTOUT_MIN_CLEAR", "0.25"))
+
 
 @celery_app.task(name="tasks.generate_raw_task", bind=True)
 def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
@@ -3244,6 +3353,13 @@ def generate_raw_task(self, prompt: str, negative_prompt: str, llm_name: str,
     through the Redis result backend, and sheets can approach the 32MB cap.
     """
     task_id = self.request.id
+    # Before split_negations (in the per-model paths): "no background" is one
+    # of the phrases, and that would otherwise move "background" to the
+    # negative. Asking for transparency makes this a cutout even without the
+    # flag - the owner's rule (.ai/specs/transparent-cutouts/): never hand back
+    # an opaque square to a caller who asked for an empty background.
+    prompt, negative_prompt, asked = rewrite_transparency(prompt, negative_prompt)
+    strip_background = bool(strip_background or asked)
     attempts = max(1, ENTITY_CUTOUT_ATTEMPTS) if strip_background else 1
     result = None
 
@@ -3544,6 +3660,28 @@ def _finish_raw(img, seed, duration_ms, strip_background):
                 "separable from its background. This would be an opaque square. "
                 "Reword to isolate the subject on a flat background, or request "
                 "without cutout." % (clear * 100)),
+                "error_kind": "cutout_failed"}
+
+        # A BACKGROUND THAT SURVIVED. The 2% floor above let these through as
+        # successes, and they reached the game as opaque squares with a painted
+        # transparency checker in them. CUTOUT_MIN_CLEAR sits in a measured
+        # gap (2026-09-29, 1024px, production path, .ai/specs/transparent-cutouts/):
+        #
+        #   broken:  fast Qwen checker 3.4-17.9% (9/9), SDXL leftovers 10.4%, 18.5%
+        #   clean:   fast Qwen 41.4-64.4% (12/12), SDXL 56-95%; the 27 cutouts
+        #            served before 2026-09-10 ran 66.9-97%
+        #
+        # Only on this path, which asserts ONE object - a texture never gets
+        # here, so the chewed-grass case below cannot be refused by this. A
+        # refusal is cutout_failed, so the retry loop tries another seed first.
+        # Known miss: an SDXL chest at 26.8% with grey backdrop left in passes.
+        if clear < CUTOUT_MIN_CLEAR:
+            return {"error": (
+                "cutout left most of the background in place (only %.1f%% "
+                "transparent, the floor is %.0f%%): the backdrop could not be "
+                "separated from the subject - typically a transparency "
+                "checkerboard painted into the image. Returning it would ship "
+                "an opaque square." % (clear * 100, CUTOUT_MIN_CLEAR * 100)),
                 "error_kind": "cutout_failed"}
 
         # AND THAT WAS A THIRD CONFIDENT WRONG ANSWER - it was `clear > 0.97`.
