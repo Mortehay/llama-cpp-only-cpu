@@ -199,6 +199,9 @@ services:
       # re-asks. Both services read them, so both must be listed here.
       - MODEL_SWITCH_IDLE_S=${MODEL_SWITCH_IDLE_S:-300}
       - MODEL_GATEWAY_RECHECK_S=${MODEL_GATEWAY_RECHECK_S:-5}
+      # Object cutouts: birefnet (AI segmentation, cutout.py) or floodfill
+      # (the old corner-colour key) as the rollback. See transparent-cutouts spec.
+      - CUTOUT_ENGINE=${CUTOUT_ENGINE:-birefnet}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path
@@ -278,6 +281,9 @@ services:
       # re-asks. Both services read them, so both must be listed here.
       - MODEL_SWITCH_IDLE_S=${MODEL_SWITCH_IDLE_S:-300}
       - MODEL_GATEWAY_RECHECK_S=${MODEL_GATEWAY_RECHECK_S:-5}
+      # Object cutouts: birefnet (AI segmentation, cutout.py) or floodfill
+      # (the old corner-colour key) as the rollback. See transparent-cutouts spec.
+      - CUTOUT_ENGINE=${CUTOUT_ENGINE:-birefnet}
       # Every weight is already cached, so stop huggingface_hub revalidating
       # each file against the Hub on every pipeline load. Those calls are
       # metadata-only (a few KB) but they put generation on the network path

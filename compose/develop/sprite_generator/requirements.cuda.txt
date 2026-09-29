@@ -22,6 +22,14 @@ torchsde
 # never actually used — remove_background is a border flood-fill. Neural matting
 # would also be the wrong tool for pixel art, which needs hard edges, not soft
 # alpha. Re-add as rembg[cpu] only if photographic matting is ever wanted.
+#
+# SUPERSEDED 2026-09-29 for object cutouts - BiRefNet (cutout.py); see the
+# same note in requirements.txt. THIS is the file the CUDA worker is built
+# from: adding these to requirements.txt alone left the rebuilt worker
+# without them, and the cutout silently fell back to the flood fill.
+einops
+kornia
+timm
 scipy
 Pillow
 jinja2

@@ -164,10 +164,18 @@ fragment of it.
   12/12 clean with "plain white background". `rewrite_transparency()` swaps
   the phrase before generating, and asking for transparency makes the request
   a cutout. `CUTOUT_MIN_CLEAR` (25%) refuses what still comes back opaque,
-  which triggers a retry on a new seed. Do not colour-match the checker
-  instead: white subjects are the same colour as its light squares
-  (`scripts/key-checkerboard.py` learned that). Spec
+  which triggers a retry on a new seed (entities AND UI cores). Do not
+  colour-match the checker instead: white subjects are the same colour as its
+  light squares (`scripts/key-checkerboard.py` learned that). Spec
   `.ai/specs/transparent-cutouts/`.
+- **Object cutouts use BiRefNet, not the flood fill**, on the CUDA worker
+  (`cutout.py`, called from `remove_background`). The flood fill cannot clear
+  walls, scenes or enclosed pockets; it is only the fallback (API process,
+  `CUTOUT_ENGINE=floodfill`, load failure). Its soft mask is snapped to 0/255
+  for pixel art. It is parked in RAM between calls **on purpose** - resident,
+  it would break the slow Qwen core's 10 GB free-VRAM check. Anything that
+  ends up in the web RPG game must be transparent; tiles/terrain are the
+  deliberate exception.
 - Two fixes for that were measured and **rejected**: adding `NEGATIVE_SINGLE`
   changed 3/12 → 3/12, and dropping `lora_scale` to 0.7 made it markedly worse
   (2/12 → 5/12). The pixel-art adapter at full strength holds the subject

@@ -189,3 +189,44 @@ quality replacement (research licence; weights kept in
 **Deferred:** BiRefNet/ToonOut (slices 0-2) - still the answer for a white
 subject on a white backdrop, which the flood fill can eat; not needed for the
 reported bug. Map props already prompt "plain flat white background".
+
+## Segmenter (2026-09-29, same day) - the deferred slice, after all
+
+The prompt fix left real gaps, found by auditing EVERY path that feeds the
+web RPG game (the owner's requirement: anything used in the game, directly or
+via sprite-sheet generation, needs a real transparent background):
+
+| Path | Before today | Now |
+|---|---|---|
+| something2 entities | flood fill | rewrite + BiRefNet + 25% floor + seed retry |
+| UI cores (source of every sheet) | flood fill, **no check**: 38/200 under 25%, all broken | rewrite + BiRefNet + floor + retry (new loop) |
+| side-view cores | flood fill, no check | BiRefNet (via `remove_background`) |
+| map props | flood fill + own refusal | BiRefNet (via `remove_background`) |
+| sprite sheets | `pixelate.key_background` per cell | unchanged; 8 recent sheets all >= 31.5% transparent |
+| tiles / terrain | none, on purpose | unchanged (must stay opaque) |
+| manual crop (API, no GPU) | flood fill | unchanged (fallback) |
+
+**Spike** (`BiRefNet` vs `ToonOut` vs shipped flood fill, 19 images: today's
+failures plus 5 known-good):
+- Both segmenters removed every painted checker, the white floor, the dark
+  backdrop and the goblin's enclosed bow pockets.
+- On a brick wall, a mountain scene and a room interior, BiRefNet cut the
+  subject out; **ToonOut kept the scenery**. The research tip that ToonOut
+  suits illustrations did not hold here, so plain BiRefNet ships.
+- Neither damaged the known-good cutouts. Both failed one garden-grid scene;
+  on item sheets both keep the largest item (as `_isolate_largest_sprite`).
+- ~0.3 s per image, 2 GB peak VRAM during the call.
+- ToonOut's `.pth` needs `squeeze_N.` -> `squeeze_module.N.` and prefix
+  stripping to load strictly into the HF BiRefNet; a first non-strict load
+  silently mixed weights. Weights kept in `/models` in case of a re-test.
+
+**Shipped:** `cutout.py` - BiRefNet (MIT, `ZhengPeng7/BiRefNet`, 444 MB in
+`/models`), fp16, parked in host RAM and placed on the GPU per call so it never
+holds VRAM against the slow Qwen core's 10 GB free check. Mask snapped to
+0/255 at 128 - hard pixel-art edges. `remove_background` uses it on the CUDA
+worker and falls back to the flood fill on the API process, on
+`CUTOUT_ENGINE=floodfill`, or if it fails to load. Deps `einops kornia timm`
+added to requirements.
+
+**Live check** through the real job path: goblin-archer core 59.9%
+transparent with the bow pockets gone; something2's slime prompt 58.9%.

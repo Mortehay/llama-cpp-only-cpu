@@ -23,6 +23,15 @@ torchsde
 # never actually used — remove_background is a border flood-fill. Neural matting
 # would also be the wrong tool for pixel art, which needs hard edges, not soft
 # alpha. Re-add as rembg[cpu] only if photographic matting is ever wanted.
+#
+# SUPERSEDED 2026-09-29 for object cutouts: the flood fill cannot clear a
+# painted checkerboard, a wall, a scene or an enclosed pocket, and BiRefNet
+# (MIT, segmentation) can - measured on today's failures, no damage to clean
+# cutouts. The soft-alpha objection is met by snapping its mask to 0/255
+# (cutout.py). Its remote code imports these three; nothing else does.
+einops
+kornia
+timm
 scipy
 Pillow
 jinja2

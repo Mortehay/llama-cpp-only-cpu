@@ -33,6 +33,7 @@ from celery.signals import (worker_ready, task_prerun, task_postrun,
                             before_task_publish)
 
 import model_gateway
+import cutout
 
 from PIL import Image, ImageDraw
 import base64
@@ -1967,7 +1968,25 @@ def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
     background. Flood-filling from the edge is also the right model for pixel
     art, where hard edges matter and a segmentation network's soft alpha would
     be wrong.
+
+    SUPERSEDED on the CUDA worker (2026-09-29): cutout.py's BiRefNet does the
+    cut, with its mask snapped to hard 0/255 edges, because this flood fill
+    cannot clear a painted checker, a wall, a scene or an enclosed pocket. What
+    follows is the fallback - the API process (no GPU), CUTOUT_ENGINE=floodfill,
+    or a segmenter that failed to load.
     """
+    if cutout.enabled(DEVICE):
+        try:
+            import numpy as _np   # `np` is bound later in this function
+            out = cutout.cut_out(master)
+            if keep_largest:
+                arr = _np.asarray(out).copy()
+                out = Image.fromarray(_isolate_largest_sprite(arr).astype(_np.uint8),
+                                      mode="RGBA")
+            return out
+        except Exception as e:
+            logger.warning("BiRefNet cutout failed (%s); falling back to the "
+                           "flood fill", e)
     try:
         master = master.convert("RGBA")
         corners = [(0,0), (master.width-1, 0), (0, master.height-1), (master.width-1, master.height-1)]
