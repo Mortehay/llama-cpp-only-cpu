@@ -577,40 +577,18 @@ def _parse_llm_answer(text: str, kind: str
     return style, slots, notes
 
 
-def _llm_model(base: str) -> str | None:
-    """The TEXT model to route to - explicitly, not the router's first entry.
-
-    llama.cpp runs as a router over /models and lists every GGUF it finds,
-    including image-model GGUFs that happen to live there (the Qwen-Image
-    transformer, 2026-09-28). Taking entry [0] would one day ask the router to
-    load a 9.7 GB image model as a chat model. Prefer an instruct model.
-    """
-    import requests
-
-    override = os.environ.get("AUDIO_LLM_MODEL") or os.environ.get("WORLD_LLM_MODEL")
-    if override:
-        return override
-    data = requests.get(f"{base}/v1/models", timeout=10).json().get("data") or []
-    ids = [d.get("id", "") for d in data]
-    for i in ids:
-        if "instruct" in i.lower():
-            return i
-    return None
-
-
 def _llm_style_plan(context: str, kind: str = MUSIC_KIND, attempts: int = 2
                     ) -> tuple[str | None, dict[str, Any], str]:
     """Ask the brain for a style. Returns (style|None, slots, note); never raises.
 
-    `attempts`: a cold router load measured >45 s on 2026-09-28 (worlds.py
-    recorded ~13 s earlier), so the FIRST call after the 120 s sleep can time
-    out while the load continues, and a second call then answers in ~1 s. Two
-    attempts suit an interactive propose; a generation passes 1, because two
-    45 s attempts plus the 240 s build budget exceed something2's 300 s cap.
+    `attempts` sets the wait budget, `AUDIO_LLM_TIMEOUT` (45 s) each: an
+    interactive propose passes 2, a generation passes 1, because the build
+    itself needs most of something2's 300 s cap. The brain is gated
+    (decisions/0013), so while another model holds the card this falls back to
+    the rules at once instead of waiting.
     """
-    import requests
+    import text as text_api
 
-    base = os.environ.get("LLM_URL", "http://llm-server:8080")
     timeout = float(os.environ.get("AUDIO_LLM_TIMEOUT", "45"))
     options = []
     for s in STYLES:
@@ -629,33 +607,14 @@ def _llm_style_plan(context: str, kind: str = MUSIC_KIND, attempts: int = 2
         'Reply with ONLY a JSON object, e.g. '
         '{"style": "<one of the names above>", "slots": {"mood": "..."}}')
     try:
-        model = _llm_model(base)
-        if not model:
-            return None, {}, "no text model loaded in llama.cpp"
-        # Two attempts: the router loads on demand and the first call after
-        # its 120 s sleep answers with a non-completion body (worlds.py).
-        text = None
-        timed_out = False
-        for attempt in range(1, attempts + 1):
-            try:
-                r = requests.post(
-                    f"{base}/v1/chat/completions",
-                    json={"model": model, "temperature": 0, "max_tokens": 200,
-                          "messages": [{"role": "user", "content": prompt}]},
-                    timeout=timeout)
-            except requests.Timeout:
-                timed_out = True
-                continue
-            if r.status_code == 200:
-                try:
-                    text = r.json()["choices"][0]["message"]["content"]
-                    break
-                except (ValueError, KeyError, IndexError):
-                    pass
-        if text is None:
-            return None, {}, (f"LLM did not answer within {timeout:.0f}s x "
-                              f"{attempts} (cold load?)" if timed_out
-                              else "LLM did not answer")
+        try:
+            res = text_api.run_text(
+                prompt=prompt, temperature=0, max_tokens=200,
+                route="internal:audio_styles", wait_s=timeout * max(1, attempts),
+                caller={"principal_name": "audio styles (internal)"})
+        except text_api.TextRefused as e:
+            return None, {}, f"brain unavailable ({e.reason}: {e.detail})"
+        model, text = res.get("model"), res.get("text") or ""
         style, slots, notes = _parse_llm_answer(text, kind)
         if not style:
             return None, {}, f"{model}: " + "; ".join(notes)

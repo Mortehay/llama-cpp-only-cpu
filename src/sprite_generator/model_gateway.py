@@ -36,6 +36,7 @@ import time
 
 import redis as _redis
 
+import brain_engine
 from core_models import persistent_qwen
 
 logger = logging.getLogger(__name__)
@@ -66,12 +67,15 @@ FLUX_EDIT = "flux-kontext-edit"
 AUDIO_MUSIC = "audio:ace-step"
 AUDIO_STABLE = "audio:stable-audio"
 TRAINING = "training:sdxl-lora"
-FIXED_LABELS = (QWEN_EDIT, FLUX_EDIT, AUDIO_MUSIC, AUDIO_STABLE, TRAINING)
+# The brains (brain_engine.BRAINS), one label each: "brain:<id>".
+BRAIN_LABELS = tuple(brain_engine.label(b) for b in brain_engine.BRAINS)
+FIXED_LABELS = (QWEN_EDIT, FLUX_EDIT, AUDIO_MUSIC, AUDIO_STABLE, TRAINING,
+                *BRAIN_LABELS)
 
 # Tasks whose caller blocks on the result (the something2 facades). A deferral
 # there is returned as an error at once - holding it would only end in the
 # caller's timeout with the GPU work thrown away.
-SYNC_TASKS = {"tasks.generate_raw_task"}
+SYNC_TASKS = {"tasks.generate_raw_task", "tasks.generate_text_task"}
 
 
 def _arg(args, kwargs, index, name, default=None):
@@ -120,6 +124,8 @@ GATED = {
         lambda a, k: (AUDIO_MUSIC if _arg(a, k, 0, "kind") == "music"
                       else AUDIO_STABLE),
     "tasks.generate_sfx_task": lambda a, k: AUDIO_STABLE,
+    "tasks.generate_text_task":
+        lambda a, k: brain_engine.label(_arg(a, k, 0, "brain")),
 }
 
 
@@ -145,8 +151,10 @@ def warmable(model: str) -> bool:
     """Does a switch TO this model do real loading worth timing and showing?
     preloadable() models load a diffusers pipeline; persistent_qwen() models
     start the long-lived Qwen process (tasks._qwen_server_ensure, ~85 s cold).
+    A brain starts its llama-server child (~37 s cold for the 8B).
     Everything else only frees the card, so its switch is ~instant."""
-    return preloadable(model) or persistent_qwen(model)
+    return (preloadable(model) or persistent_qwen(model)
+            or brain_engine.is_label(model))
 
 
 # --- The rules --------------------------------------------------------------

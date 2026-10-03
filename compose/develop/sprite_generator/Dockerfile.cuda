@@ -9,6 +9,11 @@
 # requires Python 3.11-3.12. The bump alone changed nothing in the image except
 # the re-resolved wheels (torch 2.13->2.14, numpy 2.2->2.4); gpu-health, the
 # world-gen smoke and an SDXL+LoRA txt2img all passed on it.
+
+# The brain's llama-server (decisions/0013) - copied from, never run as, this
+# stage. Pinned by digest: the build measured on this host on 2026-10-01.
+FROM ghcr.io/ggml-org/llama.cpp@sha256:85e30d01b550277f25ccb62a4acab4626d5738974c137ee257b21a90dce94c14 AS llama
+
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -89,6 +94,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && /opt/acestep/.venv/bin/python -c "import torch, transformers; \
        print('acestep venv:', torch.__version__, torch.version.cuda, transformers.__version__)"
 ENV ACESTEP_PROJECT_ROOT=/opt/acestep
+
+# llama-server, the brain (decisions/0013), at /opt/llama - a child process the
+# worker starts and stops through the model gateway, never a resident service.
+# Copied from the official CUDA image rather than built: its Ubuntu 24.04 glibc
+# (2.39) is older than this base's, so the binaries run unchanged (T0 spike,
+# 2026-10-01). Its CUDA 12.8 runtime libs come along into /opt/llama/lib and
+# are put on LD_LIBRARY_PATH for the CHILD only - the worker's own torch is
+# cu130 and must not see them. libcuda.so.1 is injected by the NVIDIA runtime.
+COPY --from=llama /app /opt/llama/app
+COPY --from=llama /usr/local/cuda/lib64/libcudart.so.12.8.90 /opt/llama/lib/libcudart.so.12
+COPY --from=llama /usr/local/cuda/lib64/libcublas.so.12.8.4.1 /opt/llama/lib/libcublas.so.12
+COPY --from=llama /usr/local/cuda/lib64/libcublasLt.so.12.8.4.1 /opt/llama/lib/libcublasLt.so.12
+COPY --from=llama /usr/lib/x86_64-linux-gnu/libnccl.so.2.25.1 /opt/llama/lib/libnccl.so.2
+RUN LD_LIBRARY_PATH=/opt/llama/app:/opt/llama/lib /opt/llama/app/llama-server --version
+ENV LLAMA_SERVER_BIN=/opt/llama/app/llama-server \
+    LLAMA_SERVER_LIBS=/opt/llama/app:/opt/llama/lib
 
 COPY compose/develop/sprite_generator/requirements.cuda.txt ./requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \

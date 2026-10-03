@@ -85,6 +85,11 @@ app.include_router(generations_router)
 from audio import router as audio_router
 app.include_router(audio_router)
 
+# The brain as a text provider (decisions/0013): synchronous, refused when the
+# card is busy, every call on the Activity tab.
+from text import router as text_router
+app.include_router(text_router)
+
 # Reference examples and the style profiles measured from them. A tile upload
 # is how the camera angle stops being a guess.
 from references import router as references_router

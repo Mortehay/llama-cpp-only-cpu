@@ -584,7 +584,12 @@ def worker_busy_reason(exclude_kinds: tuple = ()) -> dict | None:
 def _evict_pipelines(reason: str) -> None:
     """Drop every cached pipeline off the card - the same four lines
     get_sd_pipeline runs before a model switch. release_vram_cache() is NOT
-    this: it returns allocator cache but leaves resident pipelines resident."""
+    this: it returns allocator cache but leaves resident pipelines resident.
+
+    Also stops the brain's llama-server child: whatever is being evicted for
+    is about to load, and the brain must never share the card (0013)."""
+    import brain_engine
+    brain_engine.stop(f"evicting for {reason}")
     if DEVICE == "cuda" and pipes:
         logger.info("Evicting %d pipeline(s) for %s: %s", len(pipes), reason,
                     sorted(pipes.keys()))
@@ -4519,9 +4524,16 @@ def _gateway_switch(model: str, pinned: bool) -> None:
         # of RAM is what an audio or training job may need.
         if not _qwen_server_alive(model):
             _qwen_server_stop(f"gateway switch to {model}")
-        _evict_pipelines(f"a model switch to {model}")
+        import brain_engine
+        if not (brain_engine.is_label(model)
+                and brain_engine.alive(model[len(brain_engine.LABEL_PREFIX):])):
+            _evict_pipelines(f"a model switch to {model}")  # stops any brain
         release_vram_cache("model switch")
-        if model_gateway.preloadable(model) and not unavailable_reason(model):
+        if brain_engine.is_label(model):
+            # Start it ahead of the job, timed for the popup's next estimate.
+            load_s = brain_engine.ensure(
+                model[len(brain_engine.LABEL_PREFIX):]) or None
+        elif model_gateway.preloadable(model) and not unavailable_reason(model):
             if get_sd_pipeline(model):
                 load_s = time.time() - started
         elif persistent_qwen(model) and not unavailable_reason(model):
@@ -5031,3 +5043,58 @@ def generate_sfx_task(self, items: list):
     logger.info("sfx batch of %d done in %.1fs (%d failed)", len(items),
                 time.time() - start, sum(1 for r in results if r.get("error")))
     return {"items": results}
+
+
+@celery_app.task(name="tasks.generate_text_task", bind=True)
+def generate_text_task(self, brain: str, messages: list, schema: dict | None = None,
+                       temperature: float = 0.7, max_tokens: int = 512,
+                       gen_id: str | None = None):
+    """One brain completion (decisions/0013), gated under "brain:<id>".
+
+    Closes its own ledger row, like generate_audio_task, so a caller that
+    stopped waiting still leaves a finished row on the Activity tab.
+    Returns the brain_engine.complete dict, or {error, error_kind}.
+    """
+    import brain_engine
+    import generations
+
+    blocked = _gpu_breaker_admit()
+    if blocked:
+        generations.fail(gen_id, blocked["error"])
+        return blocked
+    start = time.time()
+    try:
+        out = brain_engine.complete(brain, messages, schema=schema,
+                                    temperature=temperature, max_tokens=max_tokens)
+    except brain_engine.BrainError as e:
+        generations.fail(gen_id, str(e), duration_ms=(time.time() - start) * 1000)
+        return {"error": str(e), "error_kind": e.kind}
+    except Exception as e:
+        logger.error("brain %s failed: %s", brain, e, exc_info=True)
+        generations.fail(gen_id, str(e), duration_ms=(time.time() - start) * 1000)
+        if is_cuda_fault(e):
+            trip_gpu_breaker(e)
+            return {"error": str(e), "error_kind": "gpu_faulted",
+                    "retry_after_s": GPU_FAULT_COOLDOWN_S}
+        return {"error": str(e), "error_kind": "failed"}
+    if not generations.is_closed(gen_id):
+        generations.finish(
+            gen_id, duration_ms=(time.time() - start) * 1000,
+            params=_text_ledger_params(out, schema, temperature, max_tokens))
+    out["model"] = brain
+    return out
+
+
+# A reply is stored in the ledger, capped: the Activity tab shows what was
+# answered, but a runaway completion must not bloat the generations table.
+TEXT_LEDGER_CAP = int(os.environ.get("TEXT_LEDGER_CAP", "32768"))
+
+
+def _text_ledger_params(out: dict, schema, temperature, max_tokens) -> dict:
+    reply = out.get("text") or ""
+    return {"reply": reply[:TEXT_LEDGER_CAP],
+            "reply_truncated": len(reply) > TEXT_LEDGER_CAP,
+            "schema": schema, "temperature": temperature,
+            "max_tokens": max_tokens, "usage": out.get("usage"),
+            "timings": out.get("timings"),
+            "finish_reason": out.get("finish_reason")}

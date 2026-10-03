@@ -112,5 +112,5 @@ No brain lane may hold VRAM by default. The 12 GB card's fault history
 | lane | engine | model | decode tok/s | prefill (1.5k tok) | RAM peak | RAM left | VRAM | verdict s (cold / warm) | accuracy /12 | pass? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | text | Colibri | Qwen3.6-35B | | | | | | n/a | n/a | |
-| text | llama.cpp | Qwen3.6-35B GGUF | | | | | | n/a | n/a | control |
+| text | llama.cpp | Qwen3.6-35B-A3B UD-IQ4_XS, hybrid `--n-cpu-moe 24` (2026-10-01, [0013](0013-gated-brain.md)) | 18.1-18.8 | 10.6 s | page cache only (mmapped experts) | ~31.7 of 36 GB | ~8.3 GB (while active, gateway-exclusive) | n/a | n/a | **passes the text gates** - on the GPU via the gateway, not RAM-only as this lane assumed; see 0013 for why D4 does not apply |
 | judge | Colibri | GLM-5.3-Flash | | | | | | | | |

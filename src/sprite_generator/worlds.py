@@ -33,7 +33,6 @@ import logging
 import os
 import re
 
-import requests
 from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -46,10 +45,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 WORLDS_DIR = os.environ.get("WORLDS_DIR", "/app/images/worlds")
-LLM_URL = os.environ.get("LLM_URL", "http://llm-server:8080")
-
-# Short. The LLM is an improvement to a path that already works without it, so
-# a slow or absent model must cost a few seconds, never the request.
+# Short. The brain is an improvement to a path that already works without it,
+# so a slow or absent brain must cost a few seconds, never the request. Shorter
+# than a cold 35B load on purpose: a world spec that wins a cold card falls
+# back to rules, and the load carries on for the next caller (decisions/0013).
 LLM_TIMEOUT = float(os.environ.get("WORLD_LLM_TIMEOUT", "45"))
 
 SAFE_NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,58}[a-z0-9]$")
@@ -141,22 +140,6 @@ def _write_region(name: str, params: dict, plan_kwargs: dict, note: str) -> dict
     }
 
 
-def _llm_model() -> str | None:
-    """Which model to route to.
-
-    llama.cpp runs in ROUTER mode here (`--models-dir`), which means it serves
-    several models and picks by the request's `model` field. Omitting it is a
-    400, not a default - that is what made the first version of this always
-    report the LLM as unavailable while the server was healthy.
-    """
-    override = os.environ.get("WORLD_LLM_MODEL")
-    if override:
-        return override
-    r = requests.get(f"{LLM_URL}/v1/models", timeout=10)
-    data = r.json().get("data") or []
-    return data[0]["id"] if data else None
-
-
 def _parse_plan(blob: str):
     """Read a nested array of biome names out of almost-JSON.
 
@@ -233,39 +216,19 @@ def _llm_biome_plan(theme: str | None, count: int) -> tuple[list | None, str]:
         f"Reply with ONLY a JSON array of {count} arrays of biome names, "
         f'spelled exactly as above. Example: [["Meadow"],["Deep Forest","Mire"]]'
     )
+    import text as text_api
     try:
-        model = _llm_model()
-        if not model:
-            return None, ("no text model loaded in llama.cpp - biomes chosen "
-                          "deterministically instead")
-
-        # Two attempts, because the router loads models ON DEMAND: the first
-        # call after an idle period spends ~13s loading and answers with a body
-        # that is not the completion JSON. That is a cold start, not a failure,
-        # and retrying once turns it into a 0.4s success. `--sleep-idle-seconds
-        # 120` means any generation after two quiet minutes pays it.
-        text = None
-        for attempt in (1, 2):
-            r = requests.post(
-                f"{LLM_URL}/v1/chat/completions",
-                json={"model": model,
-                      "messages": [{"role": "user", "content": prompt}],
-                      "temperature": 0.7, "max_tokens": 400},
-                timeout=LLM_TIMEOUT)
-            if r.status_code != 200:
-                if attempt == 2:
-                    return None, (f"LLM unavailable (HTTP {r.status_code}) - "
-                                  f"biomes chosen deterministically instead")
-                continue
-            try:
-                text = r.json()["choices"][0]["message"]["content"]
-                break
-            except (ValueError, KeyError, IndexError):
-                if attempt == 2:
-                    return None, ("LLM answered with something that was not a "
-                                  "completion - fell back to rules")
-        if text is None:
-            return None, "LLM did not answer - fell back to rules"
+        # Through the gated brain (decisions/0013): refused at once while
+        # another model holds the card, which is a rule fallback, not an error.
+        try:
+            res = text_api.run_text(
+                prompt=prompt, temperature=0.7, max_tokens=400,
+                route="internal:worlds", wait_s=LLM_TIMEOUT,
+                caller={"principal_name": "worlds (internal)"})
+        except text_api.TextRefused as e:
+            return None, (f"brain unavailable ({e.reason}: {e.detail}) - "
+                          f"biomes chosen deterministically instead")
+        model, text = res.get("model"), res.get("text") or ""
         m = re.search(r"\[.*\]", text, re.S)
         if not m:
             return None, "LLM returned no array at all - fell back to rules"

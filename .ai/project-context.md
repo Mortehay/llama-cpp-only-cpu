@@ -695,7 +695,7 @@ Full reasoning and measurements in
 
 | role | model | size |
 |---|---|---|
-| text | `Qwen3-8B-Q8_0.gguf` via llama.cpp | 8.2 GB |
+| text (brain) | **2026-10-01:** `Qwen3.6-35B-A3B-UD-IQ4_XS` (default, hybrid GPU+RAM) and `Qwen3VL-8B-Instruct-Q4_K_M` (fast), llama-server children of the worker - [0013](decisions/0013-gated-brain.md). The `Qwen3-8B-Q8_0` once listed here was never on disk; `llm_engine` served `Qwen2.5-3B-Instruct-Q4_K_M` | 17.7 GB / 5.0 GB |
 | image gen | `stable-diffusion-xl-base-1.0` **+** one of three pixel-art LoRAs | 6.7 GB + 0.08-0.32 GB |
 | pose / step 2 | `All-In-One-Pixel-Model` + `control_v11p_sd15_openpose` | 5.4 GB |
 

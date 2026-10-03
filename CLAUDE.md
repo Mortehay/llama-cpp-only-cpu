@@ -27,6 +27,7 @@ with a Jinja/vanilla-JS UI, a React app under `frontend/`, and Postgres history.
 | Why both trained adapters failed | `.ai/decisions/0009` |
 | Bigger LLMs / Colibri; `llm_name` is the *image* model | `.ai/decisions/0011` |
 | Qwen-Image-2512 GGUF lane; the downloaded-GGUF verdicts | `.ai/decisions/0012` |
+| `/api/text` brain for something2; why `llm_engine` leaves the GPU | `.ai/decisions/0013`, `.ai/specs/something2-text/contract.md` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so
@@ -92,8 +93,15 @@ fragment of it.
   normal warm state (see above), so treat ~11.6 GB as worth investigating
   rather than as the healthy baseline.
   Check `(Get-Counter '\GPU Process Memory(*)\Dedicated Usage')` on Windows.
-- The Qwen3-8B GGUF and a diffusion pipeline **cannot both hold the card**.
-  `--sleep-idle-seconds 120` is what lets them share it.
+- **The brain is a gateway model, not a service** (0013, since 2026-10-01).
+  `brain_engine.py` runs llama-server as a child of the worker, label
+  `brain:<id>`; every switch away and every pipeline eviction stops it. Brain
+  + pipeline on the card at once is the wedge - so **never call llama-server
+  from a new place without going through `text.run_text`** (API process) or
+  `brain_engine.complete_in_job` (inside a worker job, evicts first). The
+  default 35B is hybrid (`--n-cpu-moe 24`, ~8.3 GB VRAM, experts in RAM);
+  `--n-cpu-moe 16` measured 0.3 GB of card left - do not "speed it up" there.
+  `llm_engine` is retired to the `legacy-llm` compose profile.
 - **A model gateway decides who gets the card** (`model_gateway.py`, spec
   `.ai/specs/model-gateway/`). A job for a non-active model is *deferred* — a
   Celery retry of the same task id every `MODEL_GATEWAY_RECHECK_S`, row text
@@ -141,12 +149,11 @@ fragment of it.
 - **A GGUF's `general.architecture` label is not evidence.** Four of the
   2026-09 downloads were mislabelled (`wan`, `qwen_image`, `pig`). Read the
   tensor prefixes and block count before wiring a file.
-- **Never put an image-model GGUF directly in `/models` or one folder below
-  it.** `llm_engine` (llama.cpp, `--models-dir /models`) lists every `.gguf`
-  there, and every folder directly holding one, as a *chat* model, and
-  `worlds._llm_model()` takes the first entry. Image GGUFs live two levels deep
-  in `/models/image-gguf/transformers/` (0012). The router scans only at
-  startup - restart `llm_engine` after moving files, then check `/v1/models`.
+- **Keep GGUFs two levels below `/models`** (`image-gguf/...`,
+  `brain-gguf/...`). The retired `llm_engine` router listed every `.gguf` one
+  level deep as a *chat* model; it only starts with `--profile legacy-llm` now,
+  but anyone reviving it gets that trap back. Brains are wired by explicit path
+  in `brain_engine.BRAINS`, never discovered.
 - **"no frame, no border, no card" in a POSITIVE prompt asks for a frame.** A
   CLIP text encoder has no negation operator, so each of those nouns lands in
   the conditioning. something2's entity prompts arrive carrying nine of them;

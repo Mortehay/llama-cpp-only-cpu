@@ -40,6 +40,48 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * The out-of-band way to get a first admin token (scripts/mint-key.py).
+ *
+ * Generate and Create key both need an admin token already, so a browser with
+ * none - new machine, cleared storage, revoked key - cannot mint its way in.
+ * That is deliberate (otherwise anyone on the LAN could mint admin); this is
+ * the documented way round it, shown here because it is easy to forget.
+ */
+const RECOVERY_CMD =
+  `docker exec sprite_generator python -c "import auth; ` +
+  `print(auth.create_key('browser', ['read','generate','admin'])['token'])"`
+
+function RecoveryHelp({ lockedOut }: { lockedOut: boolean }) {
+  return (
+    <div className={`note ${lockedOut ? 'warn' : 'info'}`} style={{ marginTop: 12 }}>
+      <div>
+        <strong>
+          {lockedOut
+            ? 'No token saved — Generate and Create key will fail with "Missing bearer token".'
+            : 'Lost your token?'}
+        </strong>{' '}
+        Both buttons need an admin token already, so the first one has to be minted
+        outside the browser:
+      </div>
+      <ol style={{ margin: '8px 0 8px 18px', padding: 0 }}>
+        <li>Open a WSL terminal (Docker runs inside WSL, not on Windows).</li>
+        <li>Run the command below. It prints one line starting with <code>sk_</code>.</li>
+        <li>Paste that into <strong>Bearer token</strong> above and click <strong>Save</strong>.</li>
+        <li>Mint keys for other services in <strong>API keys</strong> — without <code>admin</code>.</li>
+      </ol>
+      <div className="row tight" style={{ alignItems: 'center' }}>
+        <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+          <code>{RECOVERY_CMD}</code>
+        </div>
+        <div style={{ flex: '0 0 auto' }}>
+          <CopyButton value={RECOVERY_CMD} className="btn ghost sm" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** Copies `value`, and says so for two seconds. */
 function CopyButton({ value, className = 'btn ghost' }: { value: string; className?: string }) {
   const [state, setState] = useState<'idle' | 'ok' | 'fail'>('idle')
@@ -196,6 +238,8 @@ export default function Settings({ onModeChange }: { onModeChange?: () => void }
           <strong>API keys</strong> above and copy it from there. Generating does not
           revoke the old token; revoke it in the table above if you are replacing it.
         </div>
+
+        <RecoveryHelp lockedOut={!!mode.data?.enforced && stored === ''} />
       </div>
 
       <WarmPanel />

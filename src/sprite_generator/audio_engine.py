@@ -80,7 +80,9 @@ def _evict_pipelines() -> None:
 
     import torch
 
+    import brain_engine
     import tasks
+    brain_engine.stop("an audio model is loading")
     if tasks.DEVICE == "cuda" and tasks.pipes:
         logger.info("audio: evicting %d pipeline(s) before loading: %s",
                     len(tasks.pipes), sorted(tasks.pipes.keys()))

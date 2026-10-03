@@ -1111,6 +1111,39 @@ export interface AudioProposal {
   adjusted: string[]
 }
 
+/** A brain in `/api/text/models` (decisions/0013). */
+export interface Brain {
+  id: string
+  label: string
+  default: boolean
+  thinking: boolean
+  available: boolean
+}
+
+export interface TextBody {
+  prompt: string
+  system?: string
+  schema?: unknown
+  temperature?: number
+  max_tokens?: number
+  model?: string
+}
+
+export interface TextAnswer {
+  text: string
+  json?: unknown
+  model: string
+  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  timings?: { load_s?: number; generate_s?: number; decode_tok_s?: number }
+}
+
+export const textApi = {
+  models: () => request<{ data: Brain[] }>('/api/text/models'),
+  /** Blocks until answered. Busy is a 503/409 straight away, never a queue. */
+  complete: (body: TextBody) =>
+    request<TextAnswer>('/api/text', { method: 'POST', body: JSON.stringify(body) }),
+}
+
 export const audioApi = {
   styles: (kind?: string) =>
     request<AudioStyle[]>(`/api/audio/styles${kind ? `?kind=${kind}` : ''}`),

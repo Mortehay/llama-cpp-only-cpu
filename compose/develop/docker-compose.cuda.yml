@@ -80,7 +80,15 @@ services:
   #
   # --models-max 1 because two 8-9GB models resident is not survivable here,
   # regardless of how many are listed in models.txt.
+  #
+  # RETIRED ON THE GPU HOST 2026-10-01 (decisions/0013). "Sleep after 120 s"
+  # never stopped it loading NEXT to a pipeline - a map job's region naming
+  # woke it with SDXL still cached. The brain is now a llama-server child of
+  # the worker, gated like every other model (brain_engine.py). This service
+  # and the legacy collector that depends on it only start with
+  # `--profile legacy-llm`; nothing in sprite_generator calls it any more.
   llm-server:
+    profiles: ["legacy-llm"]
     image: ghcr.io/ggml-org/llama.cpp:full-cuda
     command: >
       --server --host 0.0.0.0 --port 8080
@@ -130,3 +138,8 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+
+  # Legacy (CLAUDE.md), and it depends_on llm-server: compose refuses a
+  # dependency on a service its profile has switched off, so it follows it.
+  collector:
+    profiles: ["legacy-llm"]

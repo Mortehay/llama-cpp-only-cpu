@@ -11,6 +11,7 @@ import Tiles from './tabs/Tiles'
 import Maps from './tabs/Maps'
 import Worlds from './tabs/Worlds'
 import Audio from './tabs/Audio'
+import Text from './tabs/Text'
 import Commands from './tabs/Commands'
 import Activity from './tabs/Activity'
 import ModelGateway from './components/ModelGateway'
@@ -26,6 +27,7 @@ const TABS = [
   { id: 'maps', label: 'Maps' },
   { id: 'worlds', label: 'Worlds' },
   { id: 'audio', label: 'Audio' },
+  { id: 'text', label: 'Text' },
   { id: 'training', label: 'Training' },
   { id: 'gallery', label: 'Gallery' },
   // "Activity", never "Actions": `actions.py` already means animation actions
@@ -116,6 +118,7 @@ export default function App() {
         {tab === 'maps' && <Maps />}
         {tab === 'worlds' && <Worlds />}
         {tab === 'audio' && <Audio />}
+        {tab === 'text' && <Text />}
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'activity' && <Activity />}

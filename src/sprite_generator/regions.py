@@ -35,14 +35,17 @@ import logging
 import os
 
 import numpy as np
-import requests
 
 import map_geometry
 
 logger = logging.getLogger(__name__)
 
-LLM_URL = os.environ.get("LLM_URL", "http://llm-server:8080")
-LLM_TIMEOUT = float(os.environ.get("REGION_LLM_TIMEOUT", "90"))
+# This runs INSIDE a map job, in the solo worker, so it cannot go through the
+# gateway's queue (a task waiting on a task deadlocks --pool=solo). It uses
+# brain_engine.complete_in_job instead: evict the image pipeline, run the brain,
+# stop it. The fast brain by default - naming places is light work, and the
+# 35B's RAM preflight would refuse whenever a parked Qwen-Image child is up.
+REGION_BRAIN = os.environ.get("REGION_BRAIN", "qwen3-vl-8b")
 
 # What a place can be. Each kind carries the two things placement needs: where
 # that sort of place belongs, and how much room it wants.
@@ -416,14 +419,6 @@ def _schema(terrain_names, kinds, count: int) -> dict:
     }
 
 
-def _model() -> str | None:
-    """Which model to route to. llama.cpp is in ROUTER mode, so a request with
-    no `model` is a 400 rather than a default - the same trap `worlds.py` hit."""
-    r = requests.get(f"{LLM_URL}/v1/models", timeout=10)
-    data = r.json().get("data") or []
-    return data[0]["id"] if data else None
-
-
 def propose(summary: dict, theme: str | None, count: int,
             seed: int = 0) -> tuple[list, list, str]:
     """Ask the model what the places are. Returns (regions, road pairs, note).
@@ -456,35 +451,16 @@ def propose(summary: dict, theme: str | None, count: int,
         f"connect them into one network rather than every place to every "
         f"other. Use the names you invented, spelled identically.")
 
+    import brain_engine
     try:
-        model = _model()
-        if not model:
+        res = brain_engine.complete_in_job(
+            REGION_BRAIN, [{"role": "user", "content": prompt}],
+            schema=_schema(terrain_names, kinds, count),
+            temperature=0.8, max_tokens=900, route="internal:regions")
+        if res.get("error"):
             return propose_rules(summary, count, seed), [], (
-                "no text model loaded in llama.cpp - places named by rule")
-
-        body = {"model": model, "temperature": 0.8, "max_tokens": 900,
-                "messages": [{"role": "user", "content": prompt}],
-                "response_format": {
-                    "type": "json_schema",
-                    "json_schema": {"name": "region_graph", "strict": True,
-                                    "schema": _schema(terrain_names, kinds, count)}}}
-
-        # Twice, because a cold model can return an empty first completion
-        # while it loads - the same behaviour `worlds.py` had to retry around.
-        for attempt in range(2):
-            r = requests.post(f"{LLM_URL}/v1/chat/completions", json=body,
-                              timeout=LLM_TIMEOUT)
-            if r.status_code != 200:
-                logger.warning("region LLM %s: %s", r.status_code, r.text[:200])
-                continue
-            content = ((r.json().get("choices") or [{}])[0]
-                       .get("message", {}).get("content") or "").strip()
-            if content:
-                break
-        else:
-            return propose_rules(summary, count, seed), [], (
-                "llama.cpp did not answer - places named by rule")
-
+                f"brain unavailable ({res['error']}) - places named by rule")
+        content = (res.get("text") or "").strip()
         data = json.loads(content)
     except Exception as e:
         logger.warning("region graph fell back to rules: %s", e)

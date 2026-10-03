@@ -53,3 +53,5 @@ bitsandbytes>=0.43.0
 # soundfile cannot. Both need libsndfile1 from the Dockerfile.
 soundfile>=0.12.1
 mutagen>=1.47.0
+# /api/text: meta-validates caller schemas and checks answers (text.py).
+jsonschema

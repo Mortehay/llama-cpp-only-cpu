@@ -141,6 +141,37 @@ else:
     print("ok   QWEN_PERSISTENT=0 turns the persistent path off")
 os.environ.pop("QWEN_PERSISTENT", None)
 
+# The brain (decisions/0013): its own label per brain, gated, sync, and a
+# switch to it is a real load. A brain asking while a UI-pinned image model
+# is warm must defer - the brain gets no special priority.
+import brain_engine as be  # noqa: E402
+B35, B8 = be.label("qwen3.6-35b-a3b"), be.label("qwen3-vl-8b")
+for want, args, kwargs in ((B8, (), {"brain": "qwen3-vl-8b"}),
+                           (B35, ("qwen3.6-35b-a3b",), {}),
+                           (be.label(be.default_brain()), (), {})):
+    got = g.model_of("tasks.generate_text_task", args, kwargs)
+    if got != want:
+        failures.append(f"model_of text task {args}{kwargs} -> {got}, want {want}")
+        print(f"FAIL model_of text task -> {got}, want {want}")
+ok = (all(lbl in g.FIXED_LABELS for lbl in (B35, B8))
+      and "tasks.generate_text_task" in g.SYNC_TASKS
+      and not g.preloadable(B8) and g.warmable(B8))
+if not ok:
+    failures.append("brain labels: FIXED_LABELS / SYNC_TASKS / preloadable / warmable")
+    print("FAIL brain labels not wired into FIXED_LABELS / SYNC_TASKS / warmable")
+else:
+    print("ok   brain labels fixed, sync, warmable, not preloadable")
+check("brain defers to a pinned, warm image model",
+      g.decide(B8, None, active(SDXL, pinned=True, idle_for=10), {}, NOW, IDLE),
+      "defer")
+check("brain takes an idle, unpinned card",
+      g.decide(B8, None, active(SDXL, idle_for=10), {}, NOW, IDLE), "switch")
+check("second brain request runs on the active brain",
+      g.decide(B8, None, active(B8), {}, NOW, IDLE), "run")
+check("image job defers while a brain job is running",
+      g.decide(SDXL, "t2", active(B8), {"t1": job(B8, running=True)}, NOW, IDLE),
+      "defer")
+
 # Static: every GATED name is a real task name in the source.
 src = os.path.dirname(g.__file__)
 declared = set()
