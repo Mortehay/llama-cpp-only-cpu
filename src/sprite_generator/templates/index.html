@@ -69,6 +69,14 @@
       See .ai/decisions/0005.
     -->
     <div class="card tab-content" id="tab-sheet">
+      <!--
+        Which model this tab runs. Filled from /api/action-catalog by
+        renderSheetEngine(), not written here: the editor and its quant are env
+        overrides, and the roster trap this repo keeps hitting is text in a
+        template that outlives the thing it describes.
+      -->
+      <div id="sheet-engine" style="color: var(--muted); font-size: 13px; margin-bottom: 14px;"></div>
+
       <label>Select Concept Image</label>
       <div class="core-grid" id="core-picker">
         <span style="color:var(--muted); font-size: 13px;">Loading cores...</span>

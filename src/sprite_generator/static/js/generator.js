@@ -560,6 +560,7 @@ async function loadActionCatalog() {
     if (!res.ok) return;
     actionCatalog = await res.json();
     renderActions();
+    renderSheetEngine();
     applyFrameLimit();
   } catch (e) {
     console.error('Could not load the action catalog:', e);
@@ -571,6 +572,35 @@ async function loadActionCatalog() {
 // Walk stays ticked by default because it was the previous hardcoded default;
 // everything else the library defines is offered unticked.
 const DEFAULT_ACTION = 'walk';
+
+
+// Name the model this tab will load. The sheet lane has no model dropdown on
+// purpose - the editor is fixed by the task, not chosen per request (ADR 0005)
+// - and the only mention of which model that is used to be an HTML comment.
+// Read from the catalog rather than written into the template because every
+// field is an env override; see jobs._sheet_engine.
+function renderSheetEngine() {
+  const el = document.getElementById('sheet-engine');
+  if (!el) return;
+  const e = (actionCatalog && actionCatalog.engine) || null;
+  if (!e) { el.innerText = ''; return; }
+  const bits = [`<strong>Editor:</strong> ${esc(e.label)}`];
+  if (e.transformer) bits.push(`<code>${esc(e.transformer)}</code>`);
+  if (e.steps) bits.push(`${e.steps} steps`);
+  let html = bits.join(' · ')
+    + '<br>Fixed for this lane, not a per-request choice.'
+    + (e.concept_note ? ' ' + esc(e.concept_note) : '');
+  (e.loras || []).forEach(l => {
+    html += `<br><code>${esc(l.repo)}</code> — ${esc(l.role)}`;
+  });
+  // Repo-level: a populated list is a real problem, an empty one is not a
+  // promise that the specific quant file is present.
+  if (e.missing && e.missing.length) {
+    html += `<br><span style="color:var(--danger);">Not in the local cache: `
+          + `${esc(e.missing.join(', '))} — fetch with <code>make provision</code>.</span>`;
+  }
+  el.innerHTML = html;
+}
 
 function renderActions() {
   const grid = document.getElementById('actions-grid');

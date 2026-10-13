@@ -471,9 +471,26 @@ export interface TrainingReadiness {
   min_new_images: number
 }
 
+export interface SheetEngine {
+  /** Fixed by the task, not chosen per request - there is no dropdown. */
+  fixed: boolean
+  label: string
+  transformer?: string
+  transformer_repo?: string
+  encoder_repo?: string
+  steps?: number
+  loras?: { repo: string; weight: string; role: string }[]
+  /** Repo ids not in the local cache. Repo-level, so empty is not a promise. */
+  missing?: string[]
+  concept_note?: string
+  /** Set instead of the detail when the API process could not read it. */
+  unreadable?: string
+}
+
 export interface ActionCatalog {
   actions: { id: string; label: string; max_frames: number }[]
   directions: { id: string; family: string }[]
+  engine?: SheetEngine
 }
 
 export interface RecentTask {

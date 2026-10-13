@@ -354,6 +354,68 @@ def cancel_job(job_id: str, authorization: str | None = Header(None)):
     return {"job_id": job_id, "status": "cancelled"}
 
 
+def _sheet_engine() -> dict:
+    """Which model the conveyor will run, for the UI to name it.
+
+    The sheet tab has no model dropdown and should not get one - the editor is
+    fixed by the task, not chosen per request (model_gateway.QWEN_EDIT, ADR
+    0005). The cost of that was a tab that said nothing at all about what it
+    was about to spend an hour of GPU time on: the only mention lived in an
+    HTML comment, where no user has ever read it.
+
+    Served rather than written into the page for the same reason the core
+    roster is: every field here is an env override (QWEN_EDIT_GGUF_FILE,
+    QWEN_LIGHTNING_STEPS and friends), so text hardcoded in the tab would be
+    wrong on the first machine that sets one.
+
+    `qwen_edit` is imported HERE, not at module scope, on purpose. This module
+    is otherwise stdlib-only so the API process can consult the pose library
+    without the torch import chain - and qwen_edit imports torch. That is
+    already paid for in practice (main.py imports tasks.py, which imports torch
+    and calls torch.cuda.is_available() at module scope in this same process),
+    and a failure here degrades to "unknown" instead of taking the sheet tab
+    down. If this module ever has to stay genuinely torch-free, move those
+    constants to a dependency-free module and import them from both sides - do
+    NOT copy their defaults here, which is the drift core_models.py exists to
+    prevent.
+    """
+    try:
+        import core_models
+        import qwen_edit as qe
+    except Exception as e:
+        logger.warning("could not read the sheet engine config: %s", e)
+        return {"fixed": True, "label": "Qwen-Image-Edit (GGUF)",
+                "unreadable": "could not be read in this process"}
+
+    # Repo-level, which is all core_models.is_cached can answer: a cached repo
+    # whose snapshot lacks THIS quant still reports present. So the result is
+    # reported as "missing" when non-empty and claims no readiness when it is
+    # empty - a wrong green light is worse than none.
+    repos = [qe.REPO, qe.CONFIG_REPO, qe.GGUF_REPO,
+             qe.ANGLES_LORA, qe.LIGHTNING_LORA]
+    return {
+        # Fixed by the task, so there is nothing for the UI to offer.
+        "fixed": True,
+        "label": "Qwen-Image-Edit-2511 (GGUF)",
+        "transformer": qe.GGUF_FILE,
+        "transformer_repo": qe.GGUF_REPO,
+        "encoder_repo": qe.REPO,
+        "steps": qe.LIGHTNING_STEPS,
+        "loras": [
+            {"repo": qe.ANGLES_LORA, "weight": qe.ANGLES_WEIGHT,
+             "role": "8 azimuths - the camera, and what pins framing"},
+            {"repo": qe.LIGHTNING_LORA, "weight": qe.LIGHTNING_WEIGHT,
+             "role": (f"step distillation - {qe.LIGHTNING_STEPS} steps "
+                      f"at scale {qe.LIGHTNING_SCALE}")},
+        ],
+        "missing": [r for r in repos if not core_models.is_cached(r)],
+        # Step 1 IS a choice, and a different model. Named so this tab cannot
+        # be read as "the model the whole app uses".
+        "concept_note": ("The concept image comes from the Entity tab, which "
+                         "has its own model roster."),
+    }
+
+
 @router.get("/api/action-catalog")
 def action_catalog():
     """What the pose library can build, for the UI to constrain its inputs.
@@ -377,6 +439,9 @@ def action_catalog():
         # Empty directions is a valid request, not an error. Named here so the
         # UI can say what it will build rather than guessing.
         "default_direction": "s",
+        # The model the sheet lane runs. Not a choice, which is exactly why
+        # it has to be stated somewhere a user can see it.
+        "engine": _sheet_engine(),
     }
 
 

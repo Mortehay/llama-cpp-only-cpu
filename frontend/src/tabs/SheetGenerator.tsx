@@ -79,6 +79,10 @@ export default function SheetGenerator() {
     if (frames > ceiling) setFrames(ceiling)
   }, [ceiling, frames])
 
+  // The fixed editor for this lane, served by /api/action-catalog so the tab
+  // names what the worker will actually load rather than a hardcoded string.
+  const engine = catalog.data?.engine
+
   const cells = actions.length * Math.max(directions.length, 1) * frames
   const minutes = cells ? Math.round((cells * SECONDS_PER_CELL + LOAD_OVERHEAD_S) / 60) : 0
 
@@ -152,6 +156,62 @@ export default function SheetGenerator() {
           Queued, not synchronous — a full character is hours of GPU time. You get a job
           id immediately and can close this page; the job survives it.
         </p>
+
+        {/* Name the model. The sheet lane deliberately has no model picker -
+            the editor is fixed by the task (ADR 0005) - and the consequence
+            was a tab that said nothing about what it was about to spend an
+            hour of GPU time on, while the Entity tab's dropdown invited the
+            assumption that its model applies here too. It does not. */}
+        {engine && (
+          <div className="note info" style={{ marginBottom: 12 }}>
+            <strong>Editor:</strong> {engine.label}
+            {engine.transformer && (
+              <>
+                {' · '}
+                <code>{engine.transformer}</code>
+              </>
+            )}
+            {engine.steps ? ` · ${engine.steps} steps` : ''}
+            <div className="muted" style={{ marginTop: 6 }}>
+              Fixed for this lane, not a per-request choice.
+              {engine.concept_note ? ` ${engine.concept_note}` : ''}
+            </div>
+            {!!engine.loras?.length && (
+              <details style={{ marginTop: 6 }}>
+                <summary className="muted" style={{ cursor: 'pointer' }}>
+                  Adapters and encoder
+                </summary>
+                <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>
+                  {engine.loras.map((l) => (
+                    <li key={l.repo} className="muted">
+                      <code>{l.repo}</code> — {l.role}
+                    </li>
+                  ))}
+                  {engine.encoder_repo && (
+                    <li className="muted">
+                      <code>{engine.encoder_repo}</code> — NF4 text encoder and VAE,
+                      loaded and freed in its own pass
+                    </li>
+                  )}
+                </ul>
+              </details>
+            )}
+            {engine.unreadable && (
+              <div className="muted" style={{ marginTop: 6 }}>
+                Details {engine.unreadable}.
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Repo-level, so a populated list is a real problem but an empty one
+            is not a promise that every quant file is present. */}
+        {!!engine?.missing?.length && (
+          <div className="note err" style={{ marginBottom: 12 }}>
+            Not in the local cache: {engine.missing.join(', ')}. The job will fail
+            in its first model stage — fetch them with <code>make provision</code>.
+          </div>
+        )}
 
         {error && <div className="note err">{error}</div>}
 
