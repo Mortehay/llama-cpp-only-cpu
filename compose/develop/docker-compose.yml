@@ -36,17 +36,32 @@ services:
       - HF_HUB_CACHE=/models
       # NOT offline: this is the one container whose job is to download.
       - HF_HUB_OFFLINE=0
-    # Idle only — do NOT download on startup.
+      # The `model_downloads` queue the daemon consumes. Same URL the API and
+      # worker use; without it the daemon idles instead of failing, so a stack
+      # with no database still starts.
+      - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+    # The background download lane: the ONE consumer of `model_downloads`.
     #
-    # `make provision` runs the fetch as a one-off `docker compose run --rm`,
-    # so progress is visible interactively. Having the service ALSO download
-    # meant two containers hit the same /models cache at once and deadlocked on
-    # HuggingFace's file locks:
+    # It used to `tail -f /dev/null`, because having the service download on
+    # startup put two containers on the same /models cache and deadlocked them
+    # on HuggingFace's per-file locks:
     #   Still waiting to acquire lock on /models/.cache/huggingface/download/...
-    # That is also why provisioning is not wired into `make up` — see
-    # .ai/decisions/0014 D6.
-    # This container stays up purely so `make download` has something to exec into.
-    command: ["-c", "tail -f /dev/null"]
+    # That hazard has not gone away — it is now handled rather than avoided.
+    # This loop fetches only rows the UI queued, one at a time, and every fetch
+    # (here AND in `make provision`, which is a separate container) is taken
+    # under the advisory lock at /models/.provision.lock. See
+    # models_manifest.provision_lock and .ai/decisions/0014.
+    #
+    # Still NOT wired into `make up`: starting the stack must not block on tens
+    # of GB. `make up` only warns that weights are missing.
+    #
+    # The container also stays up so `make download` has something to exec into.
+    # `-c` because the image's ENTRYPOINT is /bin/sh (which `make models` also
+    # relies on). `exec` so the daemon is PID 1 and gets the stop signal.
+    command: ["-c", "exec python3 /app/scripts/provision-daemon.py"]
+    depends_on:
+      db:
+        condition: service_healthy
 
   # 2. Multi-Model LLM Engine
   llm-server:
@@ -194,8 +209,25 @@ services:
       - ${AUDIO_DIR:-../../audio}:/app/audio
       # Operator tools (API verification, fetch, acceptance checks). Read-only
       # and separate from /app: these are run via `docker exec` or
-      # `docker compose run`, not imported by the service.
+      # `docker compose run`.
+      #
+      # ONE EXCEPTION, added 2026-10-13: `models_status.py` imports
+      # `scripts/models_manifest.py` for the manifest parse and the "is this
+      # model present" test. Deliberately imported rather than reimplemented -
+      # that test is subtle (a bare cache directory is what an interrupted
+      # download leaves behind) and a second copy of it is exactly the drift
+      # `make test-models-manifest` exists to catch. SCRIPTS_DIR overrides the
+      # path.
       - ../../scripts:/app/scripts:ro
+      # The manifest itself, so the API can report declared-vs-present without
+      # shelling into the downloader. Read-only: the API never writes it.
+      #
+      # NOT under /app. /app is itself a bind mount of src/sprite_generator, so
+      # mounting a file at /app/models.toml made Docker create the mount point
+      # inside the SOURCE TREE - a 0-byte src/sprite_generator/models.toml
+      # appeared in git status. Anything mounted into a path that lives inside
+      # another bind mount does that.
+      - ./downloader/models.toml:/etc/sprite/models.toml:ro
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}

@@ -33,7 +33,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from models_manifest import (  # noqa: E402
-    cache_root, have, load, select, target_path)
+    CacheBusy, cache_root, have, load, provision_lock, select)
+from provision_fetch import fetch_all, hub_size, resolve_files  # noqa: E402
 
 DEFAULT_MANIFEST = "/usr/local/bin/models.toml"
 TIERS = ("required", "optional", "all")
@@ -58,94 +59,17 @@ def gb(n: float | int | None) -> str:
     return "     ?" if not n else f"{n / 1024 ** 3:7.2f}G"
 
 
-# --- fetching -----------------------------------------------------------
+def _report(msg: str) -> None:
+    """Reporter handed to provision_fetch.fetch_all.
 
-def fetch_cache(entry: dict, root: str, token: str | None) -> None:
-    from huggingface_hub import snapshot_download
-    snapshot_download(
-        repo_id=entry["repo"],
-        cache_dir=root,
-        allow_patterns=entry.get("allow") or None,
-        ignore_patterns=entry.get("ignore") or None,
-        token=token,
-    )
-
-
-def fetch_file(entry: dict, root: str, token: str | None) -> None:
-    """A single file placed at `dest/<as or file>`, as a REAL file.
-
-    `local_dir=`, not `cache_dir=`. With cache_dir the file lands in the HF
-    cache and has to be copied out, which costs the size TWICE on the way -
-    34 GB of peak disk for the 17 GB brain, on a host with ~60 GB free. With
-    local_dir there is one copy and no blob store.
-
-    These are also not HF-cache models: nothing resolves them by repo id, only
-    by the exact path in brain_engine.BRAINS or core_models.GGUF_DIR.
+    Its per-entry header ("[2/5] name - repo") gets the banner treatment that
+    separated entries in the output before the fetch loop moved out of this
+    file; everything else is a plain line.
     """
-    from huggingface_hub import hf_hub_download
-    dest = os.path.join(root, entry.get("dest", ""))
-    os.makedirs(dest, exist_ok=True)
-    src = hf_hub_download(repo_id=entry["repo"], filename=entry["file"],
-                          local_dir=dest, token=token)
-    final = target_path(root, entry)
-    if os.path.abspath(src) != os.path.abspath(final):
-        # `as`: the Hub's filename is not the one the code looks for. Renamed
-        # rather than copied - a second 17 GB would defeat the point.
-        os.replace(src, final)
-
-
-def fetch_tree(entry: dict, root: str, token: str | None) -> None:
-    from huggingface_hub import snapshot_download
-    dest = os.path.join(root, entry["dest"])
-    os.makedirs(dest, exist_ok=True)
-    snapshot_download(
-        repo_id=entry["repo"],
-        local_dir=dest,
-        allow_patterns=entry.get("allow") or None,
-        ignore_patterns=entry.get("ignore") or None,
-        token=token,
-    )
-
-
-def hub_size(entry: dict, token: str | None) -> int | None:
-    """Authoritative size for an hf-file, straight from the Hub."""
-    try:
-        from huggingface_hub import get_hf_file_metadata, hf_hub_url
-        url = hf_hub_url(repo_id=entry["repo"], filename=entry["file"])
-        return get_hf_file_metadata(url, token=token).size
-    except Exception:
-        return None
-
-
-def resolve_files(entry: dict, token: str | None) -> tuple[list[tuple[str, int]], str | None]:
-    """What a repo entry would ACTUALLY fetch, and how big, from the Hub.
-
-    Applies this entry's allow/ignore through `filter_repo_objects` - the same
-    function snapshot_download uses - against the repo's real file list. So
-    this answers "did my globs do what I meant" without downloading anything,
-    which is the only cheap way to check a filter whose failure mode is a
-    clean download that dies at load time.
-
-    Also the only honest source of size for an hf-cache entry: `du` on a
-    models--* directory under-reports badly, because snapshots are symlinks
-    into a shared blob store.
-
-    -> ([(filename, bytes)], error message or None)
-    """
-    try:
-        from huggingface_hub import HfApi
-        from huggingface_hub.utils import filter_repo_objects
-        info = HfApi().model_info(entry["repo"], files_metadata=True, token=token)
-        sibs = list(info.siblings or [])
-        kept = list(filter_repo_objects(
-            sibs,
-            allow_patterns=entry.get("allow") or None,
-            ignore_patterns=entry.get("ignore") or None,
-            key=lambda s: s.rfilename,
-        ))
-        return [(s.rfilename, s.size or 0) for s in kept], None
-    except Exception as e:  # gated-without-terms, network, renamed repo
-        return [], f"{type(e).__name__}: {str(e)[:120]}"
+    if msg.startswith("[") and "] " in msg and "/" in msg.split("]")[0]:
+        rule(msg)
+    else:
+        say(msg)
 
 
 # --- main ---------------------------------------------------------------
@@ -285,28 +209,24 @@ def main() -> int:
             pass
 
     # --- fetch ----------------------------------------------------------
-    # One failure must not strand the rest: a 401 on the one gated repo should
-    # still leave a machine with every other weight on disk.
-    failed = []
-    for i, m in enumerate(todo, 1):
-        rule(f"[{i}/{len(todo)}] {m['name']} - {m.get('repo', '')}")
-        if m.get("provenance") == "substitute":
-            say("NOTE: not the exact file this project was benched against; "
-                "see `notes` in the manifest.")
-        try:
-            kind = m["kind"]
-            if kind == "hf-cache":
-                fetch_cache(m, root, token)
-            elif kind == "hf-file":
-                fetch_file(m, root, token)
-            elif kind == "checkpoint-tree":
-                fetch_tree(m, root, token)
-            say(f"[OK] {m['name']}")
-        except Exception as e:  # noqa: BLE001 - report and continue
-            failed.append((m["name"], e))
-            say(f"[FAILED] {m['name']}: {type(e).__name__}: {e}")
-            if m.get("gated"):
-                say("         gated repo - have you accepted its terms on the Hub?")
+    # Under the shared cache lock for the WHOLE run, not per entry: the
+    # background daemon (scripts/provision-daemon.py) writes the same cache,
+    # and two writers deadlock on huggingface_hub's per-file locks. Taking it
+    # once also means an interleaved daemon download cannot land between two
+    # of these entries and make "11 present, 2 to fetch" a lie mid-run.
+    #
+    # Waits rather than failing: a CLI run that loses a race to a UI-queued
+    # download should queue behind it, not abort. The daemon is the one that
+    # gives up quickly, because it can simply try the row again.
+    try:
+        with provision_lock(root, holder="provision-models (cli)",
+                            timeout_s=float(os.environ.get(
+                                "PROVISION_LOCK_WAIT_S", "900"))):
+            failed = fetch_all(todo, root, token, say=_report)
+    except CacheBusy as e:
+        say(f"\n{e}")
+        say("Another provisioning run or a UI-queued download holds the cache.")
+        return 1
 
     rule("RESULT")
     say(f"  fetched {len(todo) - len(failed)} of {len(todo)}")

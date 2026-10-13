@@ -199,6 +199,50 @@ empty `/models`.
 `build` also ran `docker compose build` twice - once without `--env-file` -
 and that duplicate went with it.
 
+### D6a. Background downloads: the downloader container consumes a queue
+
+Added 2026-10-13, at the owner's request: queue a model from the UI and have it
+fetch without blocking anything.
+
+**Not Celery.** `sprite-worker` runs `--concurrency=1 --pool=solo` on the
+default queue, so one task at a time. A 16 GB download submitted there would
+hold that single slot and block **every** generation until it finished. A
+dedicated Celery worker on `-Q downloads` was the alternative and was rejected:
+`tasks.py` imports torch at module scope, so it would need a separate
+torch-free app plus a second service, for the same guarantee a poll loop gives.
+
+**Not `jobs`.** That table is sprite-shaped - `sheet_path`, `atlas_path`,
+`stage`, a `spec` of actions and cell sizes. `.ai/domain.md` already records
+that "task" means four things here and what the confusion cost; putting weights
+in `jobs` would make "job" mean a fifth, in the table the queue panel reads. So
+`model_downloads` (migration 020), purpose-shaped and small.
+
+**The `downloader` service is the single consumer.** It stopped idling on
+`tail -f /dev/null` and now runs `scripts/provision-daemon.py`. One consumer
+serialises itself, which is what the HF file-lock hazard demands.
+
+**But one consumer is not enough**, because `make provision` is a *separate
+container* that knows nothing about the daemon. Both now take an advisory
+`flock` at `/models/.provision.lock`
+(`models_manifest.provision_lock`): the CLI holds it across a whole tier so its
+plan cannot be invalidated mid-run, the daemon per entry so a long queue cannot
+starve a CLI run. flock, not a timestamped lock file, so the lock dies with the
+process and a killed container strands nothing.
+
+Three further guards, each for a specific failure:
+
+- **A partial unique index** on `(entry) WHERE status IN ('queued','running')`.
+  The double-click is the obvious way to get two writers on one cache; it now
+  returns 409.
+- **A running download is not cancellable.** Interrupting it leaves
+  `.incomplete` blobs, which the presence check reads as *absent*, so the entry
+  would silently restart from scratch instead of resuming. Only `queued` rows
+  cancel.
+- **Rows left `running` by a dead container are re-queued at startup**, which
+  is safe for the same reason: the partial blobs resume.
+
+`make up` still does not provision. It warns (D6).
+
 ### D7. The `sdxl-turbo` defaults are repointed at `default_model()`
 
 Five sites: `generate_sheet`'s `Form` default, `main.py`'s retry fallback,
@@ -318,6 +362,11 @@ in `[[dead]]` so the drift test does not reopen the question.
 | `stable-audio-open` gating | resolves with the configured `HF_TOKEN`, so its terms are accepted for this account |
 | `make test-model-gateway` | all checks pass, including `model_of tasks.generate_core_task: sdxl+nerijs` - D7's gateway half |
 | Drift test, negative control | a bogus repo planted in a `.sh` is caught and named |
+| `GET /api/models/status` | 200; 24/24 declared present, totals **56.37 / 103.0 GB** matching the audit, active model from the gateway, brains at 2060 and 31 calls |
+| Brain stats against 0013's own figures | 35B 20.5 tok/s avg / 34.3 s cold load, VL-8B 51.0 tok/s / 15.1 s - consistent with 0013's measurements, from 2,079 ledger rows that already carried `usage` |
+| The download lane, end to end | deleted `pixel-art-slider` (optional, 41 MiB), queued it over HTTP, the daemon claimed → fetched → marked done, and status returned to 24/24 |
+| Queue validation | 404 unknown entry, 400 `local`, 400 `fetch=self`, 409 already present, 409 double-click (partial unique index), 409 cancel-while-running |
+| The cache lock | second holder refused while the first holds it, acquired again after release |
 | Fresh `.env` from `.env.example` | `docker compose config` resolves clean, no warnings; the `scripts` mount the provisioner needs is present, downloader gets `HF_HUB_OFFLINE=0` while the services get `1` |
 | Both brain GGUFs, by tensor evidence (`scripts/gguf-head.py`) | 35B: `qwen35moe`, 40 blocks, 256 experts / 8 used - matches `--n-cpu-moe 24`'s 40-layer MoE. VL-8B: `qwen3vl`, 36 blocks. Independent of the byte-size match |
 | The three subtractive filters, **load-tested offline** from a directory holding only the filtered files | 4/4 pass: CLIP tokenizer; SD1.5 ControlNet (361M params); All-In-One pipeline (unet 860M, all components); `StableDiffusionControlNetImg2ImgPipeline` over both - the real step-2 shape. 5.4 GB vs ~17.5 GB unfiltered |

@@ -633,6 +633,7 @@ Notes:
 | `make provision tier=all` | …including every optional feature (103 GB total; required alone is 56.4 GB) |
 | `make provision dry=1` | Plan only: what is missing, and how big, from the Hub |
 | `make test-models-manifest` | Fail if the code references a model nothing declares |
+| *(no target)* | Models can also be queued over HTTP — `POST /api/models/download` — and the `downloader` container fetches them in the background, one at a time. `GET /api/models/status` reports declared / on disk / in use plus per-brain token and speed statistics |
 | `make recreate` | Force-recreate the sprite services (fixes stale container DNS) |
 | `make rebuild-clean` | Full no-cache rebuild |
 | `make down` / `make stop` | Stop the stack |

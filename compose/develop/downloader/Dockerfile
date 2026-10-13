@@ -3,8 +3,13 @@ FROM alpine:latest
 # Install system dependencies
 RUN apk add --no-cache curl python3 py3-pip
 
-# Install huggingface_hub globally
-RUN pip install huggingface_hub --break-system-packages --no-cache-dir
+# huggingface_hub for the fetching; psycopg2 for the `model_downloads` queue
+# that scripts/provision-daemon.py consumes. psycopg2-BINARY specifically:
+# building psycopg2 from source on Alpine needs gcc, musl-dev and
+# postgresql-dev, which is a compiler toolchain in an image whose whole job is
+# to download files.
+RUN pip install huggingface_hub psycopg2-binary \
+        --break-system-packages --no-cache-dir
 
 # Ensure the binary path is available
 ENV PATH="$PATH:/usr/bin:/root/.local/bin"

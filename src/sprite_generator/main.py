@@ -90,6 +90,13 @@ app.include_router(audio_router)
 from text import router as text_router
 app.include_router(text_router)
 
+# What models exist, which are on disk, which holds the card, and how they
+# perform - plus the queue the Models tab uses to ask for a download. Reads
+# models.toml, the gateway and the generations ledger; never downloads
+# anything itself (decisions/0014).
+from models_status import router as models_status_router
+app.include_router(models_status_router)
+
 # Reference examples and the style profiles measured from them. A tile upload
 # is how the camera angle stops being a guess.
 from references import router as references_router

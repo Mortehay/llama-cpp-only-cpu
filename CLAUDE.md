@@ -235,6 +235,21 @@ fragment of it.
   Qwen2.5-3B-Instruct-Q4_K_M.gguf already present"* while fetching none of the
   56.4 GB that matters. Removed 2026-10-13; only `make sync-models` calls it
   now. **If you see that line again, something re-added the step.**
+- **The Models tab is where weights are seen and queued**
+  (`frontend/src/tabs/Models.tsx`, `GET /api/models/status`). Brains, image
+  models and audio are three separate tables **on purpose** — tokens exist
+  only for brains, and audio rows record no model at all. Its chart palette
+  was validated against the dark surface, not picked; the day/token charts are
+  deliberately two charts because the measures sit 124x apart. Details in
+  `.ai/specs/model-provisioning/`.
+- **The `downloader` container is no longer idle — it is the background
+  download lane.** `scripts/provision-daemon.py` is the **single** consumer of
+  `model_downloads` (migration 020), fed by `POST /api/models/download`. Never
+  add a second writer to `/models`: both it and `make provision` take
+  `flock(/models/.provision.lock)`, and that lock is the only thing standing
+  between you and the HF file-lock deadlock. A download is **not** a Celery
+  task on purpose — `sprite-worker` is `--pool=solo`, so one would block every
+  generation for its whole duration.
 - **`make up` warns instead of downloading.** A `models-warn` step compares
   `models.toml` against `MODELS_DIR` — host-only, no network — and prints the
   missing *required* entries plus "Run: make provision". Silent when complete,

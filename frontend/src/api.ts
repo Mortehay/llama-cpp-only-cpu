@@ -26,6 +26,90 @@ export function setToken(token: string) {
   }
 }
 
+// --- models -------------------------------------------------------------
+// `llm_name` is the IMAGE model and a *brain* is the text model that plans and
+// never draws (.ai/domain.md). They are separate shapes here for that reason:
+// tokens and tok/s exist only for brains, and one table with blank columns
+// would re-create exactly the confusion domain.md records.
+
+export type ModelEntry = {
+  name: string
+  kind: 'hf-cache' | 'hf-file' | 'checkpoint-tree' | 'local'
+  tier: 'required' | 'optional'
+  repo: string | null
+  dest: string | null
+  gated: boolean
+  fetch_self: boolean
+  size_bytes: number | null
+  why: string | null
+  skipping: string | null
+  provenance: string | null
+  present: boolean
+  downloadable: boolean
+}
+
+export type BrainStats = {
+  calls: number
+  failures: number
+  out_tokens: number | null
+  total_tokens: number | null
+  avg_tok_s: number | null
+  p50_generate_s: number | null
+  p95_generate_s: number | null
+  avg_cold_load_s: number | null
+  last_used: string | null
+}
+
+export type ImageStats = {
+  calls: number
+  failures: number
+  cache_hits: number
+  avg_ms: number | null
+  p50_ms: number | null
+  p95_ms: number | null
+  last_used: string | null
+}
+
+export type ModelsStatus = {
+  manifest_loaded: boolean
+  manifest_path: string
+  models_dir: string
+  declared: ModelEntry[]
+  dead: string[]
+  missing_required: string[]
+  totals: {
+    declared: number
+    present: number
+    required_gb: number
+    all_gb: number
+    missing_gb: number
+  }
+  gateway: Record<string, unknown>
+  active: string | null
+  roster: { value: string; label: string; available: boolean }[]
+  brains: Record<string, BrainStats>
+  images: Record<string, ImageStats>
+  audio: { kind: string; calls: number; failures: number; avg_ms: number | null }[]
+  audio_note: string
+  timeseries: { day: string; kind: string; calls: number; tokens: number }[]
+  days: number
+}
+
+export type ModelDownload = {
+  id: string
+  entry: string
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
+  bytes_total: number | null
+  bytes_done: number
+  /** Clamped server-side; the raw bytes can exceed the total. null = unknown. */
+  progress_pct: number | null
+  error: string | null
+  requested_by: string
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
 /** An error that carries the server's own explanation, not just a status. */
 export class ApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -992,6 +1076,24 @@ export const api = {
   resolveMap: (jobId: string) =>
     request<{ props_job: string; retrying: string[]; attempt: number }>(
       `/api/maps/${jobId}/resolve`, { method: 'POST' }),
+  // --- models -----------------------------------------------------------
+  // Declared vs on disk vs in use, plus how each one actually performs. The
+  // statistics are not new instrumentation: every brain call already stored
+  // its `usage` and `timings` in the generations ledger, this just reads them.
+  modelsStatus: (days = 30) =>
+    request<ModelsStatus>(`/api/models/status?days=${days}`),
+  modelDownloads: (limit = 50) =>
+    request<{ downloads: ModelDownload[] }>(`/api/models/downloads?limit=${limit}`),
+  // Queues a fetch for the downloader container; it does NOT download here.
+  // One writer per /models cache - see .ai/decisions/0014.
+  queueModelDownload: (entry: string) =>
+    request<{ id: string; entry: string; status: string; bytes_total: number | null }>(
+      '/api/models/download',
+      { method: 'POST', body: JSON.stringify({ entry }) }),
+  cancelModelDownload: (id: string) =>
+    request<{ id: string; status: string }>(
+      `/api/models/downloads/${id}/cancel`, { method: 'POST' }),
+
   actionCatalog: () => request<ActionCatalog>('/api/action-catalog'),
   computeInfo: () => request<Record<string, unknown>>('/api/compute-info'),
 

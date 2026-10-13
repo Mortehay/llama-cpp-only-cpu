@@ -118,6 +118,75 @@ def have(root: str, entry: dict) -> bool:
     return False
 
 
+class CacheBusy(RuntimeError):
+    """Another process is already writing this /models cache."""
+
+
+def provision_lock(root: str, holder: str, timeout_s: float = 0.0):
+    """Exclusive lock over one /models cache, shared by every writer.
+
+    WHY: huggingface_hub takes per-file locks, and two processes downloading
+    into the same cache deadlocked on them - "Still waiting to acquire lock on
+    /models/.cache/huggingface/download/..." - which is why the downloader
+    service idles instead of fetching on startup. The background daemon is a
+    single consumer and so serialises itself, but `make provision` runs as its
+    own container and knows nothing about it. The lock is what makes those two
+    paths safe together, so BOTH take it.
+
+    A file in the cache directory rather than a Redis key, because the cache
+    is the shared thing: any container that can write the models dir can see
+    it, including a one-off `docker compose run`, and it cannot drift out of
+    sync with the resource it protects.
+
+    Uses flock, so the lock dies with the process. A container killed mid
+    download therefore does not strand it - which matters, because the
+    alternative (a stale lock file holding a timestamp) would need an
+    expiry guess, and guessing wrong either blocks forever or lets two
+    writers in.
+
+    Returns a context manager. Raises CacheBusy rather than waiting, unless
+    `timeout_s` is given.
+    """
+    import contextlib
+    import fcntl
+    import time as _time
+
+    @contextlib.contextmanager
+    def _cm():
+        path = os.path.join(root, ".provision.lock")
+        os.makedirs(root, exist_ok=True)
+        fh = open(path, "a+")
+        try:
+            deadline = _time.monotonic() + max(0.0, timeout_s)
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if _time.monotonic() >= deadline:
+                        fh.seek(0)
+                        who = (fh.read() or "").strip() or "another process"
+                        raise CacheBusy(
+                            f"{root} is being written by {who}; "
+                            f"wait for it rather than running two writers")
+                    _time.sleep(0.5)
+            fh.seek(0)
+            fh.truncate()
+            fh.write(f"{holder} pid={os.getpid()}\n")
+            fh.flush()
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                fh.truncate()
+                fh.flush()
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    return _cm()
+
+
 def select(models: list[dict], tier: str, only: set[str]) -> list[dict]:
     if only:
         picked = [m for m in models if m.get("name") in only]

@@ -18,6 +18,41 @@ and is not part of this contract.
 | `scripts/check-models-manifest.py` | Drift test. Host-only, no containers, no network |
 | `scripts/list-models.sh` | Reports all four answers side by side |
 | `scripts/gguf-head.py` | What model is this GGUF *really*: header, KV pairs, tensor index. Takes a local path or a URL (4-128 MB Range request), so a candidate quant can be identified before it is fetched |
+| `scripts/provision_fetch.py` | The fetching itself, one function per kind, shared by the CLI and the daemon. Reporting is injected; locking is the caller's job |
+| `scripts/provision-daemon.py` | The `downloader` service's command. Single consumer of `model_downloads` |
+| `src/sprite_generator/models_status.py` | `GET /api/models/status`, and the download queue the UI posts to |
+
+## The background download lane
+
+    POST   /api/models/download              {"entry": "<models.toml name>"}
+    GET    /api/models/downloads
+    POST   /api/models/downloads/{id}/cancel
+    GET    /api/models/status?days=30
+
+The API **never fetches**. It inserts a `model_downloads` row; the `downloader`
+container's daemon is the single consumer. Why not Celery, why not the `jobs`
+table, and what each guard is for: `.ai/decisions/0014` D6a.
+
+Rules worth knowing before changing any of it:
+
+- **One writer per cache, enforced twice.** The daemon is a single consumer
+  *and* every fetch - its own and `make provision`'s - is taken under
+  `flock(/models/.provision.lock)`. The CLI holds it for a whole tier; the
+  daemon per entry.
+- **A queued entry cannot be queued twice** (partial unique index on `entry`
+  where status is queued/running) - 409.
+- **A running download cannot be cancelled**, only a queued one. Interrupting
+  leaves `.incomplete` blobs, which the presence check reads as absent, so the
+  entry would restart rather than resume.
+- **`bytes_done` is measured from disk, following symlinks.** An HF snapshot is
+  symlinks into a shared blob store; measuring the links reported **17 KB for a
+  42 MB repo**. Inodes are deduped, and it can still slightly *exceed*
+  `bytes_total` (43.2 vs 41.0 MiB measured) because the on-disk tree carries HF
+  metadata the Hub's file sum does not - so the API serves a clamped
+  `progress_pct` and the raw bytes stay honest.
+- **`local` and `fetch = "self"` entries are refused with an explanation**,
+  not a download button: one was trained here, the other is fetched by the
+  project that owns it.
 
 `models_manifest.py` is underscored because the other two import it. Presence
 logic lives there and **only** there: two copies of "is this model present"
@@ -220,6 +255,67 @@ from "nobody noticed".
   (`docker compose run --rm --entrypoint sh downloader -c 'rm -rf /models/...'`).
   Harmless at runtime - the services read as root too - but it surprises
   anyone tidying up by hand.
+
+## The Models tab
+
+`frontend/src/tabs/Models.tsx`, reading `GET /api/models/status`. Four stat
+tiles, three state tables (required / optional / downloads), three statistics
+tables (brains / image models / audio), and two time charts.
+
+Design decisions worth not re-litigating:
+
+- **Three families, three shapes, never one table.** Tokens and tok/s exist
+  only for brains; an image model draws and never tokenises; audio rows carry
+  **no model at all**, so audio is per-kind totals with that stated on the
+  page. One table with half the columns blank would recreate the exact
+  `llm_name`-is-not-an-LLM confusion `.ai/domain.md` records.
+- **Two charts, not one dual-axis chart.** Calls and tokens are different
+  measures: measured 2,516 calls/day against 312,776 tokens/day, **124x
+  apart**. One shared y-axis would flatten the calls line to the baseline and
+  make any crossing point meaningless.
+- **The chart palette is validated, not chosen.** `#1fa5c4` teal (image),
+  `#8577e8` violet (text), `#d96a93` pink (audio), in that fixed order,
+  passing all five computable checks against the dark card surface `#212138`:
+  lightness band, chroma floor, CVD separation (worst adjacent ΔE 9.3 deutan),
+  normal-vision floor (16.5), contrast. **Re-run the validator if you change
+  one** - the ordering matters too, because violet sits between teal and pink
+  so the weakest CVD pair is never adjacent.
+- **`--success`/`--warn`/`--danger` are reserved for state** and are not used
+  as series colours: a pink "audio" line is identity, an amber one would imply
+  a warning. Every status pill carries an icon and a word, never colour alone.
+- **Progress bars use the server's clamped `progress_pct`**, never the raw
+  bytes - those can exceed the declared total (measured 43.2 against
+  41.0 MiB) because the on-disk tree carries HF metadata the Hub's file sum
+  does not.
+- Polling runs only while a download is queued or running, as the Activity tab
+  does: an idle machine does not need a request every three seconds.
+
+Verified: `tsc -b` clean; chart geometry replayed over the real 30-day payload
+(finite coordinates, everything inside the viewBox, absent series-days reading
+0 rather than NaN, date labels 654px apart); and the **authenticated page was
+rendered and looked at**, with no console errors.
+
+Seeing it needed a scripted browser, because the app reads its token from
+`localStorage` only and a plain headless `--screenshot` shows the signed-out
+error state. The way that does NOT involve putting a credential in a file the
+API serves: run Chromium with puppeteer **inside the compose network**, talk to
+`sprite-generator:8001` directly, and pass the token as an env var to a
+`page.evaluate` that seeds storage. No host ports, nothing written to
+`static/`.
+
+Looking at it paid for itself - five defects that every automated check had
+passed:
+
+| Symptom | Cause |
+|---|---|
+| `0.00 GB` beside several models | one formatter for every magnitude; a 1 MB config and a 16 GB brain cannot share it |
+| Descriptions ending in a comma | `why` is a wrapped multi-line TOML string, and taking line one cuts mid-clause |
+| …then a whole size breakdown in one cell | the first-sentence guard fell through when the first sentence was short |
+| `0.00 GB / 0.04 GB · 100%` | a *finished* row showing a disk measurement against a declared total - three numbers disagreeing |
+| `hf-/cache`, `16.51 / GB` | narrow columns wrapping mid-token, which reads as corruption |
+
+None is a logic error; all five are legibility, and none would have surfaced
+without rendering the page.
 
 ## Known limits
 

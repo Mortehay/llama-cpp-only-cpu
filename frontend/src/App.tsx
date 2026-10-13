@@ -14,6 +14,7 @@ import Audio from './tabs/Audio'
 import Text from './tabs/Text'
 import Commands from './tabs/Commands'
 import Activity from './tabs/Activity'
+import Models from './tabs/Models'
 import ModelGateway from './components/ModelGateway'
 
 const TABS = [
@@ -34,6 +35,10 @@ const TABS = [
   // (walk, idle, attack) and domain.md records three words this codebase has
   // already overloaded. See tabs/Activity.tsx.
   { id: 'activity', label: 'Activity' },
+  // Weights, not generation: what the manifest declares, what is on disk,
+  // what holds the card, and per-brain token/speed statistics read out of the
+  // generations ledger. See tabs/Models.tsx and .ai/decisions/0014.
+  { id: 'models', label: 'Models' },
   { id: 'commands', label: 'Commands' },
   { id: 'settings', label: 'Settings & API' },
 ] as const
@@ -122,6 +127,7 @@ export default function App() {
         {tab === 'training' && <Training />}
         {tab === 'gallery' && <Gallery />}
         {tab === 'activity' && <Activity />}
+        {tab === 'models' && <Models />}
         {tab === 'commands' && <Commands />}
         {tab === 'settings' && <Settings onModeChange={mode.reload} />}
       </div>
