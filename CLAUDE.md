@@ -230,6 +230,16 @@ fragment of it.
   entry, `Qwen2.5-3B-Instruct-Q4_K_M.gguf`, was superseded by the brain lane in
   0013 — `worlds.py` calls `text.run_text`, not llama-server — so the file now
   serves only the retired `legacy-llm` profile. **Do not add models to it.**
+  `up`/`build`/`rebuild`/`rebuild-clean` used to run its downloader on every
+  invocation, which is why `make up` printed *"[SKIPPED]
+  Qwen2.5-3B-Instruct-Q4_K_M.gguf already present"* while fetching none of the
+  56.4 GB that matters. Removed 2026-10-13; only `make sync-models` calls it
+  now. **If you see that line again, something re-added the step.**
+- **`make up` warns instead of downloading.** A `models-warn` step compares
+  `models.toml` against `MODELS_DIR` — host-only, no network — and prints the
+  missing *required* entries plus "Run: make provision". Silent when complete,
+  and never fatal. It exists because the failure this whole lane targets is a
+  stack that comes up healthy with an empty `/models`.
 - **Adding a model means adding a `models.toml` stanza.** `make
   test-models-manifest` walks the source for repo ids, `gguf:` stems and brain
   paths and fails if one is neither declared nor in `[[dead]]`. That test is

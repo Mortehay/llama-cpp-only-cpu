@@ -627,7 +627,7 @@ Notes:
 |---|---|
 | `make env` | Create `compose/develop/.env` from the example if missing |
 | `make gpu-check` | Verify the GPU is reachable from inside a container |
-| `make up` | Start the stack. **Downloads nothing** — see `make provision` |
+| `make up` | Start the stack. **Downloads nothing**; warns if a required weight is missing |
 | `make build` | Build images and start. **Downloads no model weights** |
 | `make provision` | **Fetch the weights `models.toml` declares** (required tier) |
 | `make provision tier=all` | …including every optional feature (103 GB total; required alone is 56.4 GB) |

@@ -47,6 +47,14 @@ prints exactly what would land. **Run it after changing any filter.** It found
 downloading into the same `/models` cache deadlocked on HuggingFace's file
 locks; the downloader service idles on `tail -f /dev/null` for that reason.
 
+Instead `up`, `build`, `rebuild` and `rebuild-clean` end with **`models-warn`**:
+a host-only, network-free comparison of the manifest against `MODELS_DIR` that
+lists missing *required* entries and says `Run: make provision`. Silent when
+complete, never fatal. Until 2026-10-13 those targets instead ran the legacy
+`download_models.sh`, which printed `[SKIPPED] Qwen2.5-3B-Instruct-Q4_K_M.gguf`
+on every start and fetched nothing that mattered - `make sync-models` is now
+its only caller.
+
 Provisioning is **idempotent and resumable**. Anything present is skipped,
 nothing is ever deleted, and one failure does not strand the rest - a 401 on
 the single gated repo still leaves every other weight on disk.

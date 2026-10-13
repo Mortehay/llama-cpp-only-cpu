@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts provision test-models-manifest
+.PHONY: gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts provision test-models-manifest models-warn
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -124,29 +124,47 @@ require-gpu:
 	  exit 1; \
 	fi
 
+# Warn - never fail - when a REQUIRED weight is missing. Host-only, no
+# network, no containers: it compares models.toml against MODELS_DIR.
+#
+# This replaced a `run --rm downloader download_models.sh` step that used to
+# sit in up/build/rebuild/rebuild-clean. That step fetched `models.txt`, which
+# has had no live consumer since the brain landed (0013) - so on every single
+# `make up` it printed "[SKIPPED] Qwen2.5-3B-Instruct-Q4_K_M.gguf already
+# present", a 1.8 GB model nothing loads, and fetched NONE of the 56.4 GB the
+# stack actually needs. Starting the stack no longer pretends to provision it;
+# `make provision` does that, explicitly. See .ai/decisions/0014.
+models-warn:
+	@MODELS_DIR=$$(grep -E '^MODELS_DIR=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
+	out=$$(python3 scripts/check-models-manifest.py \
+	         $${MODELS_DIR:+--models-dir $$MODELS_DIR} 2>/dev/null \
+	       | grep 'declared but not present' | grep '\[required\]' || true); \
+	if [ -n "$$out" ]; then \
+	    echo; \
+	    echo "WARNING: required model weights are missing from MODELS_DIR:"; \
+	    echo "$$out" | sed 's/^ *- declared but not present: /  /'; \
+	    echo "  Nothing in \`make up\` downloads them. Run: make provision"; \
+	    echo; \
+	fi
+
 # Start containers in the background
 up: env require-gpu
-	@echo "Running model downloader interactively to show progress..."
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
 	@echo "Waiting for db, redis and the sprite services to report healthy..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
+	@$(MAKE) --no-print-directory models-warn
 
 # Force a rebuild of the images and start
 build: env require-gpu
-	docker compose -f $(COMPOSE_FILE) build
-	@echo "Running model downloader interactively to show progress..."
-	docker compose -f $(COMPOSE_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
-	@echo "Running model downloader interactively to show progress..."
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
 	@echo "Waiting for db, redis and the sprite services to report healthy..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
+	@$(MAKE) --no-print-directory models-warn
 
 # Rebuild the app containers from scratch without touching images.
 # Use this when sprite_generator/sprite_worker are "Running" but cannot resolve
@@ -179,24 +197,22 @@ shell:
 # Force a total rebuild from scratch (no cache)
 rebuild-clean: require-gpu
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build --no-cache
-	@echo "Running model downloader interactively to show progress..."
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
 	@echo "Waiting for db, redis and the sprite services to report healthy..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
+	@$(MAKE) --no-print-directory models-warn
 
 # Rebuild
 rebuild: require-gpu
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) build
-	@echo "Running model downloader interactively to show progress..."
-	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --remove-orphans
 	@echo "Waiting for db, redis and the sprite services to report healthy..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) up -d --wait $(CORE_SERVICES)
 	@echo "Checking/applying database migrations..."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T sprite-generator python migrations.py
+	@$(MAKE) --no-print-directory models-warn
 
 # Download a new model dynamically using the background running downloader container
 download:

@@ -168,11 +168,36 @@ noticed, so repo ids are now checked in `.py` and `.sh` under both roots. `gguf:
 are roster concepts, and collecting them from `scripts/` picks up fixtures
 (the gateway test's short label `"gguf:qwen"` is not a model).
 
-### D6. `make provision` stays out of `make up`
+### D6. `make provision` stays out of `make up`; `make up` warns instead
 
 Two containers downloading into the same `/models` cache deadlocked on
 HuggingFace's file locks, which is why the downloader service idles on
 `tail -f /dev/null`. Blocking a start on a 56-103 GB fetch would also be hostile.
+
+**Corrected 2026-10-13, after the owner noticed the symptom.** The first pass
+of this work wrote "`make up` downloads nothing" into the README and CLAUDE.md
+and *did not check whether it was true*. It was not: `up`, `build`, `rebuild`
+and `rebuild-clean` each ran `run --rm downloader download_models.sh`, so every
+start printed
+
+    Reading models to download from /usr/local/bin/models.txt...
+    [SKIPPED] Qwen2.5-3B-Instruct-Q4_K_M.gguf already present.
+
+- a 1.8 GB model nothing loads, while fetching **none** of the 56.4 GB the
+stack needs. Documenting the behaviour I wanted instead of the behaviour
+present was the mistake; the lesson is that a claim about a Makefile target is
+checkable in one grep.
+
+Those four call sites are gone. `make sync-models` is now the only caller, and
+it is explicitly the legacy lane. In their place each target ends with
+`models-warn`: a host-only, network-free comparison of `models.toml` against
+`MODELS_DIR` that lists the missing **required** entries and says
+`Run: make provision`. Silent when complete, never fatal. It exists because
+the exact failure this lane targets is a stack that comes up healthy with an
+empty `/models`.
+
+`build` also ran `docker compose build` twice - once without `--env-file` -
+and that duplicate went with it.
 
 ### D7. The `sdxl-turbo` defaults are repointed at `default_model()`
 
