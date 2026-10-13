@@ -17,6 +17,7 @@ and is not part of this contract.
 | `scripts/provision-models.py` | Fetches. Runs in the `downloader` container |
 | `scripts/check-models-manifest.py` | Drift test. Host-only, no containers, no network |
 | `scripts/list-models.sh` | Reports all four answers side by side |
+| `scripts/gguf-head.py` | What model is this GGUF *really*: header, KV pairs, tensor index. Takes a local path or a URL (4-128 MB Range request), so a candidate quant can be identified before it is fetched |
 
 `models_manifest.py` is underscored because the other two import it. Presence
 logic lives there and **only** there: two copies of "is this model present"
@@ -85,9 +86,17 @@ produces files in a layout nothing looks in. Vocabulary in
 - **`hf-cache`** -> `snapshot_download(cache_dir=root)`. Lands as
   `models--<org>--<name>/`, resolved by **repo id**. `hf download --local-dir`
   makes the wrong shape and diffusers will not find it.
-- **`hf-file`** -> `hf_hub_download`, then a real copy placed at
-  `dest/<as or file>`. A copy, not a symlink: the archive scripts and
-  `ls -l /models/**/*.gguf` both expect real files.
+- **`hf-file`** -> `hf_hub_download(local_dir=dest)`, landing a real file at
+  `dest/<as or file>`, renamed in place when `as` differs. `local_dir`, not
+  `cache_dir`: via the cache the file is written to the blob store and then
+  copied out, costing its size **twice** (34 GB of peak disk for the 17 GB
+  brain). A real file, not a symlink, because the archive scripts and
+  `ls -l /models/**/*.gguf` both expect one.
+  Side effect: `local_dir` leaves a small `.cache/huggingface/` beside the
+  file, holding HF's resume metadata. Harmless - nothing enumerates these
+  directories, `core_models.gguf_file()` builds exact paths - but it is why a
+  provisioned machine's tree looks slightly different from one populated by
+  hand. Leave it; it is what lets a half-finished download resume.
 - **`checkpoint-tree`** -> `snapshot_download(local_dir=dest)`, or nothing at
   all when `fetch = "self"`.
 - **`local`** -> never fetched. Reported as MANUAL in the plan.
@@ -170,13 +179,20 @@ from "nobody noticed".
 
 ## Adding a model
 
-1. Add the stanza. Pick `kind` by *how it is loaded*, not by file extension -
+1. **If it is a GGUF, identify it first:**
+   `python3 scripts/gguf-head.py <url>`. The architecture label is not
+   evidence - 0012 found four mislabelled files - so check the tensor prefixes,
+   the block count and `general.file_type` (the quant level). This works on a
+   remote URL, so do it *before* spending the download.
+2. Add the stanza. Pick `kind` by *how it is loaded*, not by file extension -
    a `.safetensors` resolved by repo id is `hf-cache`; a `.gguf` opened by
    path is `hf-file`.
-2. Fill `used_by` and `why`. The test fails without `used_by`; `why` is what
+3. Fill `used_by` and `why`. The test fails without `used_by`; `why` is what
    stops the next person re-litigating it.
-3. For `optional`, write `skipping`.
-4. `make test-models-manifest`, then `make provision only=<name> dry=1`.
+4. For `optional`, write `skipping` - the test fails without it.
+5. `make test-models-manifest`, then
+   `make provision only=<name> audit=1 files=1` to see exactly which files the
+   entry selects, and only then `make provision only=<name>`.
 
 ## Operating notes
 
@@ -199,14 +215,34 @@ from "nobody noticed".
 
 ## Known limits
 
-- ~~Sizes for `hf-cache` entries are hand-entered.~~ **Closed 2026-10-13 by
-  `--audit`.** Every `approx_gb` in the manifest is now the Hub's own sum over
-  the files that entry's globs actually select. Re-derive with
-  `make provision tier=all audit=1`.
-- **One entry cannot be reproduced.** `Qwen-Image-2512-Q3_K_M` on the source
-  host is a third-party 9.69 GB build whose publisher was never recorded;
-  unsloth's 9.93 GB build is the declared substitute. See 0012 line 27.
-- **The clean-machine path is unverified.** No second machine has run it.
+Sizes and filters are no longer on this list: `--audit` makes every
+`approx_gb` the Hub's own sum over the selected files (re-derive with
+`make provision tier=all audit=1`), and the three subtractive filters were
+load-tested offline from a directory holding only their filtered files.
+
+- **One entry is not byte-reproducible**, though it is verified equivalent.
+  `Qwen-Image-2512-Q3_K_M` on the source host is a third-party 9.69 GB build
+  whose publisher was never recorded (0012 line 27). unsloth's 9.93 GB build
+  is the declared substitute, and `scripts/gguf-head.py` shows the two are
+  structurally identical - 1933 tensors, `qwen_image`, `file_type` 12,
+  60 blocks - so it is a different quantisation run, not a different model.
+  **Speed and fit on a 12 GB card are unmeasured** for the substitute; 0012's
+  253.5 s was the local build, and 246 MB more is not free.
+- **The clean-machine path is unverified end to end.** No second machine has
+  run it. What *has* been checked here: the provisioner driven from an empty
+  directory for all three kinds, idempotent resume, and a fresh `.env` from
+  `.env.example` resolving through `docker compose config` with the right
+  mounts and online/offline split. What has not: WSL, Docker, the CUDA image
+  build, migrations, and the first `make api-key` on real fresh hardware.
+- **A real multi-GB `hf-file` fetch has not been run**, only a tiny one. The
+  path is size-independent (`hf_hub_download(local_dir=...)` plus an
+  `os.replace` rename on one filesystem), and all three real entries match the
+  Hub byte-for-byte, so a fresh fetch would reproduce what is on disk - but
+  that is an argument, not a measurement.
+- **The gated 15 GB download has not been run**, only its authorisation
+  (`--audit` resolves `stable-audio-open` with the configured token, so the
+  terms are accepted). The fetch itself is the same `snapshot_download` path
+  exercised twice on the ControlNets.
 - **The manifest does not cover the database, API keys or the ACE-Step venv.**
   The venv and `llama-server` are baked into `Dockerfile.cuda`; keys come from
   `make api-key`; a fresh deploy's Postgres starts empty by design.

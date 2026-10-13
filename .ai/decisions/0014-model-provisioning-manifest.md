@@ -230,12 +230,27 @@ in `[[dead]]` so the drift test does not reopen the question.
   2026-10-13**: `make test-model-gateway` passes in the container, and its
   `model_of tasks.generate_core_task: sdxl+nerijs` assertion is D7's gateway
   half verified by running.
-- **`Qwen-Image-2512-Q3_K_M` cannot be reproduced.** The local build is
-  9,686,940,192 bytes; 0012 line 27 records it as explicitly "not unsloth's
-  9.93 GB build", from a third-party publisher never written down. unsloth's
-  9,932,896,800-byte build is declared as a substitute and flagged
-  `provenance = "substitute"`. 0012's timings for that entry were measured on
-  the local file and may not transfer.
+- **`Qwen-Image-2512-Q3_K_M` cannot be reproduced byte-for-byte**, but the
+  substitute is **verified equivalent** (2026-10-13). The local build is
+  9,686,940,192 bytes and 0012 line 27 records it as explicitly "not unsloth's
+  9.93 GB build", from a publisher never written down. Rather than trust a
+  label - 0012's own rule is that `general.architecture` is not evidence,
+  since four of that batch were mislabelled - both GGUF headers were read and
+  compared (the local file directly, unsloth's via an HTTP Range request for
+  its first 4 MB, which covers the KV block and tensor index):
+
+  | | local | unsloth |
+  |---|---|---|
+  | tensors | 1933 | 1933 |
+  | architecture | `qwen_image` | `qwen_image` |
+  | `general.file_type` | 12 (Q3_K_M) | 12 (Q3_K_M) |
+  | transformer blocks | 60 (0-59) | 60 (0-59) |
+  | tensor prefixes | identical | identical |
+
+  A different quantisation *run* of the same model at the same quant level,
+  not a different model. What is still unmeasured is **speed and fit**: 0012's
+  253.5 s at 1024x1024 was measured on the local build, and 246 MB more on a
+  12 GB card is not free. Re-measure; Q2_K is the documented fallback.
 - ~~Sizes for `hf-cache` entries are approximate.~~ **Closed by `--audit`.**
   Every `approx_gb` is now the Hub's own sum over the files that entry's globs
   select: 56.4 GB required, 103.0 GB for everything. This had to come from the
@@ -250,8 +265,13 @@ in `[[dead]]` so the drift test does not reopen the question.
   downloads cleanly and fails at *load* time, which watching a fetch succeed
   would never catch. `sdxl-base`'s fp16 list was the worry and is correct: 22
   files, all five fp16 component weights plus every config and tokenizer file.
-  Three filters are still reasoned-not-load-tested (`clip-vit-large`,
-  `openpose-sd15`, `all-in-one-pixel`); each says so in its `notes`.
+  The three subtractive filters added after that audit were then **load-tested
+  for real**: provisioned into an empty directory so only the filtered files
+  existed, then loaded with `HF_HUB_OFFLINE=1` so nothing could quietly fetch
+  a missing piece. 5.4 GB instead of ~17.5 GB, and all four loads passed -
+  the CLIP tokenizer, the SD1.5 ControlNet (361M params), the All-In-One
+  pipeline (unet 860M, every component present), and the **real step-2 shape**,
+  `StableDiffusionControlNetImg2ImgPipeline` over both filtered repos.
 - **`stable-audio-open`'s gating is no longer unknown.** `--audit` resolved it
   against the Hub with the configured `HF_TOKEN`, so the terms are accepted
   for this account. The 15 GB download itself still has not been run.
@@ -273,6 +293,10 @@ in `[[dead]]` so the drift test does not reopen the question.
 | `stable-audio-open` gating | resolves with the configured `HF_TOKEN`, so its terms are accepted for this account |
 | `make test-model-gateway` | all checks pass, including `model_of tasks.generate_core_task: sdxl+nerijs` - D7's gateway half |
 | Drift test, negative control | a bogus repo planted in a `.sh` is caught and named |
+| Fresh `.env` from `.env.example` | `docker compose config` resolves clean, no warnings; the `scripts` mount the provisioner needs is present, downloader gets `HF_HUB_OFFLINE=0` while the services get `1` |
+| Both brain GGUFs, by tensor evidence (`scripts/gguf-head.py`) | 35B: `qwen35moe`, 40 blocks, 256 experts / 8 used - matches `--n-cpu-moe 24`'s 40-layer MoE. VL-8B: `qwen3vl`, 36 blocks. Independent of the byte-size match |
+| The three subtractive filters, **load-tested offline** from a directory holding only the filtered files | 4/4 pass: CLIP tokenizer; SD1.5 ControlNet (361M params); All-In-One pipeline (unet 860M, all components); `StableDiffusionControlNetImg2ImgPipeline` over both - the real step-2 shape. 5.4 GB vs ~17.5 GB unfiltered |
+| Q3_K_M substitute, by GGUF header comparison | structurally identical to the local build: 1933 tensors, `qwen_image`, `file_type` 12, 60 blocks. A different quantisation run, not a different model |
 | **Pose-conditioned step 2, end to end** | **WORKS.** `./scripts/two-step-test.sh` passed: core 512x512 / 85.5% transparent, sheet 4 frames x 2 actions / 64.8% transparent, real content. Worker log confirms it took the ControlNet path, not an unposed fallback: *"Pose cycles found; loading ControlNet"*, the SDXL substitution, then `'move right': pose-conditioned, strength 0.75` and `'idle': pose-conditioned, strength 0.75`. First working run since the cold archive was lost |
 | The SDXL ControlNet's missing safetensors | that same log shows diffusers probing for `diffusion_pytorch_model.safetensors`, not finding one, and falling back to the `.bin` - so the decision NOT to filter that repo to safetensors/fp16 is proven, not merely reasoned |
 | `make test-flow`, `make smoke` | both were pinned to dead models and could only fail; fixed, and test-flow now passes |

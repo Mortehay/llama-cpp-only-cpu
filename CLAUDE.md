@@ -156,7 +156,11 @@ fragment of it.
   285 s facade budget, with no room for a cutout retry - accepted, not a bug.
 - **A GGUF's `general.architecture` label is not evidence.** Four of the
   2026-09 downloads were mislabelled (`wan`, `qwen_image`, `pig`). Read the
-  tensor prefixes and block count before wiring a file.
+  tensor prefixes and block count before wiring a file —
+  `python3 scripts/gguf-head.py <path-or-url>` does it in a few MB, remote
+  files included, so a candidate can be identified before it is fetched and
+  compared against one already on disk. Check `general.file_type` too: that is
+  the quant level.
 - **Keep GGUFs two levels below `/models`** (`image-gguf/...`,
   `brain-gguf/...`). The retired `llm_engine` router listed every `.gguf` one
   level deep as a *chat* model; it only starts with `--profile legacy-llm` now,

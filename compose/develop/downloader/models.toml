@@ -270,6 +270,10 @@ Subtractive `ignore`, not `allow`, on purpose: a wrong allow-list silently
 drops a needed config, whereas this can only drop weights that are known to be
 unused. Selection verified with `make provision audit=1 files=1
 only=clip-vit-large`; re-run that after changing it.
+
+LOAD-TESTED 2026-10-13: with only the tokenizer/config files present and
+HF_HUB_OFFLINE=1, CLIPTokenizer.from_pretrained loads and tokenises. 6.38 GB
+of weights in four frameworks really are unused here.
 """
 
 [[model]]
@@ -287,6 +291,15 @@ repo = "PublicPrompts/All-In-One-Pixel-Model"
 #                                             for every SD1.5 pipeline
 ignore = ["*.ckpt", "safety_checker/*"]
 approx_gb = 3.97
+# LOAD-TESTED 2026-10-13 with only these files present and HF_HUB_OFFLINE=1:
+# the pipeline builds with every component (unet 860M, vae, text_encoder,
+# tokenizer, scheduler), and so does the real step-2 shape
+# (StableDiffusionControlNetImg2ImgPipeline over this plus the SD1.5
+# ControlNet). Two log lines are EXPECTED and are not failures:
+#   "Error no file named diffusion_pytorch_model.safetensors found in .../vae"
+#     - this repo ships .bin only; diffusers probes, then falls back.
+#   "Defaulting to unsafe serialization"
+#     - the same .bin fact, pre-existing, not caused by the filter.
 used_by = ["core_models.CORE_MODELS", "step 2 (SD1.5 + ControlNet)"]
 why = """
 The only model that produced real pixel art unaided: hard grid, bounded
@@ -311,6 +324,10 @@ repo = "lllyasviel/control_v11p_sd15_openpose"
 # this same filter would break it. Per-repo, not a house rule.
 ignore = ["*.bin", "*.fp16.safetensors", "*.png", "images/*"]
 approx_gb = 1.35
+# LOAD-TESTED 2026-10-13: with only config.json +
+# diffusion_pytorch_model.safetensors present and HF_HUB_OFFLINE=1,
+# ControlNetModel.from_pretrained loads it (361M params), as does the real
+# step-2 StableDiffusionControlNetImg2ImgPipeline.
 used_by = ["tasks.OPENPOSE_CONTROLNET", "poses.py"]
 why = """
 Step 2's pose conditioning. poses.py authors COCO-18 skeletons specifically
@@ -409,11 +426,25 @@ unsloth's 9.93 GB build" - a third-party quant pulled into D:\\downloads whose
 publisher was never written down. Verified 2026-10-13: local 9,686,940,192
 bytes vs unsloth 9,932,896,800.
 
-unsloth's Q3_K_M is declared here as the closest available substitute, 246 MB
-larger. 0012's timings for this entry (253.5 s end to end at 1024x1024 with
-cutout) were measured on the local build and may not transfer. Re-measure
-before trusting them on a fresh machine; if it will not fit, Q2_K is the
-documented fallback.
+unsloth's Q3_K_M is declared here as the substitute, 246 MB larger.
+
+VERIFIED EQUIVALENT 2026-10-13, by reading both GGUF headers rather than
+trusting a label (0012's own rule: four of that download batch were
+mislabelled, so `general.architecture` is not evidence - the tensor index is).
+Local file and unsloth's, side by side:
+
+  gguf v3, 1933 tensors, general.architecture 'qwen_image'
+  general.file_type 12 (= Q3_K_M) on BOTH
+  tensor prefixes img_in=2 txt_in=2 transformer_blocks=1920 norm_out=2
+                  proj_out=2 time_text_embed=4 txt_norm=1
+  60 distinct block indices (0-59)
+
+Structurally identical, same quant level - a different quantisation RUN of the
+same model, not a different model. So this is a sound substitute.
+
+Still re-measure speed: 0012's 253.5 s end to end at 1024x1024 with cutout was
+measured on the local build, and 246 MB more on a 12 GB card is not free. If it
+will not fit, Q2_K is the documented fallback.
 
 `as` is required: CORE_MODELS names the stem `Qwen-Image-2512-Q3_K_M`
 (capitalised), unsloth publishes `qwen-image-2512-Q3_K_M.gguf` (lowercase), and
