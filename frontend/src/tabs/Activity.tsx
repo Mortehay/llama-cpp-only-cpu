@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { api, isAudioKind } from '../api'
-import type { ActivityItem, AudioInfo } from '../api'
+import type { ActivityItem, AudioInfo, JobProgress } from '../api'
 import { useAsync, usePoll } from '../hooks'
 
 const PAGE = 50
@@ -188,6 +188,7 @@ function PendingPanel({ active }: { active: ActivityItem[] }) {
       </strong>{' '}
       — <em>{head.title}</em> ({head.kind}, asked by {head.requested_by}) is
       {head.status === 'running' ? ' on the worker' : ' next in line'}.
+      {head.progress && <ProgressNote p={head.progress} />}
       {rest.length > 0 && (
         <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
           {rest.map((it) => (
@@ -195,10 +196,33 @@ function PendingPanel({ active }: { active: ActivityItem[] }) {
               {it.kind}
               {it.name ? ` "${it.name}"` : ''} — {it.title.slice(0, 80)}
               <span className="muted"> · {it.requested_by}</span>
+              {it.progress && <ProgressNote p={it.progress} />}
             </li>
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/**
+ * `58% · cell 75/208`, with the build stage in the tooltip.
+ *
+ * Both halves come from the worker's own row - the percentage it wrote and the
+ * message it wrote - so this cannot drift from what the job reports. Rendered
+ * only while a row is unfinished; afterwards the duration column is the better
+ * answer and a stale "cell 208/208" would just be noise.
+ */
+function ProgressNote({ p }: { p: JobProgress }) {
+  const bits = [p.pct != null ? `${p.pct}%` : null, p.msg || null].filter(Boolean)
+  if (bits.length === 0) return null
+  return (
+    <div
+      className="muted"
+      style={{ fontSize: 11, marginTop: 2 }}
+      title={p.stage ? `stage: ${p.stage}` : undefined}
+    >
+      {bits.join(' · ')}
     </div>
   )
 }
@@ -295,6 +319,11 @@ function Row({ item }: { item: ActivityItem }) {
           >
             {item.status}
           </span>
+          {/* A sheet job is hours of GPU time and this column showed it as the
+              bare word "running" for all of them - which reads exactly like
+              wedged. The counter comes from the job row; nothing here derives
+              it. */}
+          {item.progress && <ProgressNote p={item.progress} />}
         </td>
         <td className="muted" title={item.model ?? undefined}>
           {item.model ? shortModel(item.model) : '—'}

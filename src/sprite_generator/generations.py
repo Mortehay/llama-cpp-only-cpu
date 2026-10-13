@@ -374,6 +374,9 @@ def _activity_row(r: dict) -> dict:
         "url": _url(r["file_path"]),
         # Filled by `_attach_audio` for audio rows only; images stay None.
         "audio": None,
+        # Filled by `_attach_progress` for rows still in flight; a finished
+        # row keeps None, because its duration is the better answer.
+        "progress": None,
         "job_id": str(r["job_id"]) if r["job_id"] else None,
         "error": r["error"],
         "duration_ms": r["duration_ms"],
@@ -420,6 +423,60 @@ def _attach_audio(cur, rows: list[dict]) -> None:
         if r["id"] in found:
             r["audio"] = found[r["id"]]
 
+
+
+def _attach_progress(cur, rows: list[dict]) -> None:
+    """Give the rows that are still moving their stage and percentage.
+
+    Same trade as `_attach_audio`: `activity_v` carries neither `stage` nor
+    `progress_pct`, widening a three-branch UNION view is a migration, and one
+    extra query for the handful of unfinished rows on this page is not.
+
+    Why it is worth a query at all: a sheet job is HOURS of GPU time, and the
+    feed showed it as the bare word "running" for all of them. "Running" and
+    "wedged" look identical, so the only way to tell them apart was the worker
+    log - which is exactly the question this tab exists to answer. The counter
+    is already in the jobs row (`cell 75/208`); nothing here computes it.
+
+    Terminal rows are skipped on purpose. A finished job's last progress
+    message is noise next to its duration, and this keeps the query bounded to
+    what is actually in flight.
+    """
+    live = [r for r in rows if r["status"] in ACTIVE]
+    if not live:
+        return
+
+    # A job-backed row is either the job itself, or a ledger row that points at
+    # one (something2's sheet requests take that shape).
+    job_ids = {r["job_id"] for r in live if r["job_id"]}
+    job_ids |= {r["id"] for r in live if r["source"] == "job"}
+    jobs = {}
+    if job_ids:
+        cur.execute("SELECT id::text AS id, stage, progress_pct, progress_msg "
+                    "FROM jobs WHERE id::text = ANY(%s)", (list(job_ids),))
+        jobs = {j["id"]: dict(j) for j in cur.fetchall()}
+
+    # Browser tasks keep the same two columns in sprite_images, so a core that
+    # is 60% through its steps can say so rather than also reading "running".
+    ui_ids = [r["id"] for r in live if r["source"] == "ui"]
+    tasks = {}
+    if ui_ids:
+        cur.execute("SELECT id::text AS id, progress_pct, progress_msg "
+                    "FROM sprite_images WHERE id::text = ANY(%s)", (ui_ids,))
+        tasks = {t["id"]: dict(t) for t in cur.fetchall()}
+
+    for r in live:
+        src = jobs.get(r["job_id"]) or jobs.get(r["id"]) or tasks.get(r["id"])
+        if not src:
+            continue
+        pct, msg = src.get("progress_pct"), src.get("progress_msg")
+        stage = src.get("stage")
+        # All three empty is the state between "row written" and "worker picked
+        # it up". Reporting 0% there would claim knowledge the row does not
+        # have; leaving it null lets the UI keep saying "queued".
+        if pct is None and not msg and not stage:
+            continue
+        r["progress"] = {"pct": pct, "stage": stage, "msg": msg}
 
 # Anything still moving. `queued` and `running` are the two the jobs table
 # uses; the ledger only ever writes `running`, because a synchronous facade
@@ -492,6 +549,7 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
                 "ORDER BY created_at ASC", (list(ACTIVE),))
             active = [_activity_row(dict(r)) for r in cur.fetchall()]
             _attach_audio(cur, items + active)
+            _attach_progress(cur, items + active)
 
             cur.execute("SELECT source, status, count(*) AS n FROM activity_v "
                         "GROUP BY source, status ORDER BY source, status")
