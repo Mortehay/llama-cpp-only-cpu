@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
 import type { ModelEntry, ModelsStatus, ModelDownload } from '../api'
 import { useAsync, usePoll } from '../hooks'
@@ -227,9 +227,38 @@ export default function Models() {
 
   const active = (downloads.data?.downloads ?? []).some(
     (d) => d.status === 'queued' || d.status === 'running')
-  // Poll only while something is moving, as Activity does: a machine at rest
-  // does not need a request every three seconds.
-  usePoll(() => { downloads.reload(); status.reload() }, 3000, active)
+
+  // TWO CADENCES, because the two payloads cost very different things:
+  // /api/models/downloads is ~35 ms and 1.5 KB, /api/models/status is ~135 ms
+  // and 23 KB (four SQL aggregations over the generations ledger, a manifest
+  // parse, and a presence check per entry).
+  //
+  // The queue drives a progress bar, so it polls fast while an op is moving
+  // and slowly otherwise. The statistics change from generation happening
+  // elsewhere in the app, so they refresh on a slow timer ALWAYS - the first
+  // version polled only while a download was running, which meant a tab left
+  // open showed token counts frozen at whatever they were on mount, with
+  // nothing saying so.
+  usePoll(downloads.reload, active ? 3000 : 20000, true)
+  usePoll(status.reload, 30000, true)
+
+  // An op finishing changes what is on disk, and a 30 s timer is too slow to
+  // show that: refresh the moment the queue goes quiet.
+  const wasActive = useRef(active)
+  const reloadStatus = status.reload
+  useEffect(() => {
+    if (wasActive.current && !active) reloadStatus()
+    wasActive.current = active
+    // `active` only. useAsync returns a fresh object each render, so depending
+    // on `status` would re-run this on every render for no benefit.
+  }, [active, reloadStatus])
+
+  // When the data last actually arrived, so the page can say how old it is
+  // rather than presenting a stale number as live.
+  const [fetchedAt, setFetchedAt] = useState(() => Date.now())
+  useEffect(() => { if (status.data) setFetchedAt(Date.now()) }, [status.data])
+  const [, forceTick] = useState(0)
+  usePoll(() => forceTick((t) => t + 1), 5000, true)
 
   const d: ModelsStatus | null = status.data
 
@@ -348,6 +377,23 @@ export default function Models() {
       )}
 
       {note && <div className="note">{note}</div>}
+
+      {/* Say how old the numbers are. Statistics that refresh on a timer look
+          identical to statistics that have stopped refreshing, and the reader
+          cannot tell which they are looking at without being told. */}
+      <div className="row" style={{ gap: '.6rem', alignItems: 'center',
+                                    marginBottom: '.75rem' }}>
+        <span className="muted" style={{ fontSize: '.8rem', flex: '0 0 auto' }}>
+          Statistics updated {ago(new Date(fetchedAt).toISOString())}
+          {active
+            ? ' · queue refreshing every 3s'
+            : ' · refreshing every 30s'}
+        </span>
+        <button className="btn ghost sm" style={{ flex: '0 0 auto' }}
+                onClick={() => { status.reload(); downloads.reload() }}>
+          Refresh now
+        </button>
+      </div>
 
       {/* The page offers Download buttons and no way to add a model, which
           reads as a missing feature unless the page says why. It is not
