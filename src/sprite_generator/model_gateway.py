@@ -84,6 +84,18 @@ def _arg(args, kwargs, index, name, default=None):
     return args[index] if len(args) > index else default
 
 
+def _default_model() -> str:
+    """The roster default, imported lazily like the rest of this module.
+
+    core_models is deliberately NOT imported at module scope here (only
+    persistent_qwen is), so GATED's lambdas must go through this rather than
+    naming core_models directly - a module-level reference would NameError the
+    first time a core task was gated.
+    """
+    import core_models
+    return core_models.default_model()
+
+
 def _job_model(job_id) -> str:
     """`spec.llm_name` of a jobs row (tile, map, props), or the default."""
     import core_models
@@ -108,8 +120,11 @@ def _job_model(job_id) -> str:
 # task name -> (args, kwargs) -> model label. Positions mirror the task
 # signatures in tasks.py / map_tasks.py; a keyword wins when one is passed.
 GATED = {
+    # The fallback must match generate_core_task's own default, or the gateway
+    # gates against one model while the worker loads another. Both are
+    # default_model() since 2026-10-13 (was sdxl-turbo, which is not on disk).
     "tasks.generate_core_task":
-        lambda a, k: _arg(a, k, 1, "llm_name", "stabilityai/sdxl-turbo"),
+        lambda a, k: _arg(a, k, 1, "llm_name") or _default_model(),
     "tasks.generate_raw_task": lambda a, k: _arg(a, k, 2, "llm_name"),
     "tasks.generate_spritesheet_task": lambda a, k: _arg(a, k, 2, "llm_name"),
     "tasks.warm_model_task": lambda a, k: _arg(a, k, 0, "llm_name"),

@@ -1,0 +1,697 @@
+# The model manifest: everything a fresh machine needs under MODELS_DIR.
+#
+# READ THIS BEFORE ADDING AN ENTRY.
+#
+# This file replaces `models.txt` as the thing that answers "what weights does
+# this project need". `models.txt` is NOT that file and never was: it feeds the
+# llama.cpp `llm-server` router, which retired to the `legacy-llm` compose
+# profile on 2026-10-01, and its one remaining active entry was superseded by
+# the brain lane (decisions/0013). It is kept, unchanged, for anyone reviving
+# that profile. Do not add models to it.
+#
+# WHY A SCHEMA AND NOT A LIST OF REPO IDS
+# Four different kinds of thing live under MODELS_DIR, and each needs a
+# different fetch. Getting the kind wrong does not fail loudly - it produces
+# files in a layout nothing looks in. See `.ai/domain.md`.
+#
+#   hf-cache          HF cache layout (models--<org>--<name>/), resolved by
+#                     REPO ID, never by path. `hf download --local-dir` makes
+#                     the WRONG shape here and diffusers will not find it.
+#   hf-file           a single file at an explicit destination, TWO levels
+#                     below /models. Depth is load-bearing - see `dest`.
+#   checkpoint-tree   a component layout some other project owns.
+#   local             trained on this machine. CANNOT be downloaded.
+#
+# TIERS
+#   required   the stack's default paths do not work without it.
+#   optional   a named feature degrades or disappears. `skipping` says which.
+#   (dead)     see the [[dead]] table at the bottom - deliberately NOT fetched.
+#
+# SIZES are approximate and some are unverified: HF cache snapshots are
+# symlinks into blobs/, so `du` over them under-reports. Where a byte count is
+# exact it was measured from the file itself on 2026-10-13. Run
+# `make provision tier=... dry=1` for authoritative sizes from the Hub.
+#
+# FIELDS
+#   name        manifest-local id, used by `--only`.
+#   kind        hf-cache | hf-file | checkpoint-tree | local (see above).
+#   tier        required | optional.
+#   repo        Hub repo id. Absent for `local`.
+#   file        hf-file only: the filename IN THE REPO.
+#   as          hf-file only: save under THIS name instead. Required wherever
+#               the Hub's name and the name the code expects differ - two
+#               entries here need it, and getting it wrong leaves a file that
+#               exists but is never found.
+#   dest        directory under the cache root. hf-file/checkpoint-tree/local.
+#   allow       glob allow-list. Without one, some repos are 100 GB+.
+#   ignore      glob deny-list. The 4bit transformer ignore saves 11.59 GB.
+#   gated       true means accept the terms on the Hub first, with the same
+#               account as HF_TOKEN, or the fetch 401s.
+#   fetch       "self" means another project downloads it; the provisioner
+#               only verifies presence.
+#   bytes       exact size, measured. local_bytes when it differs from the Hub.
+#   provenance  "substitute" means this is NOT the file that was benched.
+#   missing_on_source_host
+#               true: declared because the CODE needs it, not because it was
+#               present when this manifest was written.
+#
+# EVERY entry must carry `used_by`, naming the code that asks for it.
+# `make test-models-manifest` walks the source for model references and fails
+# if one is neither declared here nor listed under [[dead]]. That test is the
+# whole point: `models.txt` did not rot because it was written badly, it rotted
+# because nothing ever compared it to the code.
+
+[meta]
+version = 1
+# Both the HF cache root and the base for `dest`. compose sets HF_HUB_CACHE
+# and MODELS_DIR to the same path; core_models.py reads HF_HUB_CACHE.
+cache_root_env = "HF_HUB_CACHE"
+cache_root_default = "/models"
+
+
+# =========================================================================
+# REQUIRED - the default lane. Without these the stack answers errors.
+# =========================================================================
+
+[[model]]
+name = "brain-35b"
+kind = "hf-file"
+tier = "required"
+repo = "unsloth/Qwen3.6-35B-A3B-GGUF"
+file = "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+dest = "brain-gguf/qwen3.6-35b-a3b"
+bytes = 17730509792
+used_by = ["brain_engine.BRAINS['qwen3.6-35b-a3b']", "text.run_text", "worlds.py", "regions.py", "audio_styles.py"]
+why = """
+The default brain (decisions/0013). Hybrid: attention and KV on the card,
+routed experts in host RAM via --n-cpu-moe 24, ~8.3 GB VRAM. Everything that
+plans rather than draws goes through it - world biomes, region graphs, audio
+styles, and something2's /api/text.
+"""
+notes = """
+Provenance VERIFIED 2026-10-13: the Hub file is 17,730,509,792 bytes, byte-for-
+byte the file on disk.
+TWO LEVELS DEEP, and that is not cosmetic. The retired llm_engine router
+advertised every .gguf one level below /models as a chat model. Do not flatten.
+"""
+
+[[model]]
+name = "brain-vl-8b"
+kind = "hf-file"
+tier = "required"
+repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+file = "Qwen3-VL-8B-Instruct-Q4_K_M.gguf"
+as = "Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+dest = "image-gguf/qwen-image-2.1"
+bytes = 5027784800
+used_by = ["brain_engine.BRAINS['qwen3-vl-8b']"]
+why = "The fast brain, fully on the card, ~5.5 GB host-side at 8k context."
+notes = """
+`as` IS REQUIRED HERE. The Hub file is `Qwen3-VL-8B-Instruct-Q4_K_M.gguf`;
+BRAIN_8B_PATH expects `Qwen3VL-8B-Instruct-Q4_K_M.gguf` - no hyphen after
+Qwen3. Downloading under the Hub's own name leaves the fast brain missing on a
+fresh machine while every path looks plausible.
+Provenance verified 2026-10-13: the Hub build is 5,027,785,568 bytes against
+5,027,784,800 on disk - a 768-byte metadata difference, so the local copy is a
+slightly different build of the same quant. Not worth re-fetching.
+Lives under image-gguf/qwen-image-2.1/ for historical reasons - it is a BRAIN,
+not an image model, despite the directory name.
+"""
+
+[[model]]
+name = "qwen-image-2512-q2k"
+kind = "hf-file"
+tier = "required"
+repo = "unsloth/Qwen-Image-2512-GGUF"
+file = "qwen-image-2512-Q2_K.gguf"
+dest = "image-gguf/transformers"
+bytes = 7333837344
+used_by = ["core_models.CORE_MODELS (ui_default)", "a1111.KNOWN_MODELS[0]", "qwen_t2i.py", "qwen_server.py"]
+why = """
+The UI's preselected model and something2's default. 0/12 contact sheets,
+~24 s/image with the Lightning LoRA, 3.12 GiB VRAM free (decisions/0012 2b).
+"""
+notes = """
+Provenance VERIFIED 2026-10-13: unsloth's file is 7,333,837,344 bytes, matching
+disk exactly and matching the sha256 176678f0... that decisions/0012 recorded.
+This file arrived through D:\\downloads rather than a scripted pull, and four of
+that batch were MISLABELLED in general.architecture - if you ever replace it,
+read tensor prefixes and block count, not the label.
+"""
+
+[[model]]
+name = "qwen-2512-lightning"
+kind = "hf-cache"
+tier = "required"
+repo = "lightx2v/Qwen-Image-2512-Lightning"
+allow = ["Qwen-Image-2512-Lightning-8steps-V1.0-bf16.safetensors"]
+approx_gb = 0.79
+used_by = ["core_models.GGUF_LORAS['lightning8']"]
+why = """
+The 8-step distillation that makes the default model fast. Not optional for it:
+a Lightning LoRA run at 20 steps / CFG 4 is not what it was trained for, so the
+step and cfg settings travel with the key in GGUF_LORAS.
+"""
+notes = "allow-listed: the repo also ships 4-step and fp32 variants."
+
+[[model]]
+name = "qwen-companions-4bit"
+kind = "hf-cache"
+tier = "required"
+repo = "ovedrive/Qwen-Image-Edit-2511-4bit"
+ignore = ["transformer/*"]
+approx_gb = 5.00
+used_by = ["core_models.GGUF_COMPANION_REPOS", "qwen_t2i.REPO", "qwen_edit.REPO"]
+why = """
+NF4 text encoder, VAE, tokenizer, scheduler and model_index for every
+Qwen-Image GGUF. The Edit repo's encoder and VAE are hash-identical to
+Qwen-Image-2512's, so one download serves both lanes (decisions/0012).
+"""
+notes = """
+The transformer/ ignore is REQUIRED. The 4bit repo's own transformer is
+11.59 GB, does not stay resident on a 12 GB card, and nothing ever loads it.
+Forgetting the ignore silently adds 11.59 GB of dead weights.
+"""
+
+[[model]]
+name = "qwen-2512-config"
+kind = "hf-cache"
+tier = "required"
+repo = "Qwen/Qwen-Image-2512"
+allow = ["transformer/config.json", "model_index.json", "scheduler/*"]
+approx_gb = 0.001
+used_by = ["core_models.GGUF_COMPANION_REPOS"]
+why = """
+Architecture config only, a few KB. from_single_file needs it to know what the
+GGUF tensors are. Without it the pipeline works online and dies under
+HF_HUB_OFFLINE=1 with a misleading "does not appear to have a file named
+config.json".
+"""
+
+[[model]]
+name = "sdxl-base"
+kind = "hf-cache"
+tier = "required"
+repo = "stabilityai/stable-diffusion-xl-base-1.0"
+allow = ["*.json", "**/*.json", "**/*.txt", "**/*.fp16.safetensors"]
+approx_gb = 6.62
+used_by = ["core_models.CORE_MODELS (default)", "core_models.default_model()", "tasks.get_sd_pipeline"]
+why = """
+default_model(), which is main.py's Form default for every API caller and
+script that omits llm_name. Four roster entries are this base plus a different
+LoRA. SDXL base at guidance 7 is also what makes split_negations() work -
+classifier-free guidance can actually subtract there.
+"""
+notes = """
+fp16 only: tasks.py loads with variant="fp16", and the fp32 duplicates roughly
+double the download for nothing.
+
+UNVERIFIED (2026-10-13): this allow list was NOT exercised - the repo was
+already cached here, so no fresh fetch tested it. If a load fails on a fresh
+machine with a missing-component error, WIDEN the list (drop the
+`.fp16.safetensors` line to take every weight) rather than deleting it, and
+record what was missing here. The json/txt globs cover model_index, every
+component config, and the tokenizers' vocab.json + merges.txt.
+"""
+
+[[model]]
+name = "nerijs-pixel-art-xl"
+kind = "hf-cache"
+tier = "required"
+repo = "nerijs/pixel-art-xl"
+allow = ["pixel-art-xl.safetensors"]
+approx_gb = 0.16
+used_by = ["core_models.CORE_MODELS (default)"]
+why = """
+The other half of the default. SDXL base + this LoRA was the only configuration
+that produced structurally real pixel art: 86.6% of pixels from 32 colours,
+74.7% blockiness (decisions/0002). Trigger: "pixel art" in the prompt.
+"""
+notes = """
+Keep lora_scale at full strength. Dropping it to 0.7 was measured and REJECTED:
+contact sheets went 2/12 -> 5/12. The adapter holds the subject together; it is
+not what imposes the grid.
+"""
+
+[[model]]
+name = "birefnet"
+kind = "hf-cache"
+tier = "required"
+repo = "ZhengPeng7/BiRefNet"
+approx_gb = 0.41
+used_by = ["cutout.py"]
+why = """
+The object-cutout engine. Anything that reaches the web RPG game must be
+transparent, and the flood fill cannot clear walls, scenes or enclosed pockets -
+it is only the fallback. Its soft mask is snapped to 0/255 for pixel art.
+"""
+notes = """
+cutout.py finds this by GLOB over models--ZhengPeng7--BiRefNet/snapshots/*, so
+it must be in cache layout, not a --local-dir drop. Parked in RAM between calls
+on purpose: resident, it would break the slow Qwen core's 10 GB free-VRAM check.
+"""
+
+[[model]]
+name = "clip-vit-large"
+kind = "hf-cache"
+tier = "required"
+repo = "openai/clip-vit-large-patch14"
+# Weights in four frameworks, none of them used. Measured 2026-10-13: the
+# unfiltered repo is 6.38 GB - tf_model.h5, pytorch_model.bin, model.safetensors
+# and flax_model.msgpack at 1.59 GB each - for ~5 MB of tokenizer. The SD1.5
+# checkpoint ships its own text_encoder; only the tokenizer is wanted here,
+# which is also all that is on disk on the host this was written from.
+ignore = ["*.h5", "*.msgpack", "*.bin", "*.safetensors"]
+approx_gb = 0.005
+used_by = ["SD1.5 pipelines (PublicPrompts/All-In-One-Pixel-Model) via diffusers"]
+why = "Tokenizer for the SD1.5 lane. Small, and its absence surfaces as an opaque tokenizer error."
+notes = """
+Subtractive `ignore`, not `allow`, on purpose: a wrong allow-list silently
+drops a needed config, whereas this can only drop weights that are known to be
+unused. Selection verified with `make provision audit=1 files=1
+only=clip-vit-large`; re-run that after changing it.
+"""
+
+[[model]]
+name = "all-in-one-pixel"
+kind = "hf-cache"
+tier = "required"
+repo = "PublicPrompts/All-In-One-Pixel-Model"
+# Measured 2026-10-13: unfiltered 7.09 GB, of which 3.1 GB is never read.
+#   Public-Prompts-Pixel-Model.ckpt  1.99 GB  single-file duplicate of the
+#                                             diffusers folders below;
+#                                             from_pretrained(repo_id) uses the
+#                                             folders and never opens it
+#   safety_checker/pytorch_model.bin 1.13 GB  tasks.py sets safety_checker=None
+#                                             and requires_safety_checker=False
+#                                             for every SD1.5 pipeline
+ignore = ["*.ckpt", "safety_checker/*"]
+approx_gb = 3.97
+used_by = ["core_models.CORE_MODELS", "step 2 (SD1.5 + ControlNet)"]
+why = """
+The only model that produced real pixel art unaided: hard grid, bounded
+palette, one character, 3.0 s at 20 steps (decisions/0002). SD1.5, so it is the
+ControlNet-compatible one and the step-2 path depends on that.
+"""
+notes = "Needs its OWN trigger word, 'pixelsprite'. A foreign trigger is inert."
+
+[[model]]
+name = "openpose-sd15"
+kind = "hf-cache"
+tier = "required"
+repo = "lllyasviel/control_v11p_sd15_openpose"
+# Measured 2026-10-13: unfiltered 4.04 GB, because the repo ships the same
+# weights four times - .bin and .safetensors, each at fp32 and fp16. diffusers
+# prefers `diffusion_pytorch_model.safetensors`, and the loader passes no
+# `variant=`, so the fp32 safetensors (1.35 GB) is the one read. Everything
+# else, plus the demo PNGs, is dead weight.
+#
+# NOTE the asymmetry with the SDXL sibling: that repo publishes NO
+# `diffusion_pytorch_model.safetensors`, so there the .bin is what loads and
+# this same filter would break it. Per-repo, not a house rule.
+ignore = ["*.bin", "*.fp16.safetensors", "*.png", "images/*"]
+approx_gb = 1.35
+used_by = ["tasks.OPENPOSE_CONTROLNET", "poses.py"]
+why = """
+Step 2's pose conditioning. poses.py authors COCO-18 skeletons specifically
+against this checkpoint; the SDXL ControlNet measured 3.6x weaker.
+"""
+notes = """
+Was absent until 2026-10-13 - the D: cold archive it was presumed to be in no
+longer exists - so pose-conditioned step 2 had been failing silently.
+`use_pose` turns on automatically for any action with a cycle (tasks.py), and
+from_pretrained under HF_HUB_OFFLINE=1 cannot recover a missing repo.
+Fetched through `make provision`: 1.44 GB fp32 + 722 MB fp16.
+
+Do NOT filter this to fp16 - see the sibling SDXL entry. The loader passes no
+`variant=`, so fp32 is what is read.
+
+A measurement note for anyone sizing a deploy: the repo DIRECTORY measured
+824 KB right after a complete download, because snapshots are symlinks into a
+top-level xet `blobs/` store. `du` on a models--* directory is not a size.
+"""
+
+[[model]]
+name = "openpose-sdxl"
+kind = "hf-cache"
+tier = "required"
+repo = "thibaud/controlnet-openpose-sdxl-1.0"
+ignore = ["*.png", "*.jpg", "*.jpeg", "*.gif"]
+approx_gb = 10.04
+used_by = ["tasks.OPENPOSE_CONTROLNET_SDXL"]
+why = """
+The substitute get_sd_pipeline swaps in when the step-2 target turns out to be
+SDXL - callers pass OPENPOSE_CONTROLNET without knowing which family they get,
+and a ControlNet must match the UNet it conditions.
+"""
+notes = """
+DO NOT add an fp16 or safetensors allow-list to this entry. PROVEN by a real
+step-2 run, 2026-10-13, which logged:
+
+  Loading ControlNet 'thibaud/controlnet-openpose-sdxl-1.0'...
+  An error occurred while trying to fetch thibaud/controlnet-openpose-sdxl-1.0:
+  ... does not appear to have a file named diffusion_pytorch_model.safetensors.
+
+diffusers probes for the safetensors, does not find one in this repo, and
+falls back to `diffusion_pytorch_model.bin`. That log line is NORMAL here and
+is not an error to fix. Filter the .bin away and the fallback has nothing to
+land on. `tasks.py` also passes no `variant="fp16"`, unlike the SDXL base
+pipeline beside it, so the fp32 weights are the ones read. The `ignore` here
+is only the repo's demo screenshots.
+
+Fetched 2026-10-13 (absent until then, so BOTH families of pose-conditioned
+step 2 were failing). MEASURED after that fetch, 10.3 GB of weights for one
+ControlNet, because the repo ships the same model three ways:
+
+  diffusion_pytorch_model.bin                  4772 MB  <- what loads
+  OpenPoseXL2.safetensors                      4772 MB  same weights, ignored
+  control-lora-openposeXL2-rank256.safetensors  739 MB  a LoRA variant
+
+Only the .bin is read: `ControlNetModel.from_pretrained` looks for
+`diffusion_pytorch_model.*`, and this repo publishes no
+`diffusion_pytorch_model.safetensors`. An allow-list of
+["config.json", "diffusion_pytorch_model.bin"] would therefore cut ~5.5 GB -
+NOT done, because it is reasoned from the loader rather than tested, and the
+failure mode is a clean download that dies at load time on a machine where
+this is the fallback path. Narrow it only with a real fetch behind it.
+
+Measured 3.6x weaker than the SD1.5 one; it exists for correctness on SDXL
+targets, not for quality.
+"""
+
+
+# =========================================================================
+# OPTIONAL - a named feature degrades. `skipping` says exactly which.
+# =========================================================================
+
+[[model]]
+name = "qwen-image-2512-q3km"
+kind = "hf-file"
+tier = "optional"
+repo = "unsloth/Qwen-Image-2512-GGUF"
+file = "qwen-image-2512-Q3_K_M.gguf"
+as = "Qwen-Image-2512-Q3_K_M.gguf"
+dest = "image-gguf/transformers"
+bytes = 9932896800
+local_bytes = 9686940192
+provenance = "substitute"
+used_by = ["core_models.CORE_MODELS"]
+why = "The quality lane: 0/12 contact sheets, cutout kept 98.2% vs 77.4%, judged much better."
+skipping = """
+The 'best quality, ~4 min per image' roster entry disappears from the UI
+(core_models reports on-disk state, so it is hidden rather than broken).
+something2 never sees it anyway - 250 s against a 285 s facade budget.
+"""
+notes = """
+NOT THE BENCHED FILE, and this is the one entry that cannot be reproduced.
+decisions/0012 line 27 records the local copy as 9.69 GB and explicitly "not
+unsloth's 9.93 GB build" - a third-party quant pulled into D:\\downloads whose
+publisher was never written down. Verified 2026-10-13: local 9,686,940,192
+bytes vs unsloth 9,932,896,800.
+
+unsloth's Q3_K_M is declared here as the closest available substitute, 246 MB
+larger. 0012's timings for this entry (253.5 s end to end at 1024x1024 with
+cutout) were measured on the local build and may not transfer. Re-measure
+before trusting them on a fresh machine; if it will not fit, Q2_K is the
+documented fallback.
+
+`as` is required: CORE_MODELS names the stem `Qwen-Image-2512-Q3_K_M`
+(capitalised), unsloth publishes `qwen-image-2512-Q3_K_M.gguf` (lowercase), and
+`gguf:<stem>` resolves by exact filename.
+"""
+
+[[model]]
+name = "qwen-edit-transformer"
+kind = "hf-cache"
+tier = "optional"
+repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+allow = ["qwen-image-edit-2511-Q2_K.gguf"]
+approx_gb = 6.96
+used_by = ["qwen_edit.GGUF_REPO + GGUF_FILE"]
+why = """
+The 8-direction turnaround conveyor (decisions/0005, `make sheet8`). Q2_K is a
+MEASURED choice, not a conservative one: it keeps the transformer resident with
+2.7 GiB free at 7.9 s/step, where Q3_K_M OOMs by ~24 MiB mid-denoise.
+"""
+skipping = "`make sheet8` and the turnaround path fail. Core generation is unaffected."
+notes = """
+Mind the case: the repo is Qwen-Image-Edit-2511-GGUF, its files are
+qwen-image-edit-2511-*.gguf. A wrong-cased name does not 404 loudly - it makes
+huggingface_hub match nothing and report success.
+"""
+
+[[model]]
+name = "qwen-edit-config"
+kind = "hf-cache"
+tier = "optional"
+repo = "Qwen/Qwen-Image-Edit-2511"
+allow = ["transformer/config.json", "model_index.json"]
+approx_gb = 0.001
+used_by = ["qwen_edit.CONFIG_REPO"]
+why = """
+Transformer architecture config only. qwen_edit points at the OFFICIAL repo on
+purpose: the 4bit repo's config carries a bitsandbytes quantization_config that
+contradicts GGUF weights.
+"""
+skipping = "The Edit lane dies under HF_HUB_OFFLINE=1 with a misleading missing-config.json error."
+
+[[model]]
+name = "qwen-edit-angles-lora"
+kind = "hf-cache"
+tier = "optional"
+repo = "fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA"
+allow = ["qwen-image-edit-2511-multiple-angles-lora.safetensors"]
+approx_gb = 0.27
+used_by = ["qwen_edit.ANGLES_LORA"]
+why = "8 azimuths x 4 elevations, trained on 3000+ Gaussian-Splatting renders. The reason the turnaround route exists at all."
+skipping = "The 8-direction turnaround loses its angle vocabulary and falls back to base-model interpretation - the exact failure the module exists to avoid."
+notes = "allow-listed: the repo also ships a 35 MB demo GIF."
+
+[[model]]
+name = "qwen-edit-lightning"
+kind = "hf-cache"
+tier = "optional"
+repo = "lightx2v/Qwen-Image-Edit-2511-Lightning"
+allow = ["Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"]
+approx_gb = 0.79
+used_by = ["qwen_edit.LIGHTNING_LORA"]
+why = "Step distillation for the Edit lane: 40 steps -> 4, at the model card's recommended strength 0.7."
+skipping = "Turnaround runs at 40 steps per cell. ~150 cells makes that an overnight job instead of a 40-minute one."
+notes = """
+weight_name is REQUIRED for this repo and so is the allow list: it holds 4- and
+8-step LoRAs in bf16 and fp32 PLUS a 20 GB fp8 full checkpoint. Without the
+filter this entry is a 107 GB download.
+"""
+
+[[model]]
+name = "soft-pixel-art-xl"
+kind = "hf-cache"
+tier = "optional"
+repo = "Muapi/soft-pixel-art-xl"
+allow = ["soft-pixel-art-xl.safetensors"]
+approx_gb = 0.16
+used_by = ["core_models.CORE_MODELS"]
+why = "An SDXL roster alternative, softer style."
+skipping = "One untested roster entry is hidden in the UI. Nothing else changes."
+
+[[model]]
+name = "pixel-art-slider"
+kind = "hf-cache"
+tier = "optional"
+repo = "ntc-ai/SDXL-LoRA-slider.pixel-art"
+approx_gb = 0.04
+used_by = ["core_models.CORE_MODELS"]
+why = "An SDXL roster alternative, 0.08 GB slider LoRA."
+skipping = "One untested roster entry is hidden in the UI. Nothing else changes."
+
+[[model]]
+name = "stable-audio-open"
+kind = "hf-cache"
+tier = "optional"
+repo = "stabilityai/stable-audio-open-1.0"
+gated = true
+approx_gb = 14.60
+used_by = ["audio_engine.AMBIENCE_MODEL"]
+why = """
+Ambience generation - the Audio tab and something2 map ambience. Measured
+2026-09-12: 5,572 MB allocated / 5,988 MB reserved, 30 s clips at 44.1 kHz
+(decisions/0010, ticket 02). Shipped to production 2026-09-13.
+"""
+skipping = "Ambience generation fails. Music (ACE-Step) is a separate model and still works."
+notes = """
+GATED. Accept the model terms on Hugging Face with the same account as HF_TOKEN
+before provisioning, or the fetch 401s. This is the ONLY gated repo in the
+manifest, and it is why HF_TOKEN is still required rather than optional -
+README's claim that the gated repos are FLUX/Llama/Gemma is stale.
+0010 records the one-time fetch as 25 files / 4.7 GB; the tree measures ~15 GB
+on disk. Treat both as approximate.
+"""
+
+[[model]]
+name = "acestep-main"
+kind = "checkpoint-tree"
+tier = "optional"
+repo = "ACE-Step/Ace-Step1.5"
+dest = "acestep"
+fetch = "self"
+approx_gb = 9.40
+used_by = ["audio_engine.ACESTEP_CHECKPOINTS", "scripts/acestep-generate.py"]
+why = """
+Music generation. All 10.1 GB is required on disk: turbo DiT 4.79 GB +
+Qwen3-Embedding-0.6B 1.19 GB + VAE 0.34 GB + acestep-5Hz-lm-1.7B 3.71 GB.
+check_main_model_exists requires all four directories, so the LM is pulled even
+though nothing loads it.
+"""
+skipping = "Music generation fails. Ambience (Stable Audio Open) is separate and still works."
+notes = """
+fetch = "self": ACE-Step's own initialize_service -> _ensure_models_present
+downloads these on first run into ACESTEP_CHECKPOINTS_DIR, with layout
+<checkpoints>/<component>/. The provisioner VERIFIES presence and does not
+fetch - the component layout is ACE-Step's to own, and reproducing it here
+would be a second copy of a thing that already works. The ACE-Step venv itself
+is baked into Dockerfile.cuda, not provisioned.
+"""
+
+[[model]]
+name = "acestep-sft"
+kind = "checkpoint-tree"
+tier = "optional"
+repo = "ACE-Step/acestep-v15-sft"
+dest = "acestep/acestep-v15-sft"
+approx_gb = 4.46
+used_by = ["audio_engine (vocal escalation)"]
+why = "The real vocal escalation if turbo leaks vocals. Has CFG. Reuses the text encoder and VAE already in acestep/."
+skipping = "No fallback when turbo leaks vocals into what should be instrumental."
+notes = """
+The acestep-v15-turbo-fix-inst-* variants that the roster lists are NOT
+downloadable - they appear only in model_downloader.py's _CHECKPOINT_TO_VARIANT,
+not in SUBMODEL_REGISTRY, and no repo under ACE-Step on the Hub is one
+(corrected 2026-09-28). Do not chase them.
+"""
+
+
+# =========================================================================
+# LOCAL - trained here. No download exists. Listed so their absence is a
+# known, named state rather than a mystery.
+# =========================================================================
+
+[[model]]
+name = "trained-loras"
+kind = "local"
+tier = "optional"
+dest = "loras"
+files = [
+  "something2.safetensors",
+  "something2-terrain.safetensors",
+  "mapstyle.safetensors",
+  "mapstyle2.safetensors",
+]
+bytes = 743855072
+used_by = ["core_models.LORA_DIR", "core_models.roster() local:<name> entries", "training.py"]
+why = "Style adapters trained on this machine by training.py, each with a sibling .json of training metadata."
+skipping = """
+Nothing fails. core_models builds `local:<name>` roster entries from whatever
+is in LORA_DIR and repos_for() excludes them, so a machine without them simply
+offers fewer options. Any style_profiles row referencing one will not resolve,
+but a fresh deploy has an empty database anyway.
+"""
+notes = """
+THESE CANNOT BE DOWNLOADED. To move them, copy the directory by hand; to
+recreate them, retrain. Note decisions/0009: both character adapters FAILED,
+so copying them forward may not be worth the bytes. Copy the .json siblings
+too - they carry the training metadata the roster displays.
+"""
+
+
+# =========================================================================
+# DEAD - referenced by code or present on disk, deliberately NOT fetched.
+# `make test-models-manifest` reads this table, so an entry here is a
+# decision, not an omission.
+# =========================================================================
+
+[[dead]]
+ref = "stabilityai/sdxl-turbo"
+why = """
+Dropped by decisions/0002 for cause: distilled, so it runs at guidance 0, which
+makes every negative prompt a silent no-op. Lost the bench badly - 36.9%
+palette / 25.2% blockiness against SDXL+nerijs at 86.6% / 74.7%.
+It survived as a hardcoded default in main.py, model_gateway.py and
+get_sd_pipeline's signature while being absent from disk, so those callers
+could only fail. Those defaults were repointed at default_model() on
+2026-10-13; the name remains only in a legacy cache-name normalisation.
+"""
+
+[[dead]]
+ref = "black-forest-labs/FLUX.1-schnell"
+why = "The step-2 FLUX experiment. tasks.py expected a safetensors plus a hardcoded snapshot hash that never existed; step 2 uses diffusers instead. decisions/0001."
+
+[[dead]]
+ref = "unsloth/FLUX.2-klein-4B-GGUF"
+why = "Same dead FLUX experiment from the models.txt side. Never wired to anything."
+
+[[dead]]
+ref = "fal/flux-2-klein-4b-spritesheet-lora"
+why = "Dead with the FLUX spritesheet experiment."
+
+[[dead]]
+ref = "onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
+why = "Superseded. Not on disk; step 2 runs through the SD1.5 + ControlNet path."
+
+[[dead]]
+ref = "John6666/super-pixelart-xl-m-v1-v10-sdxl"
+why = "Loads cleanly and returns pure RGB noise (decisions/0002). Kept in a comment as a warning, not a candidate."
+
+[[dead]]
+ref = "kohbanye/pixel-art-style"
+why = "Benched in 0002 and never used since."
+
+[[dead]]
+ref = "h94/IP-Adapter"
+why = "IP_ADAPTER_REPO in tasks.py. Not on disk and not on any live path; the identity-transfer route it belonged to was not kept."
+
+[[dead]]
+ref = "Meatfucker/Flux.1-Kontext-dev-bnb-nf4"
+why = """
+EDIT_BASE. Gated behind EDIT_ENABLED, which is off and documented as needing
+24 GB+ of host RAM before it is worth turning on. Declaring it would download
+weights for a disabled feature.
+"""
+
+[[dead]]
+ref = "joelseytre/toonout"
+why = """
+A BiRefNet fine-tune (birefnet_finetuned_toonout.pth) sitting in the cache from
+an experiment. Referenced by no code at all - verified 2026-10-13. Safe to
+delete from disk.
+"""
+
+[[dead]]
+ref = "bartowski/Qwen2.5-3B-Instruct-GGUF"
+why = """
+Qwen2.5-3B-Instruct-Q4_K_M.gguf, 1.8 GB, the last active models.txt entry.
+Superseded 2026-10-01 by the brain lane: worlds.py calls text.run_text, not
+llm-server. Dead weight on disk; safe to delete.
+"""
+
+[[dead]]
+ref = "image-gguf/qwen-image-2.1/qwen_image_2.1-Q8_0.gguf"
+why = """
+7.69 GB sd.cpp bench artifact from .ai/specs/transparent-cutouts/plan.md, run
+against a separate ~/sdcpp build. No product code reads it. Safe to delete.
+Note the sibling Qwen3VL-8B GGUF in the same directory IS live - it is the fast
+brain. Do not delete the directory wholesale.
+"""
+
+[[dead]]
+ref = "image-gguf/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors"
+why = "0.68 GB, the VAE half of the same sd.cpp bench. Safe to delete."
+
+[[dead]]
+ref = "image-gguf/transformers/qwen-image-edit-2511-Q3_K_S.gguf"
+why = """
+9.22 GB. An alternative Edit quant reachable only by setting
+QWEN_EDIT_GGUF_FILE to this absolute path. The default is Q2_K from the unsloth
+cache repo, which is what is actually loaded. Kept on disk as a manual
+experiment; not declared, because provisioning a second machine with it would
+imply the default uses it.
+"""

@@ -6,6 +6,9 @@
 
 *.sh            text eol=lf
 models.txt      text eol=lf
+models.toml     text eol=lf
+Dockerfile      text eol=lf
+*.py            text eol=lf
 Makefile        text eol=lf
 *.yml           text eol=lf
 *.sql           text eol=lf

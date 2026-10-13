@@ -164,7 +164,10 @@ which imports torch but never runs inference and must not hold VRAM.
 # 1. Create compose/develop/.env (or copy it yourself from .env.example)
 make env
 
-# 2. Fill in HF_TOKEN — required for gated repos (FLUX, Llama, Gemma).
+# 2. Fill in HF_TOKEN. Exactly ONE declared repo is gated today —
+#    stabilityai/stable-audio-open-1.0, the ambience model — and you must
+#    accept its terms on huggingface.co with the same account. Skip the token
+#    only if you also skip the optional audio tier.
 #    Also set the storage paths — see "Storage" below. Model weights and the
 #    Postgres data dir MUST be on WSL ext4; generated images stay in the repo.
 $EDITOR compose/develop/.env
@@ -180,11 +183,25 @@ docker compose -f compose/develop/docker-compose.yml \
                -f compose/develop/docker-compose.cuda.yml \
                --env-file compose/develop/.env build sprite-worker
 
-# 5. Download models and start everything.
+# 5. Fetch the model weights. NOTHING ELSE DOES THIS — not `make up`, not
+#    `make build`. Look before you leap; the required tier is tens of GB.
+make provision dry=1
+make provision
+
+# 6. Build the rest and start.
 make build
+
+# 7. Mint an API key. Auth enforcement is ON, so until you do this every
+#    route answers 401 — including plain <img src="/api/jobs/.../sheet">.
+make api-key
 ```
 
 Then open **http://localhost:8001**.
+
+> **If the UI offers fewer models than you expect, that is working as
+> intended.** `core_models` hides any checkpoint that is not on disk, because
+> under `HF_HUB_OFFLINE=1` a missing one can never be recovered by retrying.
+> Run `make models` to see what is declared versus present.
 
 | Service | URL | Purpose |
 |---|---|---|
@@ -192,13 +209,90 @@ Then open **http://localhost:8001**.
 | `sprite_worker` | *(internal)* | Celery worker — **owns the GPU** |
 | `stats_db` | `localhost:5432` | Postgres: sprite history, settings |
 | `redis_broker` | `localhost:6379` | Celery broker |
+| `model_downloader` | *(idle)* | Holds `/models`; what `make provision` runs in |
+
+**Legacy, from the CPU-LLM-cluster era this repo is named after.** They still
+build and still start, and none of them is on the sprite path. Do not reach for
+them when something is wrong with generation:
+
+| Service | URL | Was |
+|---|---|---|
 | `model_orchestrator` | http://localhost:7860 | Download/delete GGUF models |
-| `stats_collector` | http://localhost:8002 | Legacy LLM stats proxy |
-| `open_webui` | http://localhost:3000 | Legacy chat UI |
-| `grafana` | http://localhost:3001 | Legacy metrics |
+| `stats_collector` | http://localhost:8002 | LLM stats proxy |
+| `open_webui` | http://localhost:3000 | Chat UI |
+| `grafana` | http://localhost:3001 | Metrics |
+| `llm_engine` | *(internal)* | llama.cpp router. Retired 2026-10-01 to the `legacy-llm` profile; the brain replaced it (`.ai/decisions/0013`). This is the only consumer `models.txt` has left |
 
 
 ---
+
+## Deploying to another machine
+
+> **Not yet verified on a clean box.** Written 2026-10-13 from the code and
+> from a full inventory of the machine it was developed on. Every claim about
+> what the code requires was checked; the walkthrough end to end on fresh
+> hardware has not been run. Treat a surprise here as a doc bug and fix it.
+
+**What travels and what does not.** The repo carries no weights. A new machine
+needs 56.4 GB for the required tier, or 103 GB for every optional feature, and the manifest at
+`compose/develop/downloader/models.toml` is the authority on which.
+
+| | Comes from | Note |
+|---|---|---|
+| Code, compose, Makefile | git | |
+| ACE-Step venv, `llama-server` | `Dockerfile.cuda` | Built, not downloaded |
+| Model weights | `make provision` | Declared in `models.toml` |
+| Trained LoRAs (`/models/loras`) | **nothing** | Trained locally. Copy by hand or retrain — see below |
+| Postgres history | **nothing** | A fresh deploy starts empty. That is fine |
+| API keys | `make api-key` | Enforcement is on; mint one per machine |
+
+### The sequence
+
+1. Everything under **First run** above, in order.
+2. `make provision dry=1` first, always. It reports real sizes from the Hub,
+   names any gated repo, and downloads nothing.
+3. `make provision` for the required tier, or `tier=all` for every optional
+   feature. Safe to interrupt and re-run — anything present is skipped.
+4. `make models` to confirm what landed.
+5. `make test-models-manifest` to confirm nothing the code wants is undeclared.
+
+### Tiers, and what skipping costs
+
+`required` is the default lane: both brains, the default Qwen-Image GGUF and
+its Lightning LoRA, the NF4 companions, SDXL + the pixel-art LoRA, BiRefNet,
+the SD1.5 checkpoint and both openpose ControlNets.
+
+`optional` is per feature, and each entry's `skipping` field in the manifest
+says exactly what breaks. The large ones: the Edit stack (~9 GB) is the
+8-direction turnaround; Stable Audio Open (~15 GB) is ambience; ACE-Step
+(~15 GB) is music; the Q3_K_M quant (~10 GB) is the slow high-quality core.
+
+### Things that will bite
+
+- **Check free space on the Windows side first.** `df` inside WSL reports the
+  VHDX's nominal size, not real free space. Use `Get-PSDrive C`.
+- **Weights must be on WSL ext4**, never `/mnt/c` or `/mnt/d`. Measured on 9p:
+  44 MB/s against 3.9 GB/s, and a pipeline load of 62 s against 10 s.
+- **One gated repo.** `stabilityai/stable-audio-open-1.0` needs its terms
+  accepted with the same account as `HF_TOKEN`, or it 401s. The provisioner
+  names it up front and keeps going if it fails.
+- **Two files are saved under a different name than the Hub publishes**
+  (the VL-8B brain, and the Q3_K_M image quant). The manifest's `as` field
+  handles it. Fetching those by hand with `hf download` leaves a file that
+  exists and that nothing finds.
+- **One model cannot be reproduced exactly.** The `Qwen-Image-2512-Q3_K_M`
+  on the source machine is a third-party 9.69 GB build whose publisher was
+  never recorded; the manifest substitutes unsloth's 9.93 GB build and says
+  so. `.ai/decisions/0012`'s timings for it may not transfer — re-measure.
+- **The trained LoRAs cannot be downloaded.** Copy `$MODELS_DIR/loras/`
+  (4 files plus their `.json` siblings, ~744 MB) if you want them. Nothing
+  breaks without them — the roster just offers fewer entries. Note that
+  `.ai/decisions/0009` found both character adapters failed, so they may not
+  be worth the bytes.
+- **A different GPU does not need a different manifest.** Everything declared
+  runs on a larger card; the quant choices are conservative for 12 GB, not
+  incompatible. Tune with `BRAIN_35B_CPU_MOE`, `BRAIN_35B_MIN_FREE_MB` and
+  `QWEN_EDIT_GGUF_FILE` rather than by editing `models.toml`.
 
 ## Starting the stack (after every reboot)
 
@@ -533,18 +627,23 @@ Notes:
 |---|---|
 | `make env` | Create `compose/develop/.env` from the example if missing |
 | `make gpu-check` | Verify the GPU is reachable from inside a container |
-| `make up` | Start the stack (downloads missing models first) |
-| `make build` | Build images, download models, start |
+| `make up` | Start the stack. **Downloads nothing** — see `make provision` |
+| `make build` | Build images and start. **Downloads no model weights** |
+| `make provision` | **Fetch the weights `models.toml` declares** (required tier) |
+| `make provision tier=all` | …including every optional feature (103 GB total; required alone is 56.4 GB) |
+| `make provision dry=1` | Plan only: what is missing, and how big, from the Hub |
+| `make test-models-manifest` | Fail if the code references a model nothing declares |
 | `make recreate` | Force-recreate the sprite services (fixes stale container DNS) |
 | `make rebuild-clean` | Full no-cache rebuild |
 | `make down` / `make stop` | Stop the stack |
 | `make logs` | Tail a service (`SERVICE_NAME=sprite-generator make logs`) |
-| `make download repo=<hf-repo> file=<f>` | Fetch a model into the running stack |
+| `make download repo=<hf-repo> file=<f>` | Ad-hoc fetch into the running stack. Prints the `models.toml` stanza to add — it does **not** declare the model for you |
+| `make api-key` | Mint a bearer key. Auth enforcement is **on**; a fresh deploy needs this |
 | `make warm` | Preload models into VRAM out-of-band (avoids request timeouts) |
 | `make smoke` | Verify GPU, model discovery and a txt2img round-trip |
 | `make test-flow` | Verify the full core -> spritesheet workflow |
-| `make sync-models` | Download anything in `models.txt` that is missing |
-| `make models` | List models: declared in `models.txt`, on disk, and served right now |
+| `make sync-models` | **Legacy.** Fetches `models.txt`, which feeds only the retired llama.cpp router (profile `legacy-llm`). Not the provisioning path |
+| `make models` | List models four ways: declared, code-referenced, on disk, served |
 
 ### Changing the CUDA version
 
@@ -706,14 +805,30 @@ all. Sprites also still keep the model's ground shadow.
 
 ## Known issues
 
-- **The FLUX branch of step 2 cannot load on a clean machine.** `tasks.py`
-  expects `/models/flux1-schnell.safetensors` plus a hardcoded HF snapshot hash,
-  while `models.txt` downloads `flux-2-klein-4b-Q8_0.gguf`. Neither is wired to
-  the other. Unfixed and low priority: step 2 runs on
-  `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator` (SD1.5), which works, and
-  FLUX is a worse fit for this job anyway — schnell is distilled, so guidance is
-  off and negative prompts do nothing, which is the exact trap that hid the
-  duplicate-character bug in step 1.
+- **The FLUX branch of step 2 is dead code.** `tasks.py` expects
+  `/models/flux1-schnell.safetensors` plus a hardcoded HF snapshot hash; the
+  `models.txt` FLUX lines are commented out and nothing fetches either. Both
+  repos are in `models.toml`'s `[[dead]]` table, so this will not be revived by
+  accident. Low priority: FLUX is a worse fit anyway — schnell is distilled, so
+  guidance is off and negative prompts do nothing, the exact trap that hid the
+  duplicate-character bug in step 1. (Corrected 2026-10-13: an earlier version
+  of this entry said step 2 runs on
+  `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator`. It does not, and that
+  checkpoint is not on disk — step 2 is img2img on the parent core's own
+  checkpoint, pose-conditioned through openpose ControlNet.)
+
+- **Pose-conditioned step 2 depends on two ControlNets that must be fetched.**
+  `use_pose` turns on automatically for any action with a cycle, and under
+  `HF_HUB_OFFLINE=1` a missing ControlNet cannot be recovered by retrying.
+  Both are declared `required` in `models.toml`; `make provision` fetches them.
+  They were absent here until 2026-10-13, which broke that path silently for
+  both model families; after fetching, `make test-flow` passes with
+  `pose-conditioned, strength 0.75` in the worker log.
+- **Not a bug:** on an SDXL target the worker logs *"thibaud/controlnet-openpose-sdxl-1.0
+  does not appear to have a file named `diffusion_pytorch_model.safetensors`"*.
+  That repo publishes only the `.bin`, and diffusers falls back to it and
+  proceeds. Do not "fix" this by filtering the repo to safetensors — there is
+  nothing to fall back to.
 
 - **Sprites keep the model's ground shadow.** A green ellipse under the feet,
   connected to the sprite, so neither the background key nor the largest-blob

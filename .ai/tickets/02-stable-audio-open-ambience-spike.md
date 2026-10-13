@@ -1,5 +1,24 @@
 # Stable Audio Open 1.0 produces a 30 s ambience clip on this card
 
+> **DONE — closed 2026-10-13.** The spike ran on 2026-09-12 and the model went
+> to production the next day; the boxes below were simply never ticked.
+> Evidence: `0010` records "Spike (ticket 02), 2026-09-12 … MEASURED" with a
+> 5,572 MB allocated / 5,988 MB reserved VRAM peak, and a separate "In product,
+> measured 2026-09-13 (ambience path end to end)" section. `audio.py`'s router
+> is mounted in `main.py`, `frontend/src/tabs/Audio.tsx` exists, and
+> `models--stabilityai--stable-audio-open-1.0` is on disk.
+>
+> **Ambience is shipped, not a spike** — anything still calling it one is
+> stale, including the filename.
+>
+> The last acceptance criterion ("the fetch procedure documented where the
+> other weights are") is **still open**, and is the reason this ticket matters
+> now: `stabilityai/stable-audio-open-1.0` is **gated** — it needs accepted
+> terms plus `HF_TOKEN` — and nothing records that. It was going into
+> `downloader/models.txt`, which has since turned out to have no live
+> consumers. It belongs in the model manifest instead ("or its equivalent",
+> as the scope below already allowed for).
+
 ## What To Build
 
 A one-off spike proving the ambience model loads and generates here through

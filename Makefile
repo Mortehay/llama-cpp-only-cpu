@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts
+.PHONY: gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts provision test-models-manifest
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -206,8 +206,24 @@ download:
 	fi
 	@echo "Downloading $(file) from $(repo)..."
 	docker exec -it model_downloader hf download "$(repo)" "$(file)" --local-dir /models
-	@echo "$(repo) $(file)" >> compose/develop/downloader/models.txt
-	@echo "Model appended to models.txt for future rebuilds."
+	@echo
+	@echo "Fetched to /models (FLAT - --local-dir, not HF cache layout)."
+	@echo "It is NOT declared anywhere, so a second machine will not get it and"
+	@echo "\`make test-models-manifest\` will fail if code starts referencing it."
+	@echo "Add a stanza to compose/develop/downloader/models.toml, e.g.:"
+	@echo
+	@echo "  [[model]]"
+	@echo "  name = \"CHANGEME\""
+	@echo "  kind = \"hf-file\"      # or hf-cache if diffusers resolves it by repo id"
+	@echo "  tier = \"optional\""
+	@echo "  repo = \"$(repo)\""
+	@echo "  file = \"$(file)\""
+	@echo "  dest = \"CHANGEME\"     # two levels deep for a GGUF"
+	@echo "  used_by = [\"CHANGEME\"]"
+	@echo "  why = \"CHANGEME\""
+	@echo
+	@echo "Then move the file to \$$MODELS_DIR/<dest>/ - \`make provision\` will not"
+	@echo "re-fetch it, but it looks for it there, not at the flat path above."
 
 # Show what models are declared, what is on disk, and what is actually served.
 # Read-only, and the three answers routinely disagree - see the script header.
@@ -215,9 +231,46 @@ download:
 models:
 	./scripts/list-models.sh $(HOST)
 
-# Check models.txt against the local directory and download any missing weights
+# Fetch everything models.toml declares. THIS is how a machine gets its weights.
+#
+#   make provision                 the required tier - the default lane
+#   make provision tier=all        every optional feature too (103 GB)
+#   make provision dry=1           plan and real sizes, downloads nothing
+#   make provision only=birefnet   one entry
+#   make provision audit=1 tier=all          resolve EVERY entry against the
+#                                            Hub, present or not: true sizes,
+#                                            and proof each allow/ignore glob
+#                                            selects what it was meant to
+#   make provision audit=1 files=1 only=X    list the files X would fetch
+#
+# Deliberately NOT part of `make up`. Two containers downloading into the same
+# /models cache deadlocked on HuggingFace's file locks, which is why the
+# downloader service idles instead of fetching on startup.
+#
+# --models-dir is NOT passed: the container's HF_HUB_CACHE already names the
+# bind mount. Passing the host's MODELS_DIR here would name a path that is not
+# the mount, and the download would land in a layer `--rm` discards - the same
+# trap documented on fetch-qwen below, inverted.
+tier ?= required
+provision:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python3 downloader /app/scripts/provision-models.py \
+		--tier $(tier) $(if $(dry),--dry-run,) $(if $(only),--only $(only),) \
+		$(if $(audit),--audit,) $(if $(files),--files,)
+
+# Does every model the CODE references appear in the manifest? Host-only, no
+# containers, no GPU, no network. This is what stops models.toml rotting the
+# way models.txt did - see .ai/decisions/0014.
+test-models-manifest:
+	@MODELS_DIR=$$(grep -E '^MODELS_DIR=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
+	python3 scripts/check-models-manifest.py \
+		$${MODELS_DIR:+--models-dir $$MODELS_DIR}
+
+# LEGACY. models.txt feeds the retired llama.cpp router (profile `legacy-llm`)
+# and nothing else; its last live entry was superseded by the brain in 0013.
+# For real provisioning use `make provision`.
 sync-models:
-	@echo "Checking models.txt for any missing models..."
+	@echo "models.txt is the LEGACY llm-server lane - see models.toml and \`make provision\`."
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm downloader /usr/local/bin/download_models.sh
 
 # --- 2D conveyor (ADR 0005) ---------------------------------------------
@@ -351,7 +404,8 @@ test-all:
 	@fail=0; \
 	for t in test-train-prep test-split-sheets test-apply-verdicts \
 	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
-	         test-pedestal-guard test-audio test-text-contract; do \
+	         test-pedestal-guard test-audio test-text-contract \
+	         test-models-manifest; do \
 	    printf '\n=== %s ===\n' "$$t"; \
 	    if $(MAKE) --no-print-directory $$t; then \
 	        echo "--- $$t OK"; \

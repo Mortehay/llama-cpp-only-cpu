@@ -554,7 +554,12 @@ def edit_image(request: Request,
 @app.post("/api/generate_sheet")
 def generate_sheet(request: Request,
                    parent_id: int = Form(...), actions: str = Form(...),
-                   llm_name: str = Form("stabilityai/sdxl-turbo"),
+                   # Was "stabilityai/sdxl-turbo", which 0002 dropped for cause
+                   # and which is not cached - so a sheet request that omitted
+                   # llm_name could only fail under HF_HUB_OFFLINE=1. The core
+                   # route above has used default_model() all along; this is
+                   # the gap 0012 named in its Open #2. Changed 2026-10-13.
+                   llm_name: str = Form(default_model()),
                    width: int = Form(128), height: int = Form(128),
                    motion_steps: int = Form(4),
                    authorization: str | None = Header(None)):
@@ -792,7 +797,10 @@ def retry_task(id: int, request: Request,
                 
                 prompt, image_type, parent_id, requested_actions, llm_name, step_number = row
                 
-                llm_actual = llm_name if llm_name and llm_name != 'Unknown' else "stabilityai/sdxl-turbo"
+                # default_model(), not sdxl-turbo: a retry of a row whose
+                # llm_name was never recorded must not reach for a checkpoint
+                # that was dropped from the roster and is not on disk.
+                llm_actual = llm_name if llm_name and llm_name != 'Unknown' else default_model()
                 
                 if image_type == "core":
                     task = generate_core_task.delay(prompt, llm_actual)

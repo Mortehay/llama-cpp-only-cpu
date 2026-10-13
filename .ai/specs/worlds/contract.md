@@ -76,10 +76,22 @@ fell back and why. It also names anything it invented and dropped:
     "biomes authored by Qwen2.5-3B-Instruct-Q4_K_M (5/6 worlds);
      dropped invented biome(s): Arctic Tundra"
 
-Model: `Qwen2.5-3B-Instruct-Q4_K_M`, in `downloader/models.txt`. ~0.7 s warm,
-~13 s on the first call after two idle minutes (llama.cpp's router loads on
-demand and `--sleep-idle-seconds 120` unloads); that cold start is retried
-internally, not surfaced as a failure. Override with `WORLD_LLM_MODEL`.
+Model: **superseded 2026-10-01 by the gated brain (0013).** `worlds.py` calls
+`text.run_text`, so the author is whichever brain `brain_engine.BRAINS` has
+active — by default Qwen3.6-35B-A3B, not a llama.cpp router model. The example
+string above still names `Qwen2.5-3B-Instruct-Q4_K_M` because `author` reports
+whatever actually ran; expect a brain id there now.
+
+The old route was `Qwen2.5-3B-Instruct-Q4_K_M` via llm-server, declared in
+`downloader/models.txt`, at ~0.7 s warm and ~13 s on the first call after two
+idle minutes. **That path is retired** along with `llm_engine` (compose profile
+`legacy-llm`), and its 1.8 GB GGUF is dead weight on disk. Latency is now the
+brain's; cold loads are bounded by `brain_engine`'s own ceiling, not by
+`--sleep-idle-seconds`. **`WORLD_LLM_MODEL` does not exist** — verified
+2026-10-13, the name appears in this document and nowhere in the code or
+compose. Setting it does nothing; the brain is chosen by `brain_engine`.
+A refusal (`TextRefused`, another model holds the card) is a rule fallback,
+not an error.
 
 Whatever the author, the spec is repaired to meet the flora and variety floors
 before it is written - see [0008](../../decisions/0008-world-specs-for-something2.md)

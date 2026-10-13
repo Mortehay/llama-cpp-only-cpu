@@ -16,9 +16,14 @@ the spike does not depend on it).
 
 0. **Prerequisites, before downloading anything:**
    - Drive letters moved with the upgrade: the old 111.8 GB D: is now E:
-     (69 GB free), and D: is a new empty 223 GB SATA SSD. Confirm
-     `scripts/setup-models-vhd.ps1 -AttachOnly` still attaches the models VHD;
-     fix its path if not. Symptom of forgetting: every model "vanished".
+     (69 GB free), and D: is a new empty 223 GB SATA SSD.
+     **Corrected 2026-10-13: there is no models VHD to attach.** `MODELS_DIR`
+     is `/home/markunn/sprite-data/models` on the distro root; nothing is
+     mounted and models do not "vanish" after a reboot. Do **not** run
+     `scripts/setup-models-vhd.ps1` - without `-AttachOnly` it creates an
+     empty disk. See `.ai/project-context.md`.
+   - Weights now come from `make provision` (`.ai/decisions/0014`), not by
+     hand. `make provision dry=1` before downloading anything.
    - `.wslconfig`: `processors=4` -> 12, `memory=24GB` -> ~36GB, and replace the
      i3/15.9 GB comments. `wsl --shutdown`, then the three post-restart scripts.
      Measuring with 4 threads would understate the CPU lane by ~2-3x.

@@ -1226,9 +1226,16 @@ def _is_sdxl_checkpoint(llm_name: str) -> bool:
     return "sdxl" in llm_name.lower() or "turbo" in llm_name.lower()
 
 
-def get_sd_pipeline(llm_name: str = "stabilityai/sdxl-turbo",
+def get_sd_pipeline(llm_name: str = None,
                     pipeline_type: str = "text2img", controlnet: str = None,
                     lora_scale: float = None):
+    # None, resolved here, rather than a literal default: sdxl-turbo was
+    # dropped by 0002 and is not on disk, so the old default could only fail.
+    # Resolved at CALL time so it follows the roster, not import order.
+    if llm_name is None:
+        llm_name = default_model()
+    # A legacy cache-directory name, still written into old sprite_images rows.
+    # Normalised, not revived: nothing fetches turbo any more.
     if llm_name == "models--stabilityai--sdxl-turbo":
         llm_name = "stabilityai/sdxl-turbo"
     global pipes
@@ -2066,7 +2073,7 @@ def remove_background(master, tolerance: int = 22, keep_largest: bool = False):
 
 
 @celery_app.task(name="tasks.generate_core_task", bind=True)
-def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turbo"):
+def generate_core_task(self, prompt: str, llm_name: str = None):
     """A step-1 core, regenerated on a new seed when its background survives.
 
     A core is the source image of every sprite sheet, so an opaque one carries
@@ -2076,6 +2083,13 @@ def generate_core_task(self, prompt: str, llm_name: str = "stabilityai/sdxl-turb
     is the same lever generate_raw_task uses. Nothing here waits on the caller,
     so the loop is bounded by attempt count only.
     """
+    # Was "stabilityai/sdxl-turbo" in the signature. Turbo was dropped by 0002
+    # (distilled, guidance 0, every negative prompt a silent no-op) and is not
+    # on disk, so that default could only fail. Resolved here rather than in
+    # the signature so it tracks the roster instead of import order, and so
+    # model_gateway's GATED fallback and this agree. Changed 2026-10-13.
+    if llm_name is None:
+        llm_name = default_model()
     task_id = self.request.id
     attempts = max(1, ENTITY_CUTOUT_ATTEMPTS)
     result = {}

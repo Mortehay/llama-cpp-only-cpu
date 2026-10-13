@@ -53,12 +53,19 @@ else
   fail "sd-models missing model_name (something2's \$[*].model_name pointer would fail): $models"
 fi
 
-step "4. txt2img round-trip (blocking; first run also downloads the model)"
+step "4. txt2img round-trip (blocking)"
+# No override_settings. It used to pin "stabilityai/sdxl-turbo", which 0002
+# dropped for cause and which is not on disk - under HF_HUB_OFFLINE=1 that is
+# unrecoverable, so this step could only fail. It is in models.toml's [[dead]]
+# table. Omitting the override lets the facade pick its own default, which is
+# also what a real something2 request does. Changed 2026-10-13.
+#
+# "first run also downloads the model" was removed from the heading too: the
+# worker runs offline and downloads nothing. Weights come from `make provision`.
 started=$(date +%s)
 resp=$(sprite_curl -s --max-time 900 -X POST "$BASE/sdapi/v1/txt2img" \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"green zombie, pixel art sprite","width":"512","height":"512","seed":"12345",
-       "override_settings":{"sd_model_checkpoint":"stabilityai/sdxl-turbo"}}')
+  -d '{"prompt":"green zombie, pixel art sprite","width":"512","height":"512","seed":"12345"}')
 elapsed=$(( $(date +%s) - started ))
 
 if echo "$resp" | grep -q '"images"'; then

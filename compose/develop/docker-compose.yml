@@ -4,25 +4,47 @@ services:
   # 1. Model Downloader (Skips if exists)
   downloader:
     build:
-      context: ./downloader
-      dockerfile: Dockerfile
+      # Repo root, like sprite-generator: the provisioner and its shared reader
+      # live in scripts/, which a ./downloader context cannot reach.
+      context: ../../
+      dockerfile: compose/develop/downloader/Dockerfile
     container_name: model_downloader
     platform: linux/amd64
     volumes:
       - ${MODELS_DIR:-../../models}:/models
+      # Same arrangement as sprite-worker: operator scripts are bind-mounted,
+      # never baked in (.dockerignore excludes /scripts/ from every build
+      # context, because the repo is on 9p and nothing should cross it twice).
+      # provision-models.py lives here and imports models_manifest.py beside it.
+      - ../../scripts:/app/scripts:ro
+      # The manifest is COPYed into the image too, so it works standalone; the
+      # mount is what makes an edit take effect without a rebuild.
+      - ./downloader/models.toml:/usr/local/bin/models.toml
       - ./downloader/models.txt:/usr/local/bin/models.txt
     env_file:
       - .env
     environment:
       - HF_TOKEN=${HF_TOKEN}
-      - HF_DEBUG=1
+      # Opt-in. At 1 huggingface_hub logs a full curl line per request, which
+      # buries `make provision`'s plan and progress under thousands of lines
+      # (and prints the token header placeholder on every one). Set HF_DEBUG=1
+      # in the environment only when diagnosing a download.
+      - HF_DEBUG=${HF_DEBUG:-0}
+      # Same value the API and worker use, so the provisioner writes cache-
+      # layout repos exactly where core_models.HF_CACHE later looks for them.
+      # models.toml resolves its cache root from this variable.
+      - HF_HUB_CACHE=/models
+      # NOT offline: this is the one container whose job is to download.
+      - HF_HUB_OFFLINE=0
     # Idle only — do NOT download on startup.
     #
-    # The Makefile already runs `docker compose run --rm downloader
-    # download_models.sh` so progress is visible interactively. Having the
-    # service ALSO download meant two containers hit the same /models cache at
-    # once and deadlocked on HuggingFace's file locks:
+    # `make provision` runs the fetch as a one-off `docker compose run --rm`,
+    # so progress is visible interactively. Having the service ALSO download
+    # meant two containers hit the same /models cache at once and deadlocked on
+    # HuggingFace's file locks:
     #   Still waiting to acquire lock on /models/.cache/huggingface/download/...
+    # That is also why provisioning is not wired into `make up` — see
+    # .ai/decisions/0014 D6.
     # This container stays up purely so `make download` has something to exec into.
     command: ["-c", "tail -f /dev/null"]
 

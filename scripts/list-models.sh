@@ -6,11 +6,15 @@
 # Three different answers, which routinely disagree, and the disagreement is
 # the reason this script exists:
 #
-#   DECLARED  models.txt — what `make up` will download. Editing this file does
-#             nothing until the downloader runs again (`make sync-models`).
+#   DECLARED  models.toml — what `make provision` will fetch. Editing it does
+#             nothing until the provisioner runs again. (models.txt is the
+#             LEGACY llm-server lane and is not shown here.)
+#   CODE-REF  what the source actually asks for. Drift between this and
+#             DECLARED is the bug class that let models.txt rot unnoticed, so
+#             it gets its own check: `make test-models-manifest`.
 #   ON DISK   the actual GGUFs under MODELS_DIR. A model deleted through the
 #             orchestrator UI (DELETE /api/models/...) is gone from here while
-#             still listed in models.txt, and re-downloads on the next `make up`.
+#             still declared, and re-appears on the next `make provision`.
 #   SERVED    what llama.cpp advertises right now. It scans --models-dir, so a
 #             file that arrived after the container started may not be listed
 #             until a restart — and `--models-max 1` means at most one of them
@@ -28,21 +32,38 @@ COLLECTOR="http://${HOST}:8002"   # llm-server publishes no host port; the
 SPRITE="http://${HOST}:8001"
 COMPOSE="compose/develop/docker-compose.yml -f compose/develop/docker-compose.cuda.yml"
 ENV_FILE="compose/develop/.env"
-MODELS_TXT="compose/develop/downloader/models.txt"
+MODELS_TOML="compose/develop/downloader/models.toml"
 
 step() { echo; echo "=== $* ==="; }
 
-step "DECLARED — $MODELS_TXT"
-# Strip CR: the file is edited on Windows and checked out with CRLF (see the
-# same defence in download_models.sh).
-tr -d '\r' < "$MODELS_TXT" | awk '
-  /^[[:space:]]*#/ { next }
-  NF >= 2 { printf "  active      %-52s %s\n", $2, $1 }
-'
-tr -d '\r' < "$MODELS_TXT" | awk '
-  /^#[[:space:]]+[0-9.]+ GB/ { printf "  commented   %-52s %s\n", $5, $4 }
-'
-echo "  (uncomment a line, then \`make sync-models\` to fetch it)"
+step "DECLARED — $MODELS_TOML"
+# Parsed with Python, not awk: the manifest has multi-line strings and awk
+# would have to half-implement TOML to skip them. python3 is already required
+# by `make test-models-manifest`.
+python3 - "$MODELS_TOML" <<'PY' || echo "  (could not read the manifest)"
+import sys, os
+sys.path.insert(0, "scripts")
+from models_manifest import load
+doc = load(sys.argv[1])
+for tier in ("required", "optional"):
+    rows = [m for m in doc.get("model", []) if m.get("tier") == tier]
+    for m in rows:
+        what = m.get("repo") or m.get("dest", "")
+        flag = " GATED" if m.get("gated") else ""
+        flag += " MISSING-AT-SOURCE" if m.get("missing_on_source_host") else ""
+        print(f"  {tier:<9} {m['kind']:<16} {m['name']:<26} {what}{flag}")
+print(f"  {len(doc.get('dead', []))} entries are explicitly DEAD (see [[dead]])")
+PY
+echo "  (\`make provision\` fetches the required tier; tier=all for everything)"
+
+step "CODE-REF vs DECLARED — drift"
+# The same check `make test-models-manifest` runs, reported inline. Non-fatal
+# here: this script is read-only and informational.
+MODELS_DIR_ENV="$(grep -E '^MODELS_DIR=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+python3 scripts/check-models-manifest.py \
+    ${MODELS_DIR_ENV:+--models-dir "$MODELS_DIR_ENV"} 2>&1 \
+  | sed -n '/^[0-9]* advisory/,$p' | sed 's/^/  /' \
+  || echo "  (drift check failed to run)"
 
 step "ON DISK — MODELS_DIR, via the downloader container"
 # Ask docker rather than reading MODELS_DIR from .env directly: the value is
@@ -53,11 +74,15 @@ step "ON DISK — MODELS_DIR, via the downloader container"
 #
 # No `sh` before -c: the image's ENTRYPOINT is already /bin/sh, so passing one
 # runs `/bin/sh sh -c ...` and fails with "can't open 'sh'".
+# `find`, not `ls /models/*.gguf`: every live GGUF is TWO levels down
+# (brain-gguf/..., image-gguf/...), and the one-level glob reported only the
+# dead Qwen2.5-3B at the root while claiming to list what is on disk.
 if ! disk=$(docker compose -f $COMPOSE --env-file "$ENV_FILE" run --rm --no-deps \
-              -T downloader -c 'ls -l /models/*.gguf 2>/dev/null' 2>/dev/null); then
+              -T downloader -c 'find /models -maxdepth 3 -name "*.gguf" -type f \
+                                  -exec ls -l {} + 2>/dev/null | sort -k9' 2>/dev/null); then
   echo "  cannot reach docker — run this from inside WSL, where the daemon lives"
 elif [ -z "$(printf '%s' "$disk" | tr -d '[:space:]')" ]; then
-  echo "  no .gguf files in MODELS_DIR (\`make sync-models\` downloads what models.txt declares)"
+  echo "  no .gguf files in MODELS_DIR (\`make provision\` fetches what models.toml declares)"
 else
   printf '%s\n' "$disk" | awk 'NF >= 5 { printf "  %8.2f GB  %s\n", $5/1073741824, $NF }'
 fi

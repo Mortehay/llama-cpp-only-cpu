@@ -122,9 +122,11 @@ The first external consumer is the admin panel of
 > | Disks | three **SATA** SSDs, no NVMe: C: 477 GB (260 free), **D: 223 GB, empty**, **E: 112 GB (69 free)** |
 >
 > Consequences:
-> - **Drive letters moved.** The old 111.8 GB D: that held the models VHD
->   appears to be E: now. Check `scripts/setup-models-vhd.ps1 -AttachOnly`
->   before trusting that models are mounted.
+> - **Drive letters moved, and the models VHD did not survive it.** Resolved
+>   2026-10-13: there is no models VHD on any letter. `MODELS_DIR` is
+>   `/home/markunn/sprite-data/models` on the distro root, nothing is mounted,
+>   and **`setup-models-vhd.ps1` should not be run at all** — without
+>   `-AttachOnly` it creates an empty disk. See the storage section below.
 > - `.wslconfig` still says `processors=4` and `memory=24GB`, with comments
 >   describing the i3. The VM uses a third of the CPU until that changes.
 > - "CPU inference is not viable here" below was true of the i3 and is **no
@@ -607,30 +609,37 @@ come back.
   VHDX's **nominal** ~1007 GB, so a model download can look free when C: is
   nearly full. Check `Get-PSDrive C` on the Windows side before pulling weights.
 
-**D: now holds the models, and the way it holds them matters.** Updated
-2026-08-23. Two distinct uses of D:, which are easy to confuse:
+**SUPERSEDED 2026-10-13 — D: no longer holds the models at all.** The two
+paragraphs that followed here described a D: cold archive and a D: ext4 VHD.
+Both are gone after the drive reshuffle, and acting on either does damage, so
+the current state comes first:
 
-1. **Cold archive** — `/mnt/d/wsl-model-archive`, plain DrvFs, managed by
-   `scripts/archive-models.sh` and `scripts/archive-all-models.sh`. All 28 GB of
-   weights were parked here on 2026-08-23. **Never run a model from here** — 9p
-   measured at 44 MB/s against 3.9 GB/s on ext4, 62s to load a pipeline against
-   10s.
-2. **Live storage** — a dedicated **ext4 VHD** on D:, created by
-   `scripts/setup-models-vhd.ps1` and attached with `wsl --mount --vhd`. This is
-   what `MODELS_DIR` points at. Native ext4 (no 9p penalty), bytes on the D:
-   spindle (C: stops growing).
-
-The mount **does not survive a reboot**. Re-attach it in the same slot as
-`lan-expose.ps1`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\setup-models-vhd.ps1 -AttachOnly
-```
-
-That is the price of this arrangement, and forgetting it looks like every model
-having vanished.
-- Reclaim with `scripts/compact-wsl-disk.ps1` (**Administrator** — `diskpart`
-  cannot attach a vdisk otherwise).
+- `MODELS_DIR` is **`/home/markunn/sprite-data/models`** — the distro root,
+  native ext4, inside the C: VHDX. Verified 2026-10-13: 112 GB, 17 `models--*`
+  cache trees plus `brain-gguf/`, `image-gguf/`, `acestep/`, `loras/`. It is
+  also `HF_HUB_CACHE` for both containers, so the HF cache and the hand-placed
+  GGUFs share one tree.
+- **What populates it: `make provision`, from
+  `compose/develop/downloader/models.toml`** (2026-10-13, decision `0014`).
+  Nothing else does — not `make up`, not `make build`. `models.txt` feeds only
+  the retired llama.cpp router. `make test-models-manifest` fails if the code
+  references a model the manifest does not declare.
+- **There is no `D:\wsl-models.vhdx`** and no `wsl --mount --vhd` step. Do
+  **not** run `scripts/setup-models-vhd.ps1` without `-AttachOnly` "to fix" a
+  missing mount — it would create an empty disk. Nothing needs re-attaching
+  after a reboot; models do not vanish.
+- **`/mnt/d/wsl-model-archive` does not exist.** Verified 2026-10-13: D: holds
+  no archive directory. The "all 28 GB of weights parked here on 2026-08-23"
+  claim is **not recoverable** — `scripts/archive-models.sh restore` has
+  nothing to restore from. Weights that are missing must be re-downloaded from
+  the Hub. Known casualties: both openpose ControlNets and
+  `stabilityai/sdxl-turbo`, all three still referenced by live code.
+- The 9p-vs-ext4 measurements that justified the move still stand and still
+  explain why weights must not live on `/mnt/c` or `/mnt/d`: 44 MB/s against
+  3.9 GB/s cached, 62 s to load a pipeline against 10 s. **Never run a model
+  from a DrvFs path.**
+- Reclaim space with `scripts/compact-wsl-disk.ps1` (**Administrator** —
+  `diskpart` cannot attach a vdisk otherwise).
 - **Do not use `wsl --manage <distro> --set-sparse true`.** WSL refuses it with
   *"Sparse VHD support is currently disabled due to potential data corruption"*
   and only proceeds with `--allow-unsafe`. This distro holds the Postgres data

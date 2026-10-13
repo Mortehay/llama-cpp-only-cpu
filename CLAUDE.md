@@ -11,22 +11,30 @@ Despite the repo name, this is **not** a CPU LLM cluster. The live component is
 with a Jinja/vanilla-JS UI, a React app under `frontend/`, and Postgres history.
 `collector/`, `orchestrator/`, `mesh_worker/`, `rig_worker/` are legacy.
 
-**`README.md` is stale — it describes the old project. Do not trust it.**
-`.ai/project-context.md` is the current one.
+**`README.md` is mostly accurate; the warning that it "describes the old
+project" was itself stale** (checked 2026-10-13). Its Requirements, Storage
+and after-reboot sequence match this machine. Four parts are wrong: the
+`HF_TOKEN` line names FLUX/Llama/Gemma (all dead — the one gated repo now is
+`stabilityai/stable-audio-open-1.0`), "First run" step 5 claims `make build`
+downloads models (it fetches **none** of the live weights), the service table
+presents `model_orchestrator`/`stats_collector`/`open_webui`/`grafana` as
+live, and the Make-commands rows describe `models.txt`.
+`.ai/project-context.md` remains the authority on current state.
 
 ## Where to look
 
 | Question | File |
 |---|---|
 | Current state, hardware, environment, known-broken | `.ai/project-context.md` |
-| A word means three things — "core", "task", "map" | `.ai/domain.md` |
-| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0009) |
+| A word means three things — "core", "task", "map"; also the four kinds of "model" on disk and the four answers to "what models does this have" | `.ai/domain.md` |
+| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0013) |
 | Model choice, LoRA rules, trigger words | `.ai/decisions/0002` |
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
 | Why both trained adapters failed | `.ai/decisions/0009` |
 | Bigger LLMs / Colibri; `llm_name` is the *image* model | `.ai/decisions/0011` |
 | Qwen-Image-2512 GGUF lane; the downloaded-GGUF verdicts | `.ai/decisions/0012` |
+| How weights get onto a machine; `make provision` | `.ai/decisions/0014`, `.ai/specs/model-provisioning/` |
 | `/api/text` brain for something2; why `llm_engine` leaves the GPU | `.ai/decisions/0013`, `.ai/specs/something2-text/contract.md` |
 
 Read the decision before changing anything it covers. They are long because they
@@ -207,6 +215,47 @@ fragment of it.
     (measured 24.6–53.8% kept on some passes), so a subject can be the wrong
     item. Retrying toward a higher kept-target would trade latency for asset
     quality; the guard's own floor stays at the measured 20%.
+
+**Provisioning — `models.toml`, and the gaps it exposed**
+- **`models.toml` is the manifest; `make provision` is the only thing that
+  fetches weights.** Not `make up`, not `make build` (two containers on the
+  same `/models` cache deadlock on HF file locks). Tiers: `required` by
+  default (56.4 GB), `tier=all` for 103 GB, `dry=1` to plan, `audit=1` for real sizes. Spec
+  `.ai/specs/model-provisioning/`, decision `0014`.
+- **`models.txt` has no live consumers** (checked 2026-10-13). Its one active
+  entry, `Qwen2.5-3B-Instruct-Q4_K_M.gguf`, was superseded by the brain lane in
+  0013 — `worlds.py` calls `text.run_text`, not llama-server — so the file now
+  serves only the retired `legacy-llm` profile. **Do not add models to it.**
+- **Adding a model means adding a `models.toml` stanza.** `make
+  test-models-manifest` walks the source for repo ids, `gguf:` stems and brain
+  paths and fails if one is neither declared nor in `[[dead]]`. That test is
+  the point — it is the thing `models.txt` never had.
+- **Two entries save under a different filename than the Hub publishes** (the
+  VL-8B brain, the Q3_K_M image quant), via the `as` field. Fetching either by
+  hand with `hf download` leaves a file that exists and is never found.
+- **"Model" means four things on disk, each needing a different fetch.** An
+  `hf-cache` repo must land in `HF_HUB_CACHE` layout (`models--org--name/`) or
+  diffusers cannot resolve it — `hf download --local-dir` produces the wrong
+  shape. An `hf-file` GGUF needs an explicit destination two levels deep. The
+  acestep checkpoint tree has its own layout. `loras/*.safetensors` were
+  trained here and **cannot be downloaded at all**. See `.ai/domain.md`.
+- **Both openpose ControlNets are absent** (checked 2026-10-13): neither
+  `lllyasviel/control_v11p_sd15_openpose` nor its SDXL substitute
+  `thibaud/controlnet-openpose-sdxl-1.0` is cached. `use_pose` turns on
+  automatically for any action with a cycle (`tasks.py`), and `from_pretrained`
+  under `HF_HUB_OFFLINE=1` cannot recover a missing repo, so **pose-conditioned
+  step 2 cannot run here today**, either family.
+- **`stabilityai/sdxl-turbo` was a live default and is not cached — fixed
+  2026-10-13.** `generate_sheet`'s `Form` default, `main.py`'s retry fallback,
+  `model_gateway.GATED` and both `tasks.py` signatures named it, though 0002
+  dropped it for cause, so a request omitting `llm_name` could only fail. All
+  five now resolve `default_model()`. The name survives **only** in a legacy
+  cache-directory normalisation (`models--stabilityai--sdxl-turbo`); do not
+  read that as the model being available. The `default_model()` claim above now
+  holds for sheets too.
+- **The D: cold archive is gone.** `/mnt/d/wsl-model-archive` does not exist,
+  so `scripts/archive-models.sh restore` recovers nothing and the "28 GB parked
+  2026-08-23" is not retrievable. Missing weights must come from the Hub again.
 
 **The something2 contract**
 - **Synchronous only.** Submit/poll is explicitly unsupported on their side, so

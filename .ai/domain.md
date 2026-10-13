@@ -215,7 +215,7 @@ diffusion checkpoint string** (`"<base>+<lora>"`), never a language model.
 | Term | Means | Where |
 |---|---|---|
 | **Image model** | The diffusion checkpoint that draws the PNG | `llm_name`, `core_models.CORE_MODELS`, `a1111.KNOWN_MODELS` |
-| **Brain** | A text or vision language model that plans (region graphs, biome plans, audio styles) or judges images. Never draws | `llm-server` via `LLM_URL`; `decisions/0011` |
+| **Brain** | A text or vision language model that plans (region graphs, biome plans, audio styles) or judges images. Never draws | `brain_engine.BRAINS`, reached through `text.run_text` or `brain_engine.complete_in_job`; `decisions/0011`, `0013`. **Not** `llm-server`/`LLM_URL` — that router retired to the `legacy-llm` profile on 2026-10-01 |
 
 **Rule:** say *image model* or *brain*, never bare "the model" or "the LLM",
 where both are in scope. The confusion is not theoretical: on 2026-09-27 a
@@ -226,6 +226,49 @@ It happened again on 2026-09-27 from the other side: a batch of files
 described as "LLM images" were all diffusion transformers - *image models*.
 A `.gguf` extension says nothing about which kind a file is; read
 `general.architecture` and the tensor names (`decisions/0012`).
+
+## "Model" on disk is four kinds, and each is fetched differently
+
+Settled 2026-10-13, while working out how to provision a second machine. The
+four live side by side under `MODELS_DIR` (which is also `HF_HUB_CACHE`), and
+treating one as another is the failure: `hf download --local-dir` produces a
+layout diffusers cannot resolve, and a GGUF one level deep gets served as a
+chat model.
+
+| Kind | Lives at | Fetched by | Example |
+|---|---|---|---|
+| **`hf-cache` repo** | `models--<org>--<name>/` — HF cache layout, resolved by *repo id*, never by path | `snapshot_download`, usually with allow/ignore globs | `stabilityai/stable-diffusion-xl-base-1.0`, `ZhengPeng7/BiRefNet` |
+| **`hf-file`** | an explicit subdirectory, **two levels** below `/models` | single-file download to a named destination | `brain-gguf/qwen3.6-35b-a3b/…IQ4_XS.gguf` |
+| **`checkpoint-tree`** | its own layout, outside the HF cache | whatever that project expects | `acestep/**` |
+| **`local`** | `/models/loras/` | **nothing — trained on this machine** | `something2.safetensors` |
+
+**Rule:** say which *kind* when the fetch or the path is in question. A `local`
+adapter cannot be downloaded at all; `core_models` builds `local:<name>` roster
+entries from whatever is in `LORA_DIR` and `repos_for` excludes them, so a
+machine without them simply offers fewer options — that is not a failure.
+
+**Depth is load-bearing for `hf-file`.** Keep GGUFs two levels down. The
+retired `llm_engine` router advertised every `.gguf` one level deep as a *chat*
+model, which is how a Qwen-Image transformer once appeared in the chat roster
+named "gguf".
+
+## Four answers to "what models does this have", and they disagree
+
+`scripts/list-models.sh` already distinguishes three; the fourth is the one
+whose absence let `models.txt` rot unnoticed for months.
+
+| Term | Means |
+|---|---|
+| **DECLARED** | listed in the provisioning manifest — what a fresh machine would fetch |
+| **CODE-REFERENCED** | named by `CORE_MODELS`, `BRAINS`, `GGUF_COMPANION_REPOS`, `cutout.py`, `audio_engine.py`, `qwen_edit.py`, `tasks.py` — what the code can actually ask for |
+| **ON DISK** | present under `MODELS_DIR` right now |
+| **SERVED** | advertised by a running process this minute |
+
+**Rule:** never say "the models" unqualified in a provisioning or deploy
+context. Drift between the first two is the bug class — on 2026-10-13 both
+openpose ControlNets and `stabilityai/sdxl-turbo` were CODE-REFERENCED and not
+ON DISK (so pose-conditioned step 2 could not run), while a 1.8 GB
+`Qwen2.5-3B` GGUF was ON DISK and referenced by nothing.
 
 ## Activity, never "Actions"
 

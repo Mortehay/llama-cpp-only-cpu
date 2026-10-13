@@ -10,8 +10,18 @@ set -uo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib-auth.sh"
 
 B="http://${1:-localhost}:8001"
-CORE_MODEL="stabilityai/sdxl-turbo"
-SHEET_MODEL="Onodofthenorth/SD_PixelArt_SpriteSheet_Generator"
+# Both of these used to name models that are DEAD and not on disk -
+# `stabilityai/sdxl-turbo` (dropped by decisions/0002: distilled, guidance 0,
+# so every negative prompt is a silent no-op) and
+# `Onodofthenorth/SD_PixelArt_SpriteSheet_Generator` (superseded). Under
+# HF_HUB_OFFLINE=1 neither can be recovered by retrying, so this test could
+# only fail. Both are in models.toml's [[dead]] table. Changed 2026-10-13.
+#
+# The roster default, which is what default_model() returns and what every
+# caller that omits llm_name now gets. Step 2 is img2img on a checkpoint of
+# its own choosing, so passing the same one keeps the two steps consistent.
+CORE_MODEL="${CORE_MODEL:-stabilityai/stable-diffusion-xl-base-1.0+nerijs/pixel-art-xl}"
+SHEET_MODEL="${SHEET_MODEL:-$CORE_MODEL}"
 FAILED=0
 
 # The daemon lives inside WSL, so `docker` is absent (or points at a dead
