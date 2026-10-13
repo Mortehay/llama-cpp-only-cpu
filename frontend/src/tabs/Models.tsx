@@ -266,6 +266,27 @@ export default function Models() {
     }
   }
 
+  async function remove(m: ModelEntry) {
+    // A confirm, because this is minutes of bandwidth to undo and the button
+    // sits in a table row next to Download. The size and the consequence are
+    // both in the prompt - "are you sure?" alone tells the reader nothing.
+    const cost = m.size_bytes ? ` It is ${gib(m.size_bytes)} to fetch again.` : ''
+    const warn = m.tier === 'required'
+      ? '\n\nThis is a REQUIRED model: generation paths that need it will fail until it is back.'
+      : ''
+    if (!window.confirm(`Delete ${m.name} from disk?${cost}${warn}`)) return
+    setBusy(m.name); setNote(null)
+    try {
+      await api.deleteModel(m.name)
+      setNote(`Queued deletion of ${m.name}.`)
+      downloads.reload()
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   async function cancel(id: string) {
     setBusy(id); setNote(null)
     try {
@@ -328,6 +349,49 @@ export default function Models() {
 
       {note && <div className="note">{note}</div>}
 
+      {/* The page offers Download buttons and no way to add a model, which
+          reads as a missing feature unless the page says why. It is not
+          missing: the manifest fields cannot be inferred from a repo id, and
+          models.toml is mounted read-only here on purpose. */}
+      <details className="card" style={{ marginBottom: '1rem' }}>
+        <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+          Adding a model that is not listed here
+        </summary>
+        <p className="muted">
+          The buttons below fetch models this machine already <em>declares</em>.
+          A new one is added to <code>compose/develop/downloader/models.toml</code>,
+          which this page mounts read-only — <code>kind</code>,{' '}
+          <code>dest</code>, <code>as</code> and the allow/ignore globs cannot
+          be guessed from a repo id, and a wrong guess downloads cleanly and
+          then fails to load.
+        </p>
+        <ol className="muted" style={{ paddingLeft: '1.2rem' }}>
+          <li>
+            Identify it first if it is a GGUF — the architecture label is not
+            evidence:<br />
+            <code>python3 scripts/gguf-head.py &lt;url&gt;</code>
+          </li>
+          <li>
+            Add a <code>[[model]]</code> stanza. <code>hf-file</code> for a
+            single file at an explicit path (GGUFs: two levels deep),{' '}
+            <code>hf-cache</code> for a repo diffusers resolves by id.
+            <code> used_by</code> and <code>why</code> are required;{' '}
+            <code>skipping</code> too if it is optional.
+          </li>
+          <li>
+            <code>make test-models-manifest</code> — it fails on a malformed
+            stanza, then <code>make provision only=&lt;name&gt; audit=1 files=1</code>{' '}
+            shows exactly which files the globs select, before any bytes move.
+          </li>
+          <li>Reload this page; it appears with a Download button.</li>
+        </ol>
+        <p className="muted">
+          <code>make download repo=&lt;repo&gt; file=&lt;file&gt;</code> fetches
+          one ad-hoc and prints a stanza template to paste. Full rules in{' '}
+          <code>.ai/specs/model-provisioning/</code>.
+        </p>
+      </details>
+
       <h3>Downloads</h3>
       <p className="muted">
         Queued here and fetched by the downloader container, one at a time.
@@ -337,10 +401,10 @@ export default function Models() {
       <DownloadList rows={downloads.data?.downloads ?? []} busy={busy} onCancel={cancel} />
 
       <h3>Required</h3>
-      <ModelTable rows={required} busy={busy} onQueue={queue} active={d.active} />
+      <ModelTable rows={required} busy={busy} onQueue={queue} onDelete={remove} active={d.active} />
 
       <h3>Optional</h3>
-      <ModelTable rows={optional} busy={busy} onQueue={queue} active={d.active} />
+      <ModelTable rows={optional} busy={busy} onQueue={queue} onDelete={remove} active={d.active} />
 
       <h3>Brains — text generation</h3>
       <p className="muted">
@@ -480,10 +544,11 @@ function Tile({ label, value, sub, state }: {
   )
 }
 
-function ModelTable({ rows, busy, onQueue, active }: {
+function ModelTable({ rows, busy, onQueue, onDelete, active }: {
   rows: ModelEntry[]
   busy: string | null
   onQueue: (entry: string) => void
+  onDelete: (m: ModelEntry) => void
   active: string | null
 }) {
   if (!rows.length) return <p className="muted">None declared.</p>
@@ -526,13 +591,25 @@ function ModelTable({ rows, busy, onQueue, active }: {
                 </div>}
               </td>
               <td>
+                {/* `btn danger sm`, not an inline override: styles.css already
+                    has a destructive variant (transparent, red border, filled
+                    red on hover). Setting only `color` left red text on the
+                    filled accent background - unreadable. */}
                 {m.downloadable ? (
-                  <button className="btn" disabled={busy === m.name}
+                  <button className="btn sm" disabled={busy === m.name}
                           onClick={() => onQueue(m.name)}>
                     {busy === m.name ? 'Queueing…' : 'Download'}
                   </button>
+                ) : m.deletable ? (
+                  <button className="btn danger sm" disabled={busy === m.name}
+                          title={`Remove the files. ${m.name} stays declared and can be fetched again.`}
+                          onClick={() => onDelete(m)}>
+                    {busy === m.name ? 'Queueing…' : 'Delete'}
+                  </button>
                 ) : m.kind === 'local' ? (
-                  <span className="muted" style={{ fontSize: '.78rem' }}>copy by hand</span>
+                  <span className="muted" style={{ fontSize: '.78rem' }}>
+                    trained here — never deleted from the UI
+                  </span>
                 ) : m.fetch_self ? (
                   <span className="muted" style={{ fontSize: '.78rem' }}>fetched on first use</span>
                 ) : null}
@@ -560,16 +637,30 @@ function DownloadList({ rows, busy, onCancel }: {
         <tbody>
           {rows.slice(0, 12).map((r) => (
             <tr key={r.id}>
-              <td>{r.entry}</td>
+              <td>
+                {r.entry}
+                {r.op === 'delete' && <div className="muted" style={{ fontSize: '.78rem' }}>
+                  delete
+                </div>}
+              </td>
               <td>
                 {r.status === 'done' ? <Pill state="ok">done</Pill>
-                  : r.status === 'running' ? <Pill state="warn">downloading</Pill>
+                  : r.status === 'running'
+                    ? <Pill state="warn">{r.op === 'delete' ? 'deleting' : 'downloading'}</Pill>
                   : r.status === 'failed' ? <Pill state="bad">failed</Pill>
                   : <Pill state="idle">{r.status}</Pill>}
                 {r.error && <div className="muted" style={{ fontSize: '.78rem' }}>{r.error}</div>}
               </td>
               <td style={{ minWidth: 160 }}>
-                {r.progress_pct === null ? (
+                {r.op === 'delete' ? (
+                  // Measured from free disk before/after, not the declared
+                  // size: an HF repo's blobs live in a shared store, so
+                  // removing one can reclaim less than its manifest figure.
+                  <span className="muted" style={{ fontSize: '.78rem' }}>
+                    {r.bytes_freed === null || r.bytes_freed === undefined
+                      ? '—' : `${gib(r.bytes_freed)} freed`}
+                  </span>
+                ) : r.progress_pct === null ? (
                   <span className="muted">{gib(r.bytes_done)}</span>
                 ) : (
                   <>
@@ -598,7 +689,7 @@ function DownloadList({ rows, busy, onCancel }: {
               <td className="muted" style={{ fontSize: '.8rem' }}>{r.requested_by}</td>
               <td>
                 {r.status === 'queued' && (
-                  <button className="btn" disabled={busy === r.id}
+                  <button className="btn danger sm" disabled={busy === r.id}
                           onClick={() => onCancel(r.id)}>Cancel</button>
                 )}
               </td>

@@ -46,6 +46,11 @@ export type ModelEntry = {
   provenance: string | null
   present: boolean
   downloadable: boolean
+  /**
+   * On disk AND re-fetchable. A locally trained adapter is never deletable
+   * from the UI: it is hours of GPU time and exists nowhere else.
+   */
+  deletable: boolean
 }
 
 export type BrainStats = {
@@ -98,9 +103,17 @@ export type ModelsStatus = {
 export type ModelDownload = {
   id: string
   entry: string
+  /** One queue carries both, so a delete can never race a fetch. */
+  op: 'download' | 'delete'
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   bytes_total: number | null
   bytes_done: number
+  /**
+   * Measured from free disk before/after a delete, not the declared size: an
+   * HF repo's blobs sit in a shared store, so removing one can reclaim less
+   * than its manifest figure.
+   */
+  bytes_freed: number | null
   /** Clamped server-side; the raw bytes can exceed the total. null = unknown. */
   progress_pct: number | null
   error: string | null
@@ -640,6 +653,18 @@ export interface AudioInfo {
   author: string | null
 }
 
+/**
+ * How far along an unfinished row is. `pct` and `msg` come straight from the
+ * worker - a sheet job counts cells, `cell 75/208` - and nothing in the UI
+ * derives them, so they cannot disagree with the job row itself.
+ */
+export interface JobProgress {
+  pct: number | null
+  /** The build stage, e.g. `actions-denoise`. Jobs only. */
+  stage: string | null
+  msg: string | null
+}
+
 export interface ActivityItem {
   source: 'api' | 'job' | 'ui'
   id: string
@@ -652,6 +677,8 @@ export interface ActivityItem {
   url: string | null
   /** Set for audio kinds only. */
   audio?: AudioInfo | null
+  /** Set only while a row is queued or running; null once it is finished. */
+  progress?: JobProgress | null
   job_id: string | null
   error: string | null
   duration_ms: number | null
@@ -1090,6 +1117,13 @@ export const api = {
     request<{ id: string; entry: string; status: string; bytes_total: number | null }>(
       '/api/models/download',
       { method: 'POST', body: JSON.stringify({ entry }) }),
+  // Removes the FILES. The manifest keeps declaring the model, so it stays
+  // listed and can be fetched again with one click - "free the disk", never
+  // "stop wanting this". Refused for a locally trained adapter and for the
+  // model currently holding the card.
+  deleteModel: (entry: string) =>
+    request<{ id: string; entry: string; op: string; status: string }>(
+      '/api/models/delete', { method: 'POST', body: JSON.stringify({ entry }) }),
   cancelModelDownload: (id: string) =>
     request<{ id: string; status: string }>(
       `/api/models/downloads/${id}/cancel`, { method: 'POST' }),

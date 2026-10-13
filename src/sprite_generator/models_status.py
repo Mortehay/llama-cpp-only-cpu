@@ -22,7 +22,7 @@ without a change to the audio path. It is reported as a total, honestly
 labelled, instead of as an empty table.
 
 DOWNLOADS ARE QUEUED, NEVER RUN HERE
-The API does not fetch. It inserts a `model_downloads` row; the downloader
+The API does not fetch. It inserts a `model_ops` row; the downloader
 container's `scripts/provision-daemon.py` is the single consumer. Two writers
 on one /models cache deadlock on huggingface_hub's per-file locks - the reason
 that service used to refuse to download on startup - so there is exactly one,
@@ -287,6 +287,10 @@ def models_status(days: int = 30, authorization: str | None = Header(None)):
             "downloadable": (e.get("kind") != "local"
                              and e.get("fetch") != "self"
                              and not present),
+            # Present, and not something that cannot be fetched again. A
+            # `local` adapter is hours of GPU time and exists nowhere else, so
+            # the UI must not offer a one-click way to lose it.
+            "deletable": present and e.get("kind") != "local",
         })
 
     missing_required = [d["name"] for d in declared
@@ -336,9 +340,10 @@ def list_downloads(limit: int = 50, authorization: str | None = Header(None)):
     auth.require(authorization, "read")
     limit = max(1, min(int(limit), 200))
     rows = [_clean(r) for r in _rows(
-        "SELECT id::text, entry, status, bytes_total, bytes_done, error, "
-        "       requested_by, created_at, started_at, finished_at "
-        "  FROM model_downloads ORDER BY created_at DESC LIMIT %s",
+        "SELECT id::text, entry, op, status, bytes_total, bytes_done, "
+        "       bytes_freed, error, requested_by, created_at, started_at, "
+        "       finished_at "
+        "  FROM model_ops ORDER BY created_at DESC LIMIT %s",
         (limit,))]
     for r in rows:
         # Clamped here rather than in the UI, because the raw bytes are
@@ -392,7 +397,7 @@ def queue_download(req: DownloadRequest,
     try:
         with _db() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO model_downloads "
+                "INSERT INTO model_ops "
                 "(id, entry, status, bytes_total, requested_by) "
                 "VALUES (%s, %s, 'queued', %s, %s)",
                 (gen_id, name, total,
@@ -408,6 +413,62 @@ def queue_download(req: DownloadRequest,
             "bytes_total": total}
 
 
+@router.post("/api/models/delete")
+def queue_delete(req: DownloadRequest, authorization: str | None = Header(None)):
+    """Queue removal of one entry's files. The manifest keeps declaring it.
+
+    Deleting means "free the disk", never "stop wanting this model" - the
+    entry stays in models.toml, keeps its row here, and can be fetched again
+    with one click. Nothing edits the manifest from the UI.
+
+    Routed through the same queue as a download, so the daemon does it under
+    the cache lock: removing a repo while a fetch writes into the same store
+    is the hazard this lane exists to prevent.
+    """
+    principal = auth.require(authorization, "generate")
+    name = (req.entry or "").strip()
+    doc = _manifest()
+    entries = {m["name"]: m for m in doc.get("model", [])}
+    entry = entries.get(name)
+    if entry is None:
+        raise HTTPException(status_code=404,
+                            detail=f"'{name}' is not a models.toml entry")
+    # Trained here, hours of GPU, exists nowhere else (decisions/0009, which
+    # records that reproducing one is the most expensive thing on this disk).
+    if entry.get("kind") == "local":
+        raise HTTPException(status_code=400, detail=(
+            f"'{name}' was trained on this machine and cannot be downloaded "
+            f"again - delete it by hand if you really mean to"))
+    root = _root(doc)
+    if not _present(root, entry):
+        raise HTTPException(status_code=409, detail=f"'{name}' is not on disk")
+    # Pulling the weights out from under the model currently on the card.
+    gw = {}
+    try:
+        gw = model_gateway.status()
+    except Exception:              # noqa: BLE001
+        pass
+    raw = gw.get("active") if isinstance(gw, dict) else None
+    act = raw.get("model") if isinstance(raw, dict) else raw
+    if act and entry.get("repo") and str(act).startswith(str(entry["repo"])):
+        raise HTTPException(status_code=409, detail=(
+            f"'{name}' is the model holding the card right now; switch away "
+            f"first"))
+
+    gen_id = str(uuid.uuid4())
+    try:
+        with _db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO model_ops (id, entry, op, status, requested_by) "
+                "VALUES (%s, %s, 'delete', 'queued', %s)",
+                (gen_id, name, principal.get("name") or "unknown"))
+            conn.commit()
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail=(
+            f"'{name}' already has an operation queued or running"))
+    return {"id": gen_id, "entry": name, "op": "delete", "status": "queued"}
+
+
 @router.post("/api/models/downloads/{download_id}/cancel")
 def cancel_download(download_id: str, authorization: str | None = Header(None)):
     """Cancel a download that has not started.
@@ -420,7 +481,7 @@ def cancel_download(download_id: str, authorization: str | None = Header(None)):
     auth.require(authorization, "generate")
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
-            "UPDATE model_downloads SET status='cancelled', finished_at=now() "
+            "UPDATE model_ops SET status='cancelled', finished_at=now() "
             "WHERE id = %s AND status = 'queued' RETURNING id::text",
             (download_id,))
         row = cur.fetchone()
