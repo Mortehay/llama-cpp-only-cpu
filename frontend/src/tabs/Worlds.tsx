@@ -205,10 +205,11 @@ export default function Worlds() {
         <p className="hint">
           Produces a <code>*.map.json</code> something2 seeds with{' '}
           <code>make seed-map</code>. Density is <strong>solved, not named</strong>:
-          their <code>normal</code> tier is ~4 creatures per screen and a biome
-          multiplier scales it — Meadow halves it to ~2, which is exactly where
-          empty space comes from. Ask for a target and each world gets the tier
-          that actually hits it.
+          their tiers are coarse — 2, 4, 8, 14, 20 creatures per screen — so you
+          ask for a target and each world gets the tier that lands nearest it.
+          The biome does <strong>not</strong> change how many: its{' '}
+          <code>creature_density</code> redistributes creatures within a world
+          and never scales the total.
         </p>
 
         {error && <div className="note err">{error}</div>}
