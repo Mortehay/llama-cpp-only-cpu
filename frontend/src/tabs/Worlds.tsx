@@ -58,6 +58,14 @@ export default function Worlds() {
   const [eWorlds, setEWorlds] = useState<number | ''>('')
   const [eSize, setESize] = useState<number | ''>('')
   const [reauthor, setReauthor] = useState(false)
+  // Whether the open region's spec came back from something2's World Map
+  // Editor. Separate from `editable`, which only says whether the sidecar
+  // exists: a hand-edited region is editable AND hand-edited, and the two
+  // answer different questions - "can this be rebuilt" and "would rebuilding
+  // it throw away work somebody did by hand".
+  const [handEdited, setHandEdited] = useState(false)
+  const [editedAt, setEditedAt] = useState<string | null>(null)
+  const [discard, setDiscard] = useState(false)
 
   // Cache-buster for the preview: a PATCH rewrites the PNG at the same URL, so
   // without this the browser shows the old region's picture next to the new
@@ -68,7 +76,11 @@ export default function Worlds() {
     made ? `/api/worlds/${made}/preview.png?v=${previewNonce}` : null,
   )
 
-  async function generate(overwrite = false) {
+  async function generate(overwrite = false, discardHandEdits = false) {
+    // Set in the catch, acted on after the `finally`. Retrying from inside the
+    // catch would let this call's `finally` clear `busy` on top of the retry's,
+    // leaving the buttons live while a regeneration is running.
+    let retryDiscarding = false
     setBusy(true)
     setError(null)
     try {
@@ -80,12 +92,18 @@ export default function Worlds() {
         theme: theme.trim() || null,
         author,
         overwrite,
+        ...(discardHandEdits ? { discard_hand_edits: true } : {}),
       })
       setMade(res.name)
       setReport(res.report)
       setNote(res.author)
       setSeedWith(res.seed_with)
       setEditable(true)
+      // A regeneration supersedes whatever was hand-edited, and the API has
+      // already cleared the flag on disk.
+      setHandEdited(false)
+      setEditedAt(null)
+      setDiscard(false)
       setETarget('')
       setEWorlds('')
       setESize('')
@@ -93,10 +111,25 @@ export default function Worlds() {
       list.reload()
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      setError(msg)
+      // The ONE 409 worth asking about rather than reporting. Overwriting a
+      // hand-edited region is refused until it is asked for by name, and
+      // showing that as a flat error leaves the owner with a button that does
+      // not work and no way to find the flag that makes it work.
+      if (overwrite && !discardHandEdits && msg.includes('discard_hand_edits')) {
+        retryDiscarding = window.confirm(
+          `${name.trim()} was hand-edited in the game's World Map Editor. ` +
+            `Regenerating it discards those edits. Continue?`,
+        )
+        if (!retryDiscarding) {
+          setError('left as it is — the hand edits are still on the box')
+        }
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
     }
+    if (retryDiscarding) await generate(true, true)
   }
 
   /** PATCH: send only the fields actually filled in. */
@@ -110,6 +143,7 @@ export default function Worlds() {
         ...(eWorlds === '' ? {} : { worlds: Number(eWorlds) }),
         ...(eSize === '' ? {} : { size: Number(eSize) }),
         ...(reauthor ? { reauthor: true } : {}),
+        ...(discard ? { discard_hand_edits: true } : {}),
       })
       setReport(res.report)
       setNote(
@@ -122,6 +156,12 @@ export default function Worlds() {
       setEWorlds('')
       setESize('')
       setReauthor(false)
+      // The PATCH rebuilt from parameters, so the hand edits are gone - on the
+      // box and here. Leaving the checkbox ticked would silently arm the next
+      // edit to discard work that arrived in between.
+      setHandEdited(false)
+      setEditedAt(null)
+      setDiscard(false)
       list.reload()
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -131,11 +171,20 @@ export default function Worlds() {
   }
 
   /** Open an existing region from the list, prefilled from its stored params. */
-  function open(w: { name: string; editable?: boolean; params?: Record<string, unknown> | null }) {
+  function open(w: {
+    name: string
+    editable?: boolean
+    params?: Record<string, unknown> | null
+    hand_edited?: boolean
+    edited_at?: string | null
+  }) {
     setMade(w.name)
     setNote(null)
     setError(null)
     setEditable(w.editable !== false)
+    setHandEdited(w.hand_edited === true)
+    setEditedAt(w.edited_at ?? null)
+    setDiscard(false)
     setSeedWith(`make seed-map SPEC=${w.name}`)
     setPreviewNonce((n) => n + 1)
     setETarget('')
@@ -274,6 +323,22 @@ export default function Worlds() {
             </div>
           ))}
 
+          {/* The one state where the obvious button is the wrong one. This
+              spec is what the game RUNS, and every control below rebuilds from
+              parameters, so the warning has to arrive before the click rather
+              than as a 409 after it. */}
+          {handEdited && (
+            <div className="note warn">
+              <strong>Hand-edited</strong>
+              {editedAt ? ` — last written ${new Date(editedAt).toLocaleString()}` : ''}.
+              This spec came back from something2&rsquo;s World Map Editor, so it is
+              what the game runs and <em>not</em> what this generator would
+              produce. Applying a change below rebuilds it from the stored
+              parameters and throws those edits away, so it has to be ticked
+              deliberately.
+            </div>
+          )}
+
           {/* Edit. Only fields you fill are sent; everything else carries
               over, biomes included — so raising the target does not redraw the
               region's character. */}
@@ -332,7 +397,24 @@ export default function Worlds() {
                   />{' '}
                   re-pick biomes
                 </label>
-                <button className="btn" disabled={busy} onClick={() => void applyEdit()}>
+                {handEdited && (
+                  <label style={{ display: 'block' }}>
+                    <input
+                      type="checkbox"
+                      checked={discard}
+                      onChange={(e) => setDiscard(e.target.checked)}
+                    />{' '}
+                    discard hand edits
+                  </label>
+                )}
+                <button
+                  className="btn"
+                  // Disabled rather than left to fail: without the flag the API
+                  // answers 409, and a button whose only outcome is an error is
+                  // worse than one that says why it is unavailable.
+                  disabled={busy || (handEdited && !discard)}
+                  onClick={() => void applyEdit()}
+                >
                   {busy ? 'Applying…' : 'Apply change'}
                 </button>
               </div>
@@ -458,6 +540,20 @@ export default function Worlds() {
                       <span className="tag no">{w.empty_worlds} empty</span>
                     ) : (
                       <span className="tag neutral">ok</span>
+                    )}
+                  </td>
+                  <td>
+                    {w.hand_edited && (
+                      <span
+                        className="tag wait"
+                        title={
+                          w.edited_at
+                            ? `authored in the World Map Editor, last written ${w.edited_at}`
+                            : 'authored in the World Map Editor'
+                        }
+                      >
+                        hand-edited
+                      </span>
                     )}
                   </td>
                   <td>

@@ -370,6 +370,9 @@ export interface WorldReport {
     empty_worlds: number
   }
   notes: string[]
+  /** See WorldListItem.hand_edited — the report carries it for the same reason. */
+  hand_edited?: boolean
+  edited_at?: string | null
 }
 
 export interface WorldListItem {
@@ -380,6 +383,17 @@ export interface WorldListItem {
   mean_per_screen?: number
   empty_worlds?: number
   ok?: boolean
+  /** Whether the `.gen.json` sidecar exists, i.e. whether PATCH can work. */
+  editable?: boolean
+  params?: Record<string, unknown> | null
+  /**
+   * Whether this spec came back from something2's World Map Editor rather than
+   * being generated here. A DIFFERENT question from `editable`: a hand-edited
+   * region is both, because it CAN be regenerated and doing so discards an
+   * admin's work, so it has to be asked for by name.
+   */
+  hand_edited?: boolean
+  edited_at?: string | null
   bytes?: number
   created_at?: number
   spec_url?: string
@@ -1026,6 +1040,8 @@ export const api = {
     theme?: string | null
     author: 'rules' | 'llm'
     overwrite?: boolean
+    /** An overwrite IS a regeneration, so a hand-edited region needs this too. */
+    discard_hand_edits?: boolean
   }) =>
     request<{
       name: string
@@ -1042,6 +1058,10 @@ export const api = {
    * Fields not named are carried over, including the biome plan - so raising
    * the creature target does not re-roll which biomes the region is made of.
    * `reauthor` is the opt-in that does re-ask the LLM.
+   *
+   * A region whose spec came back from the World Map Editor refuses this with a
+   * 409 unless `discard_hand_edits` is passed: a PATCH rebuilds from parameters,
+   * which would throw the hand edits away.
    */
   editWorld: (
     name: string,
@@ -1051,6 +1071,7 @@ export const api = {
       size?: number
       theme?: string | null
       reauthor?: boolean
+      discard_hand_edits?: boolean
     },
   ) =>
     request<{
