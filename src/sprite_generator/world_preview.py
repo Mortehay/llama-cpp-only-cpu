@@ -63,6 +63,26 @@ def _band(draw, x, y, w, h, biomes):
                        fill=col)
 
 
+def _grid_of(world: dict, fallback_index: int) -> tuple:
+    """Which cell of the picture this world occupies.
+
+    `grid` is what this generator emits and what their seeder reads. A spec
+    that came back from the World Map Editor may instead carry `graph: [x, y]`
+    - a dragged position in THEIR graph view, whose default for a world is
+    `grid x 220` - so dividing by 220 recovers the cell it was dragged from.
+    A spec with neither is laid out in a row rather than refused: this is a
+    picture, and a missing position must not cost a region the only view of
+    itself that shows emptiness.
+    """
+    grid = world.get("grid")
+    if isinstance(grid, (list, tuple)) and len(grid) >= 2:
+        return int(grid[0]), int(grid[1])
+    graph = world.get("graph")
+    if isinstance(graph, (list, tuple)) and len(graph) >= 2:
+        return round(float(graph[0]) / 220.0), round(float(graph[1]) / 220.0)
+    return fallback_index, 0
+
+
 def render(spec: dict, rep: dict | None = None) -> Image.Image:
     rep = rep or world_gen.report(spec)
     rows = {r["key"]: r for r in rep["worlds"]}
@@ -70,8 +90,9 @@ def render(spec: dict, rep: dict | None = None) -> Image.Image:
     if not worlds:
         raise ValueError("nothing to preview - the region has no worlds")
 
-    xs = [w["grid"][0] for w in worlds]
-    ys = [w["grid"][1] for w in worlds]
+    cells = [_grid_of(w, i) for i, w in enumerate(worlds)]
+    xs = [c[0] for c in cells]
+    ys = [c[1] for c in cells]
     cols, rws = max(xs) - min(xs) + 1, max(ys) - min(ys) + 1
     ox, oy = min(xs), min(ys)
 
@@ -85,14 +106,21 @@ def render(spec: dict, rep: dict | None = None) -> Image.Image:
     d.text((PAD, 14), f"{spec.get('name', 'region')} - each cell is ONE SCREEN "
                       f"({world_gen.TILES_PER_SCREEN} tiles)", fill=INK)
 
+    at = {w["key"]: cells[i] for i, w in enumerate(worlds)}
+
     def cell_xy(w):
-        gx, gy = w["grid"]
+        gx, gy = at[w["key"]]
         return (PAD + (gx - ox) * step, 46 + (gy - oy) * (step + LABEL_H))
 
     # Links first, so cells sit on top of them.
     pos = {w["key"]: cell_xy(w) for w in worlds}
     for l in spec.get("links", []):
-        a, b = pos.get(l["from"]), pos.get(l["to"])
+        # `.get`, because a hand-edited spec can carry a link OUT of the region:
+        # the World Map Editor writes `to_name` (a world name in another spec)
+        # and no `to` at all. There is nothing in this picture to draw it to, so
+        # the guard below skips it - but INDEXING it raised KeyError, which cost
+        # the region its preview without failing the write that caused it.
+        a, b = pos.get(l.get("from")), pos.get(l.get("to"))
         if not a or not b:
             continue
         d.line([a[0] + CELL // 2, a[1] + CELL // 2,

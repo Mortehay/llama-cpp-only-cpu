@@ -28,13 +28,16 @@ deterministic author and the response says so rather than pretending.
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import logging
 import os
 import re
+import threading
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Header, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 import auth
@@ -74,6 +77,10 @@ class WorldSpec(BaseModel):
     sfx_engine: str | None = Field(None, pattern="^(realistic|retro)$")
     author: str = Field("rules", pattern="^(rules|llm)$")
     overwrite: bool = False
+    # Overwriting a region that was hand-edited in the game's World Map Editor
+    # has to be asked for by name, exactly as on PATCH - an overwrite IS a
+    # regeneration. See `_refuse_if_hand_edited`.
+    discard_hand_edits: bool = False
 
 
 def _slug(s: str) -> str:
@@ -104,6 +111,113 @@ def _paths(name: str):
             os.path.join(WORLDS_DIR, f"{s}.gen.json"))
 
 
+# --- hand edits: the game's World Map Editor writes back here -------------
+#
+# A region can now arrive from two directions: generated here, or authored by
+# an admin in something2's World Map Editor and PUT back whole. The two are not
+# interchangeable - regenerating a hand-edited region silently discards the
+# admin's work - so the fact that hand edits EXIST has to live on disk, not in
+# the shape of the spec.
+#
+# It is its own file rather than a key in `<name>.gen.json`, for two reasons.
+# The sidecar means exactly one thing, "how this was generated", and both
+# `list_worlds` and `check-artifacts.py` read its PRESENCE as "this region can
+# be regenerated"; a sidecar holding a flag but no parameters would be listed
+# as editable and then fail on the first PATCH. And a region from before
+# sidecars existed has no `.gen.json` at all, yet can still be hand-edited.
+EDIT_SUFFIX = ".edit.json"
+
+# Read-compare-write must not interleave with another request's. This is one
+# process (uvicorn, no --workers) but FastAPI runs sync handlers in a
+# threadpool, so two PUTs for the same region really can overlap: without the
+# lock both read the same sha256, both match, and the second silently
+# overwrites the first - the lost update If-Match exists to prevent.
+_SPEC_LOCK = threading.Lock()
+
+
+def _edit_path(name: str) -> str:
+    map_path, _, _ = _paths(name)
+    return map_path[: -len(".map.json")] + EDIT_SUFFIX
+
+
+def _hand_edit(name: str) -> dict:
+    """Is this region hand-edited, and when was it last written?
+
+    Always the same two keys, so no consumer has to branch on whether the
+    marker file exists.
+    """
+    path = _edit_path(name)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                marker = json.load(fh)
+            if marker.get("hand_edited"):
+                return {"hand_edited": True,
+                        "edited_at": marker.get("edited_at")}
+        except Exception as e:
+            # An unreadable marker must NOT be read as "no hand edits" - that
+            # is the reading that regenerates over somebody's work.
+            logger.warning("unreadable hand-edit marker for %s: %s", name, e)
+            return {"hand_edited": True, "edited_at": None}
+    return {"hand_edited": False, "edited_at": None}
+
+
+def _mark_hand_edited(name: str) -> str:
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    with open(_edit_path(name), "w", encoding="utf-8") as fh:
+        json.dump({"hand_edited": True, "edited_at": stamp}, fh, indent=1)
+    return stamp
+
+
+def _clear_hand_edit(name: str) -> None:
+    try:
+        os.remove(_edit_path(name))
+    except FileNotFoundError:
+        pass
+
+
+def _refuse_if_hand_edited(name: str, discard: bool) -> None:
+    """Regenerating over hand edits is refused unless it is asked for by name.
+
+    Both doors come through here - PATCH, and POST with overwrite - because a
+    guard on one of them is not a guard. The flag itself is cleared by
+    `_write_region`, so every path that rebuilds a region drops it exactly
+    once.
+    """
+    if not _hand_edit(name)["hand_edited"] or discard:
+        return
+    raise HTTPException(
+        status_code=409,
+        detail="region has hand edits; pass discard_hand_edits=true "
+               "to regenerate")
+
+
+def _sha256_file(path: str) -> str:
+    """The hash of the stored spec's EXACT bytes - the ETag something2 sees."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _etag(sha: str) -> str:
+    """The quoted form. An ETag is a quoted string in HTTP; the bare sha is
+    still accepted on the way IN, so a caller that stored what it read works
+    either way - see `_if_match_sha`."""
+    return f'"{sha}"'
+
+
+def _if_match_sha(header: str | None) -> str | None:
+    """The sha256 a caller claims to have last seen, however they quoted it."""
+    if header is None:
+        return None
+    value = header.strip()
+    if value.startswith("W/"):
+        value = value[2:].strip()
+    return value.strip('"').strip() or None
+
+
 def _write_region(name: str, params: dict, plan_kwargs: dict, note: str) -> dict:
     """Generate, write all three files, and return the response body.
 
@@ -126,6 +240,10 @@ def _write_region(name: str, params: dict, plan_kwargs: dict, note: str) -> dict
         # A missing preview is worth a warning, never a failed generation - the
         # spec is the artefact and it is already on disk.
         logger.warning("preview failed for %s: %s", name, e)
+
+    # A regeneration supersedes whatever was hand-edited here. Cleared in the
+    # ONE place every rebuild passes through rather than at each caller.
+    _clear_hand_edit(name)
 
     slug = _slug(name)
     return {
@@ -261,17 +379,19 @@ def create_world(spec: WorldSpec, authorization: str | None = Header(None)):
     auth.require(authorization, "generate")
 
     map_path, _, _ = _paths(spec.name)
-    if os.path.exists(map_path) and not spec.overwrite:
-        raise HTTPException(
-            status_code=409,
-            detail=f"{_slug(spec.name)} already exists - pass overwrite to "
-                   f"replace it, or PATCH it to change one thing")
+    if os.path.exists(map_path):
+        if not spec.overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{_slug(spec.name)} already exists - pass overwrite to "
+                       f"replace it, or PATCH it to change one thing")
+        _refuse_if_hand_edited(spec.name, spec.discard_hand_edits)
 
     plan, note = None, "biomes chosen deterministically"
     if spec.author == "llm":
         plan, note = _llm_biome_plan(spec.theme, spec.worlds)
 
-    params = spec.model_dump(exclude={"overwrite"})
+    params = spec.model_dump(exclude={"overwrite", "discard_hand_edits"})
     # The biome plan is stored, not just used. A PATCH that changes the size
     # must not silently re-roll the biomes, and re-asking the LLM would give a
     # different answer every time - so an edit reuses the plan the region was
@@ -304,6 +424,10 @@ class WorldEdit(BaseModel):
     # Re-ask the LLM for biomes. Off by default: an edit to the creature target
     # should not quietly redraw the whole region's character.
     reauthor: bool = False
+    # Throw away hand edits made in the game's World Map Editor and rebuild
+    # from parameters. Off by default, and a hand-edited region refuses a PATCH
+    # without it rather than quietly regenerating over the admin's work.
+    discard_hand_edits: bool = False
 
 
 @router.patch("/api/worlds/{name}")
@@ -328,10 +452,16 @@ def edit_world(name: str, edit: WorldEdit,
                    f"and has no stored parameters - POST it again with "
                    f"overwrite to make it editable")
 
+    # After the sidecar check, not before: a region that cannot be regenerated
+    # at all should say THAT first, rather than naming a flag which would then
+    # fail on the next line.
+    _refuse_if_hand_edited(name, edit.discard_hand_edits)
+
     with open(gen_path, "r", encoding="utf-8") as fh:
         params = json.load(fh)
 
-    changes = edit.model_dump(exclude_none=True, exclude={"reauthor"})
+    changes = edit.model_dump(exclude_none=True,
+                              exclude={"reauthor", "discard_hand_edits"})
     params.update(changes)
 
     note = "edited; biomes carried over"
@@ -381,6 +511,10 @@ def list_worlds(authorization: str | None = Header(None)):
                 "region": region.get("name"),
                 "editable": params is not None,
                 "params": params,
+                # Whether this spec came back from the game's editor. A UI
+                # needs it before offering a regeneration that would discard
+                # it, and something2 needs it to know which copy is authored.
+                **_hand_edit(name),
                 "worlds": rep["totals"]["worlds"],
                 "creatures": rep["totals"]["creatures"],
                 "mean_per_screen": rep["totals"]["mean_per_screen"],
@@ -400,18 +534,208 @@ def list_worlds(authorization: str | None = Header(None)):
 @router.get("/api/worlds/{name}")
 def get_world(name: str, download: bool = False,
               authorization: str | None = Header(None)):
-    """The map spec itself - the file `make seed-map` reads."""
+    """The map spec itself - the file `make seed-map` reads.
+
+    Carries an `ETag`: the sha256 of the stored file's EXACT bytes. That is
+    what `PUT /api/worlds/{name}/spec` wants back in `If-Match`, so a hand edit
+    can only replace the version it was made against.
+    """
     auth.require(authorization, "read")
 
     map_path, _, _ = _paths(name)
     if not os.path.exists(map_path):
         raise HTTPException(status_code=404, detail=f"no region {name!r}")
 
+    etag = _etag(_sha256_file(map_path))
     if download:
         return FileResponse(map_path, media_type="application/json",
-                            filename=f"{_slug(name)}.map.json")
+                            filename=f"{_slug(name)}.map.json",
+                            headers={"ETag": etag})
     with open(map_path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
+        # A response object rather than the bare dict, because the header is
+        # half of what this route is now for.
+        return JSONResponse(content=json.load(fh), headers={"ETag": etag})
+
+
+# --- hand-edited specs IN: a PUT, never a PATCH --------------------------
+
+def _validate_posted_spec(body, slug: str) -> list:
+    """Refuse a body that is not this region, and say which part is wrong.
+
+    STRUCTURAL ONLY, on purpose. something2's World Map Editor is the authority
+    on what a hand-authored region should contain, so a spec that is merely
+    thin, crowded or oddly linked is stored and REPORTED - refusing it would
+    lose an admin's work over a judgement this service is not entitled to make.
+    `world_gen.report` still runs on the way in, and its problems come back
+    with the 200.
+
+    What IS refused is a body this service could not serve afterwards: no
+    worlds, a world with no key, duplicate keys, a link into a world that does
+    not exist. Those turn the region's own /report into a 500 for good.
+    """
+    errs = []
+    if not isinstance(body, dict):
+        return ["the body must be a spec object"]
+
+    name = body.get("name")
+    if not isinstance(name, str) or not name.strip():
+        errs.append("name is required")
+    elif _slug(name) != slug:
+        # Compared as SLUGS, not literally. A region created as "Emerald Reach"
+        # is stored at `emerald-reach.map.json` with `"name": "Emerald Reach"`
+        # inside it, so a literal comparison would refuse that region its own
+        # spec back - which is the round trip this endpoint exists for.
+        errs.append(f"name {name!r} is not this region - the path says {slug!r}")
+
+    posted = body.get("worlds")
+    if not isinstance(posted, list) or not posted:
+        errs.append("worlds must be a non-empty list")
+        return errs
+
+    keys = set()
+    for i, w in enumerate(posted):
+        if not isinstance(w, dict):
+            errs.append(f"worlds[{i}] is not an object")
+            continue
+        key = w.get("key")
+        if not isinstance(key, str) or not key:
+            errs.append(f"worlds[{i}] has no key")
+        elif key in keys:
+            errs.append(f"worlds[{i}]: duplicate key {key!r}")
+        else:
+            keys.add(key)
+
+    links = body.get("links")
+    if links is None:
+        links = []
+    if not isinstance(links, list):
+        errs.append("links must be a list")
+        return errs
+
+    for i, l in enumerate(links):
+        if not isinstance(l, dict):
+            errs.append(f"links[{i}] is not an object")
+            continue
+        if l.get("from") not in keys:
+            errs.append(f"links[{i}]: from {l.get('from')!r} is not a world in "
+                        f"this region")
+        to, to_name = l.get("to"), l.get("to_name")
+        if to_name is not None:
+            # A cross-region doorway. `to_name` is a world NAME in ANOTHER
+            # region's spec, which this file cannot resolve and this service
+            # does not try to - checked for being a name, and no further.
+            if not isinstance(to_name, str) or not to_name:
+                errs.append(f"links[{i}]: to_name must be a world name")
+        elif to not in keys:
+            errs.append(f"links[{i}]: to {to!r} is not a world in this region, "
+                        f"and no to_name was given")
+        if l.get("kind") == "edge" and l.get("edge") not in world_gen.EDGES:
+            errs.append(f"links[{i}]: kind 'edge' needs an explicit edge, one "
+                        f"of {', '.join(world_gen.EDGES)}")
+    return errs
+
+
+@router.put("/api/worlds/{name}/spec")
+def put_spec(name: str, body: dict = Body(...),
+             if_match: str | None = Header(None, alias="If-Match"),
+             authorization: str | None = Header(None)):
+    """Store a hand-edited spec as the region's current spec. NO regeneration.
+
+    THE OTHER DIRECTION. Everything else here turns parameters into a spec;
+    this takes a spec that was authored in something2's World Map Editor, so
+    the box's copy is what the game actually runs. PATCH cannot do it - PATCH
+    takes generation parameters and rebuilds, which is precisely what must not
+    happen to a map somebody drew.
+
+    Unknown keys are stored unchanged. Their format already carries three
+    optional fields this service does not generate and must not drop - a
+    world's `graph: [x, y]` (a dragged graph position that wins over
+    grid x 220), a link's `kind: "edge"` with an explicit `edge` and no
+    grid-delta rule, and a link's `to_name` (a world NAME in another region,
+    used instead of a spec-local `to`) - and that list will grow on their side,
+    not here. So the body is taken as-is rather than through a model that would
+    silently drop whatever it has not been taught.
+
+    `If-Match` is required rather than optional. Two admins editing the same
+    region is the ordinary case this is built for, and a blind write loses one
+    of them with no trace; a 409 costs a re-read.
+    """
+    auth.require(authorization, "generate")
+
+    map_path, png_path, _ = _paths(name)
+    slug = _slug(name)
+    if not os.path.exists(map_path):
+        raise HTTPException(status_code=404, detail=f"no region {name!r}")
+
+    # 428 BEFORE 422: a caller with no If-Match has not read this region yet,
+    # so complaining about their body would send them to fix the wrong thing.
+    claimed = _if_match_sha(if_match)
+    if not claimed:
+        raise HTTPException(
+            status_code=428,
+            detail="If-Match with the sha256 from the last GET is required - "
+                   "a blind write would lose whatever is stored")
+
+    errs = _validate_posted_spec(body, slug)
+    if errs:
+        raise HTTPException(status_code=422, detail=errs)
+
+    try:
+        rep = world_gen.report(body)
+    except Exception as e:
+        # Refused, because the alternative is a stored region whose own /report
+        # is a 500 for ever. This is "this service cannot read it", not "it is
+        # not good enough" - the quality verdicts ride along with the 200.
+        raise HTTPException(
+            status_code=422,
+            detail=[f"this service cannot read the spec: "
+                    f"{type(e).__name__}: {e}"])
+
+    with _SPEC_LOCK:
+        current = _sha256_file(map_path)
+        if claimed != "*" and claimed != current:
+            # NOT an HTTPException: the contract puts `sha256` beside `detail`
+            # at the top level, and HTTPException would nest it a level deeper.
+            return JSONResponse(
+                status_code=409,
+                content={"detail": "spec changed on the box",
+                         "sha256": current},
+                headers={"ETag": _etag(current)})
+
+        # Written whole, then moved into place. A PUT interrupted half way
+        # through would otherwise leave the seeder a truncated spec, and the
+        # next caller's ETag would be the hash of a file nobody authored.
+        #
+        # Serialised through `to_json` - the same writer generation uses - so a
+        # spec that goes out and comes back unchanged is byte-identical and
+        # keeps its ETag, rather than drifting by two spaces of indentation.
+        tmp = map_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(world_gen.to_json(body))
+        os.replace(tmp, map_path)
+        sha = _sha256_file(map_path)
+        stamp = _mark_hand_edited(name)
+
+    try:
+        world_preview.render(body, rep).save(png_path)
+    except Exception as e:
+        # The generation rule: the spec is the artefact and it is already on
+        # disk, so a preview is worth a warning and never the request.
+        logger.warning("preview failed for hand-edited %s: %s", name, e)
+
+    return JSONResponse(
+        content={
+            "name": slug,
+            "sha256": sha,
+            "hand_edited": True,
+            "edited_at": stamp,
+            # The verdicts, not a gate. Stored either way, so a caller can see
+            # what it just saved without a second round trip.
+            "problems": rep["problems"],
+            "spec_url": f"/api/worlds/{slug}",
+            "preview_url": f"/api/worlds/{slug}/preview.png",
+        },
+        headers={"ETag": _etag(sha)})
 
 
 @router.get("/api/worlds/{name}/report")
@@ -423,7 +747,12 @@ def get_report(name: str, authorization: str | None = Header(None)):
     if not os.path.exists(map_path):
         raise HTTPException(status_code=404, detail=f"no region {name!r}")
     with open(map_path, "r", encoding="utf-8") as fh:
-        return world_gen.report(json.load(fh))
+        rep = world_gen.report(json.load(fh))
+    # Whether a human drew this rather than the generator. Here as well as in
+    # the listing, because this is the route a consumer calls to DECIDE, and
+    # "the box generated it" and "an admin authored it" are different answers.
+    rep.update(_hand_edit(name))
+    return rep
 
 
 @router.get("/api/worlds/{name}/preview.png")
@@ -454,8 +783,10 @@ def delete_world(name: str, authorization: str | None = Header(None)):
         raise HTTPException(status_code=404, detail=f"no region {name!r}")
     removed = []
     # The sidecar goes too. Leaving it behind would make a later region of the
-    # same name inherit the deleted one's parameters on its first PATCH.
-    for p in (map_path, png_path, gen_path):
+    # same name inherit the deleted one's parameters on its first PATCH - and
+    # the hand-edit marker likewise, which would make a freshly generated
+    # region refuse its own first PATCH as somebody else's hand edits.
+    for p in (map_path, png_path, gen_path, _edit_path(name)):
         try:
             os.remove(p)
             removed.append(os.path.basename(p))

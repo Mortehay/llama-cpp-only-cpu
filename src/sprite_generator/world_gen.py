@@ -1142,12 +1142,26 @@ def report(spec: dict, target_per_screen: float | None = None) -> dict:
             "verdict": verdict,
         })
 
-    for l in spec.get("links", []):
-        if l["from"] not in keys or l["to"] not in keys:
-            problems.append(f"link {l['from']} -{l['edge']}-> {l['to']} "
-                            f"names a world that does not exist")
+    # READ WITH `.get`, and that is not defensiveness. A link can now leave the
+    # region entirely: something2's World Map Editor writes `to_name`, the NAME
+    # of a world in ANOTHER region, where a spec-local `to` key cannot reach -
+    # so a cross-region doorway has no `to` at all. Indexing it turned an
+    # editor-authored spec into a KeyError instead of a report, which is how
+    # `PUT /api/worlds/{name}/spec` would have refused the very specs it exists
+    # to accept.
+    links = [l for l in spec.get("links", []) if isinstance(l, dict)]
+    for l in links:
+        frm, to, to_name = l.get("from"), l.get("to"), l.get("to_name")
+        if frm not in keys or (to_name is None and to not in keys):
+            problems.append(f"link {frm} -{l.get('edge', '?')}-> "
+                            f"{to or to_name} names a world that does not "
+                            f"exist")
 
-    linked = {k for l in spec.get("links", []) for k in (l["from"], l["to"])}
+    # A `to_name` link counts as linking its SOURCE and nothing else: a world
+    # whose only exit is a cross-region doorway IS reachable, just not from
+    # inside this file - while the name it points at belongs to another spec
+    # and must not be read as a world of this one.
+    linked = {k for l in links for k in (l.get("from"), l.get("to")) if k}
     for w in worlds:
         if w["key"] not in linked and len(worlds) > 1:
             problems.append(f"{w['key']} has no links - it is unreachable")

@@ -329,6 +329,17 @@ def main() -> int:
         name = os.path.basename(path)[: -len(".map.json")]
         gen_path = os.path.join(worlds.WORLDS_DIR, f"{name}.gen.json")
 
+        # A hand-edited region is NOT what this code produces, by design -
+        # an admin drew it in something2's World Map Editor and PUT it back.
+        # Diffing it against a regeneration would report every region the
+        # owner has ever edited as stale, which is the fastest way to teach
+        # everyone to ignore this check. Said out loud rather than skipped
+        # silently, because "not compared" is not "fine".
+        if worlds._hand_edit(name)["hand_edited"]:
+            print(f"  ?     {name}  - hand-edited via PUT .../spec, not what "
+                  f"this code produces by design; not compared")
+            continue
+
         if not os.path.exists(gen_path):
             # Generated before the sidecar existed, so it cannot be regenerated
             # and cannot be compared. Said out loud rather than skipped
