@@ -683,9 +683,19 @@ why = "IP_ADAPTER_REPO in tasks.py. Not on disk and not on any live path; the id
 [[dead]]
 ref = "Meatfucker/Flux.1-Kontext-dev-bnb-nf4"
 why = """
-EDIT_BASE. Gated behind EDIT_ENABLED, which is off and documented as needing
-24 GB+ of host RAM before it is worth turning on. Declaring it would download
-weights for a disabled feature.
+tasks.FLUX_EDIT_BASE, the RETIRED editor. /api/edit runs Qwen-Image-Edit-2511
+through qwen_edit.py now (tasks.EDIT_ENGINE defaults to qwen-gguf, decisions
+/0015), and every repo that lane needs is already declared and cached - so the
+switch cost no download at all.
+
+Being undeclared here is what forced the switch, not a consequence of it: the
+endpoint was reachable with EDIT_ENABLED=1 and could only fail, because `make
+provision` never fetched these weights and the worker runs HF_HUB_OFFLINE=1.
+Each call died in from_pretrained with "the model is not fully cached locally".
+
+Still dead on purpose. Declaring it would download ~12.5 GB for a path that is
+only reachable with EDIT_ENGINE=flux-nf4; move it to a tier=all entry if that
+path is ever wanted back.
 """
 
 [[dead]]

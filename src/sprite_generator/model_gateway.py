@@ -96,6 +96,24 @@ def _default_model() -> str:
     return core_models.default_model()
 
 
+def _edit_engine() -> str:
+    """Which editor /api/edit runs, read from tasks for the same reason
+    `_default_model` reads core_models: a module-level import of tasks here
+    would be circular (tasks imports this module to build GatedTask).
+
+    Falls back to the qwen-gguf default rather than raising - a gateway that
+    cannot name a label must still let the task through to the worker, which
+    is the only process that can report the real failure.
+    """
+    try:
+        import tasks
+        return tasks.EDIT_ENGINE
+    except Exception as e:
+        logger.warning("gateway: could not read EDIT_ENGINE (%s); assuming "
+                       "qwen-gguf", e)
+        return "qwen-gguf"
+
+
 def _job_model(job_id) -> str:
     """`spec.llm_name` of a jobs row (tile, map, props), or the default."""
     import core_models
@@ -133,7 +151,17 @@ GATED = {
     "maps.resolve_map_props":
         lambda a, k: _job_model(_arg(a, k, 0, "props_job_id")),
     "tasks.build_sheet_job": lambda a, k: QWEN_EDIT,
-    "tasks.edit_image_task": lambda a, k: FLUX_EDIT,
+    # QWEN_EDIT, not FLUX_EDIT, since /api/edit moved onto Qwen-Image-Edit
+    # (tasks.EDIT_ENGINE, .ai/decisions/0015). Sharing the label with
+    # build_sheet_job is the point and not an accident: it is the same
+    # transformer on the card, so an edit queued behind a sheet build is not
+    # deferred, and one queued behind an SDXL job is.
+    #
+    # Read from tasks rather than hardcoded, so EDIT_ENGINE=flux-nf4 does not
+    # leave the gateway gating against a model the worker is not loading -
+    # which is the drift the generate_core_task note above records.
+    "tasks.edit_image_task":
+        lambda a, k: (FLUX_EDIT if _edit_engine() == "flux-nf4" else QWEN_EDIT),
     "tasks.train_lora_job": lambda a, k: TRAINING,
     "tasks.generate_audio_task":
         lambda a, k: (AUDIO_MUSIC if _arg(a, k, 0, "kind") == "music"
