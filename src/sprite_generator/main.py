@@ -19,7 +19,8 @@ from tasks import (celery_app, generate_core_task, generate_spritesheet_task,
                    remove_background, set_cancel_flag, describe_device,
                    read_device_snapshot,
                    warm_model_task, edit_image_task, EDIT_LORAS,
-                   EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON)
+                   EDIT_BASE, EDIT_ENABLED, EDIT_UNAVAILABLE_REASON,
+                   EDIT_ENGINE, EDIT_MAX_SIDE)
 from core_models import (roster as core_model_roster, unavailable_reason,
                          default_model, is_gguf, persistent_qwen)
 import logging
@@ -487,41 +488,73 @@ def generate_core(request: Request,
 def edit_capabilities(authorization: str | None = Header(None)):
     """What the editing model can be asked to do.
 
-    Each capability is a LoRA on one shared NF4 base, so adding another costs
-    ~0.5GB rather than another multi-GB model. `null` means the base model with
-    no adapter, which still follows general instructions.
+    Reported from the constants rather than written out here, because the
+    engine is switchable (tasks.EDIT_ENGINE, .ai/decisions/0015) and a
+    hardcoded model name is how the queue came to attribute every FLUX failure
+    to a Qwen checkpoint that was not installed - see the sprite_images insert
+    below.
+
+    `null` is the only capability: both engines are instruction-following
+    editors and do these from the prompt alone. EDIT_LORAS is empty on the Qwen
+    path on purpose - the camera LoRA that exists pins pose as well as framing,
+    which fights an edit instruction (tasks._edit_qwen).
     """
     auth.require(authorization, "read")
+    qwen = EDIT_ENGINE != "flux-nf4"
     return JSONResponse({
-        "model": "FLUX.1-Kontext-dev (NF4)",
+        "model": ("Qwen-Image-Edit-2511 (GGUF, Lightning 4-step)" if qwen
+                  else "FLUX.1-Kontext-dev (NF4)"),
+        "engine": EDIT_ENGINE,
         "capabilities": [None] + sorted(EDIT_LORAS.keys()),
         "note": "Editing is instruction-driven, unlike img2img: say what to "
                 "change ('remove the shield', 'show this character from the "
-                "side'), not how far to deviate. No capability LoRAs are "
-                "needed - Kontext does these from the prompt. One task at a "
-                "time: the NF4 transformer takes most of the card, so this "
-                "evicts any generation pipeline.",
-        "source_max_side": 512,
-        "guidance_range": [2.5, 4.0],
+                "side'), not how far to deviate. One task at a time: the "
+                "transformer takes most of the card, so this evicts any "
+                "generation pipeline." + (
+                    " Output is square at source_max_side; a wide source is "
+                    "squashed, not letterboxed. Leave steps and cfg_scale "
+                    "unset: the Lightning LoRA is step-distilled, so 4 steps "
+                    "at cfg 1.0 is what it was trained for and a higher cfg "
+                    "silently washes the result out." if qwen else ""),
+        "source_max_side": EDIT_MAX_SIDE,
+        # Pinned on the Qwen path, not a range to tune - see tasks._edit_qwen.
+        "guidance_range": [1.0, 1.0] if qwen else [2.5, 4.0],
+        "default_steps": 4 if qwen else 20,
     })
 
 
 @app.post("/api/edit")
 def edit_image(request: Request,
                source: str = Form(...), instruction: str = Form(...),
-               capability: str = Form(None), steps: int = Form(20),
-               cfg_scale: float = Form(4.0), seed: int = Form(-1),
+               capability: str = Form(None), steps: int = Form(0),
+               cfg_scale: float = Form(1.0), seed: int = Form(-1),
+               transparent: bool | None = Form(None),
                authorization: str | None = Header(None)):
     """Apply a natural-language edit to an image already in IMAGES_DIR.
 
     `source` is a filename, not a path: joining a caller-supplied path would let
     any file on the worker be opened. Only the images directory is reachable.
+
+    steps=0 means "the engine's own default" - 4 on the Qwen path, because the
+    Lightning LoRA is 4-step distilled. The old defaults were 20 steps at cfg
+    4.0, which were right for FLUX Kontext and are the documented way to wash
+    out a distilled model's output, so they could not stay once the engine
+    changed (.ai/decisions/0015). cfg_scale is ignored entirely on the Qwen
+    path; /api/edit-capabilities reports its range as [1.0, 1.0] to say so.
+
+    `transparent` unset means "match the source". The editor returns RGB, so
+    an edit of a cut-out core comes back with its background painted in -
+    measured 60.8% transparent in, 0.0% out - and a sheet built from an opaque
+    concept carries that backdrop into the game. Pass false for a deliberately
+    opaque result (a tile, a terrain patch), true to force the cutout on a
+    source that had none.
     """
     principal = auth.require(authorization, "generate")
     if not EDIT_ENABLED:
-        # 503, not 500: the service is fine, this capability is not
-        # available on this hardware. Refuse before queueing, because
-        # the task would OOM-kill the worker and take generation with it.
+        # 503, not 500: the service is fine, this capability is switched
+        # off. Refuse before queueing rather than letting the worker find
+        # out - an edit holds the whole card for its duration, so a queued
+        # one blocks generation behind it for nothing.
         return JSONResponse({"error": EDIT_UNAVAILABLE_REASON,
                              "enable_with": "EDIT_ENABLED=1"}, status_code=503)
 
@@ -534,7 +567,8 @@ def edit_image(request: Request,
             {"error": f"Unknown capability '{capability}'",
              "available": sorted(EDIT_LORAS.keys())}, status_code=400)
 
-    task = edit_image_task.delay(path, instruction, capability, steps, cfg_scale, seed)
+    task = edit_image_task.delay(path, instruction, capability, steps,
+                                 cfg_scale, seed, transparent)
     conn = get_db()
     if conn:
         try:

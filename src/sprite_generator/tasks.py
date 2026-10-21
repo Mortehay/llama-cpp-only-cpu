@@ -2082,6 +2082,11 @@ def generate_core_task(self, prompt: str, llm_name: str = None):
     check at all. Each attempt already draws a fresh random seed, so the retry
     is the same lever generate_raw_task uses. Nothing here waits on the caller,
     so the loop is bounded by attempt count only.
+
+    There is deliberately no "prop mode" here. One was built and measured on
+    2026-10-21 and made duplication markedly worse; the table in _core_prompt
+    has the numbers. A subject that must not be dressed as a character goes
+    through /sdapi/v1/txt2img, which rewrites nothing - .ai/specs/prop-concepts/.
     """
     # Was "stabilityai/sdxl-turbo" in the signature. Turbo was dropped by 0002
     # (distilled, guidance 0, every negative prompt a silent no-op) and is not
@@ -2219,6 +2224,32 @@ def _core_prompt(prompt: str, llm_name: str):
     trigger = CORE_TRIGGERS.get((llm_name or "").strip().lower())
     if trigger:
         logger.info(f"Using trigger '{trigger}' for '{llm_name}'.")
+
+    # DO NOT SOFTEN "one character alone" FOR NON-CHARACTER SUBJECTS.
+    #
+    # It reads like scaffolding that only suits humanoids - a crate has no body
+    # and does not stand - and a "prop mode" that dropped it was built and
+    # measured on 2026-10-21. It made things markedly worse. Same subject ("a
+    # tall dense dark green pine tree"), same model (SDXL + nerijs), same 12
+    # fixed seeds, counting frames that came back as a forest or a contact
+    # sheet instead of one subject:
+    #
+    #   one character alone, full body, standing      2-3 / 12   <- this
+    #   a single X alone                                7 / 12
+    #   one object alone, whole object in frame         7 / 12
+    #   one object alone, full body, upright            6 / 12
+    #
+    # The token "character" is itself carrying the isolation. Every
+    # substitution lost it and the frame filled with trees, which is the same
+    # duplication failure the note above records being fixed by this wording in
+    # the first place.
+    #
+    # The motivating complaint - a prop prompt coming back with a small person
+    # at its base - did NOT reproduce in those 48 generations. It is real (it
+    # arrived with a sample image), but it is not a reliable consequence of
+    # this wording, so it cannot be measured away here. For a subject that must
+    # not be dressed as a character, use /sdapi/v1/txt2img, which rewrites
+    # nothing: .ai/specs/prop-concepts/.
     full_prompt = (f"{trigger + ', ' if trigger else ''}"
                    f"a single {clean_prompt}, one character alone, full body, "
                    f"standing, centered, pixel art sprite, 16-bit, sharp focus"
@@ -4065,27 +4096,62 @@ def warm_model_task(self, llm_name: str, pipeline_type: str = "text2img"):
 # must be wholly resident, leaving ~0.75GB of an 11.7GB card for the activations
 # of a 20B model. FLUX Kontext's NF4 transformer is 6.24GB, which leaves ~5GB.
 # Its T5 encoder is a comparable 5.89GB but DOES offload to CPU.
-EDIT_BASE = "Meatfucker/Flux.1-Kontext-dev-bnb-nf4"
+FLUX_EDIT_BASE = "Meatfucker/Flux.1-Kontext-dev-bnb-nf4"
 
-# Editing is OFF by default on this machine, and the endpoint refuses rather
-# than trying.
+# WHICH EDITOR /api/edit RUNS. Changed 2026-10-21; see .ai/decisions/0015.
 #
-# This is not caution: calling it actually takes the service down. Loading the
-# pipeline needs all 12.52GB of weights in system RAM (see enable_model_cpu_
-# offload below), the WSL VM is capped at 11GB, and the kernel OOM-kills the
-# Celery worker mid-load - silently, at component 4 of 7, with no traceback.
-# Generation is unavailable until the worker respawns. An endpoint that kills
-# its own service on every call must not be reachable by default.
+# "qwen-gguf" is Qwen-Image-Edit-2511 through `qwen_edit.py` - the same model,
+# quant and Lightning LoRA the /api/jobs sheet builder already runs, in the
+# same two memory-disjoint passes. "flux-nf4" is the original FLUX Kontext NF4
+# path below (`get_edit_pipeline`), kept behind this switch rather than deleted
+# because its comments ARE the measurement of why NF4 editing does not fit a
+# 12GB card.
 #
-# Set EDIT_ENABLED=1 once the host has materially more RAM (24GB+ settles it),
-# or if a smaller editing pipeline appears. Full measurements in
-# .ai/decisions/0002.
+# The reason for the switch is not that Kontext was worse. It is that the
+# Kontext weights are not on this machine and cannot be fetched: models.toml
+# lists the repo under [[dead]], so `make provision` never pulls it, and the
+# worker runs HF_HUB_OFFLINE=1. Every /api/edit call therefore died in
+# from_pretrained with "the model is not fully cached locally" - the endpoint
+# was reachable and could not work. All five Qwen-Image-Edit repos ARE cached
+# (verified 2026-10-21), so this route costs no download at all.
+#
+# Note the paradox this resolves: the comment above says Qwen-Image-Edit "does
+# not fit this card", and that is true of its bitsandbytes NF4 build, whose
+# 10.71GB transformer must be wholly resident. It is NOT true of the Q2_K GGUF
+# (7.1GB), which is the whole reason qwen_edit.py exists. Read its docstring
+# before reaching for the NF4 numbers again.
+EDIT_ENGINE = os.environ.get("EDIT_ENGINE", "qwen-gguf").strip().lower()
+
+# What the DB row and /api/edit-capabilities report as the model that ran.
+# Derived from EDIT_ENGINE so the gallery cannot attribute a Qwen failure to
+# FLUX - which is the exact mistake the sprite_images comment in main.py
+# records having been made the other way round.
+EDIT_BASE = (FLUX_EDIT_BASE if EDIT_ENGINE == "flux-nf4"
+             else "unsloth/Qwen-Image-Edit-2511-GGUF")
+
+# Editing is still OFF by default, and the endpoint refuses rather than trying.
+#
+# The original reason was specific to the NF4 path: loading it needed all
+# 12.52GB of weights in system RAM, the WSL VM was capped at 11GB, and the
+# kernel OOM-killed the Celery worker mid-load - silently, at component 4 of 7,
+# with no traceback - taking plain sprite generation down until the worker
+# respawned. That cap is now 42GB (~38GB available, measured 2026-10-21), and
+# the qwen-gguf route runs in a SUBPROCESS, so even a hard kill costs one edit
+# rather than the worker.
+#
+# It stays opt-in anyway, because an edit still takes the whole card for the
+# duration and the gateway hands it the same slot as an hour-long sheet build.
+# EDIT_ENABLED=1 is set in compose/develop/.env on this host. Note the
+# spelling: EDIT_ENABLE (no D) is read by nothing and leaves the endpoint
+# answering 503 with the variable visibly set in the container.
 EDIT_ENABLED = os.environ.get("EDIT_ENABLED", "").strip().lower() in ("1", "true", "yes")
 EDIT_UNAVAILABLE_REASON = (
-    "Image editing is disabled on this host. FLUX Kontext NF4 needs 12.52GB of "
-    "weights resident in system RAM and the WSL VM is capped at 11GB, so loading "
-    "it OOM-kills the worker. Needs more host RAM, not a different model. "
-    "SDXL img2img and ControlNet cover image-to-image today."
+    "Image editing is disabled on this host. Set EDIT_ENABLED=1 on BOTH the "
+    "sprite-generator and sprite-worker services (the API answers this 503 "
+    "from the same constant the worker reads) and recreate the containers - a "
+    "plain restart does not re-read the environment. An edit holds the whole "
+    "card for its duration, which is why it is opt-in. SDXL img2img and "
+    "ControlNet cover image-to-image without it."
 )
 
 # How much VRAM the editing pipeline needs free before it may start loading.
@@ -4193,8 +4259,23 @@ def get_edit_pipeline(lora: str = None):
     if not EDIT_ENABLED:
         return _refuse_edit(EDIT_UNAVAILABLE_REASON)
 
+    if EDIT_ENGINE != "flux-nf4":
+        # Unreachable through edit_image_task, which dispatches on EDIT_ENGINE
+        # before it gets here. The guard is for the NEXT caller: this function
+        # is the only thing in the file that looks like "the editing pipeline",
+        # and the weights it wants are not on this machine and cannot be
+        # fetched offline, so an import-and-call would fail several minutes in
+        # with an error about a cache rather than about a choice.
+        return _refuse_edit(
+            f"The FLUX Kontext NF4 editor is not the active engine "
+            f"(EDIT_ENGINE={EDIT_ENGINE!r}). /api/edit runs Qwen-Image-Edit "
+            f"through qwen_edit.py; see .ai/decisions/0015. Set "
+            f"EDIT_ENGINE=flux-nf4 and provision {FLUX_EDIT_BASE} to use this "
+            f"path."
+        )
+
     global pipes
-    cache_key = f"__edit__{EDIT_BASE}_{lora or 'nolora'}"
+    cache_key = f"__edit__{FLUX_EDIT_BASE}_{lora or 'nolora'}"
     if cache_key in pipes:
         return pipes[cache_key]
 
@@ -4244,7 +4325,7 @@ def get_edit_pipeline(lora: str = None):
 
     try:
         from diffusers import FluxKontextPipeline
-        logger.info(f"Loading editing pipeline '{EDIT_BASE}' (NF4)...")
+        logger.info(f"Loading editing pipeline '{FLUX_EDIT_BASE}' (NF4)...")
 
         common = dict(
             torch_dtype=DTYPE, cache_dir="/models",
@@ -4282,7 +4363,7 @@ def get_edit_pipeline(lora: str = None):
                 # transformer (6.24GB) and T5 (5.89GB) are never needed at the
                 # same instant, so the peak is one of them plus VAE and CLIP,
                 # rather than the 12.5GB sum that does not fit.
-                pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+                pipe = FluxKontextPipeline.from_pretrained(FLUX_EDIT_BASE, **common)
                 pipe.enable_model_cpu_offload()
                 logger.info("Editing pipeline loaded with model CPU offload.")
                 pipes[cache_key] = pipe
@@ -4299,12 +4380,12 @@ def get_edit_pipeline(lora: str = None):
                 import gc
                 gc.collect()
                 torch.cuda.empty_cache()
-                pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+                pipe = FluxKontextPipeline.from_pretrained(FLUX_EDIT_BASE, **common)
                 pipe.enable_sequential_cpu_offload()
                 pipes[cache_key] = pipe
                 return pipe
         else:
-            pipe = FluxKontextPipeline.from_pretrained(EDIT_BASE, **common)
+            pipe = FluxKontextPipeline.from_pretrained(FLUX_EDIT_BASE, **common)
 
         if lora:
             repo = EDIT_LORAS.get(lora, lora)
@@ -4333,25 +4414,228 @@ def get_edit_pipeline(lora: str = None):
     return pipes[cache_key]
 
 
+# Wall-clock ceiling on one Qwen edit subprocess.
+#
+# Generous on purpose: cold, it pays the text-encoder load, the 7.1GB GGUF
+# placement and two LoRA injections before the first of 4 steps runs. The sheet
+# lane measures ~24s per image once warm, so this is a hang detector, not a
+# budget. The worker is --pool=solo, so a child that never exits would hold
+# every later job - images, tiles and audio alike - until someone noticed.
+QWEN_EDIT_TIMEOUT_S = float(os.environ.get("QWEN_EDIT_TIMEOUT_S", "900"))
+
+# What each STAGE line the child prints means for the progress bar. The child
+# emits them (qwen_edit._edit_one); anything else it writes is kept only as the
+# tail of an error message.
+_EDIT_STAGE_PCT = {"encode": 10, "denoise": 35}
+
+
+def _run_qwen_edit(task_id, argv: list) -> str | None:
+    """Run `qwen_edit.py edit-one` as a child. Returns an error, or None.
+
+    A sibling of _run_qwen_stage rather than a reuse of it: that one dispatches
+    its timeout and its progress parsing off qwen_t2i.py's stage names, neither
+    of which applies here. What they share is the reason for being subprocesses
+    at all - see _run_qwen_stage's docstring.
+    """
+    import subprocess
+    import threading
+
+    cmd = [sys.executable,
+           os.path.join(os.path.dirname(__file__), "qwen_edit.py"),
+           "edit-one"] + argv
+    logger.info("edit %s: %s", task_id, " ".join(cmd))
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+    timed_out = threading.Event()
+
+    def _kill():
+        timed_out.set()
+        proc.kill()   # closes stdout, which ends the read loop below
+
+    watchdog = threading.Timer(QWEN_EDIT_TIMEOUT_S, _kill)
+    watchdog.daemon = True
+    watchdog.start()
+    tail: list = []
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            if line.startswith("STAGE "):
+                stage = line.split(None, 1)[1]
+                update_task_record(
+                    task_id, progress_pct=_EDIT_STAGE_PCT.get(stage, 0),
+                    progress_msg=f"Editing: {stage}")
+                logger.info("edit %s: stage %s", task_id, stage)
+                continue
+            tail.append(line)
+            del tail[:-15]
+            if line.startswith(("[", "DONE", "ERROR", "Traceback")) or "Error" in line:
+                logger.info("edit %s: %s", task_id, line)
+        rc = proc.wait()
+    finally:
+        watchdog.cancel()
+
+    if timed_out.is_set():
+        return (f"The edit was killed after {QWEN_EDIT_TIMEOUT_S:.0f}s with no "
+                f"result - treated as hung. Last output: "
+                + " | ".join(tail[-4:]))
+    if rc == 0:
+        return None
+    err = f"The edit failed (exit {rc}): " + " | ".join(tail[-6:])
+    # The child owns its own CUDA context, so a fault there never reached the
+    # worker's breaker. Same handling as _read_qwen_stage: stop sending work
+    # and let the half-open probe decide.
+    if is_cuda_fault(RuntimeError("\n".join(tail))):
+        logger.error("edit %s hit a CUDA fault signature; tripping the "
+                     "breaker.", task_id)
+        trip_gpu_breaker(RuntimeError(err))
+    return err
+
+
 @celery_app.task(name="tasks.edit_image_task", bind=True)
 def edit_image_task(self, source_path: str, instruction: str, lora: str = None,
-                    steps: int = 20, cfg_scale: float = 4.0, seed: int = None):
-    """Apply a natural-language edit to an existing image."""
+                    steps: int = 0, cfg_scale: float = 1.0, seed: int = None,
+                    transparent: bool | None = None):
+    """Apply a natural-language edit to an existing image.
+
+    `steps=0` means "whatever the engine's distillation wants" - 4 with the
+    Lightning LoRA on the Qwen path. It is 0 rather than 4 so that a caller who
+    omits it does not pin a step count to one engine's quirk.
+
+    `transparent=None` means "match the source" - see _edit_qwen.
+    """
     task_id = self.request.id
-    logger.info(f"Task {task_id} editing '{source_path}' with '{instruction}' (lora={lora})")
+    logger.info(f"Task {task_id} editing '{source_path}' with '{instruction}' "
+                f"(engine={EDIT_ENGINE}, lora={lora})")
 
     if not os.path.exists(source_path):
         update_task_record(task_id, error_msg=f"Source image not found: {source_path}")
         return {"error": f"Source image not found: {source_path}"}
 
+    if seed is None or seed < 0:
+        seed = random.randint(0, 10**9)
+
+    if EDIT_ENGINE == "flux-nf4":
+        return _edit_flux(task_id, source_path, instruction, lora, steps or 20,
+                          cfg_scale, seed)
+    return _edit_qwen(task_id, source_path, instruction, steps, seed,
+                      transparent)
+
+
+def _edit_qwen(task_id, source_path, instruction, steps, seed, transparent=None):
+    """Qwen-Image-Edit-2511 (GGUF) in a child process. See .ai/decisions/0015.
+
+    `cfg_scale` is NOT passed through, and that is deliberate rather than an
+    oversight. `qwen_edit.denoise_only` pins true_cfg_scale to 1.0 because the
+    Lightning LoRA is step-distilled: above 1.0 it does not error, it produces
+    over-guided washed-out output that reads like a prompt problem - the same
+    trap 0002 records for SDXL-Turbo. The API advertises the range as
+    [1.0, 1.0] so a caller is not invited to tune a dial that is nailed down.
+
+    `transparent=None` means "match the source", which is the default and the
+    whole reason this argument exists. The editor is a text-to-image model and
+    returns RGB: measured 2026-10-21, a core that was 60.8% transparent came
+    back 0.0% transparent, with the background painted in. Nothing downstream
+    survives that - a sheet built from an opaque concept carries its backdrop
+    into the game, which is the failure CUTOUT_MIN_CLEAR and the whole
+    transparent-cutouts spec exist to prevent. An edit must not silently
+    destroy alpha its source had.
+    """
+    name = f"edit_{uuid.uuid4().hex[:12]}.png"
+    path = os.path.join(IMAGES_DIR, name)
+    started = time.time()
+    update_task_record(task_id, progress_pct=0, progress_msg="Editing...",
+                       seed=seed)
+
+    argv = ["--image", source_path, "--instruction", instruction,
+            "--out", path, "--seed", str(seed),
+            # Square, because denoise_only renders at size x size. Every
+            # concept core is already square; a wide source is squashed rather
+            # than letterboxed, which is worth knowing before feeding one in.
+            "--size", str(EDIT_MAX_SIDE)]
+    if steps:
+        argv += ["--steps", str(steps)]
+
+    err = _run_qwen_edit(task_id, argv)
+    if err:
+        logger.error("Edit %s failed: %s", task_id, err)
+        update_task_record(task_id, error_msg=err, progress_msg="Failed")
+        return {"error": err}
+    if not os.path.exists(path):
+        err = ("The edit reported success but wrote no file. Check the worker "
+               "log for the qwen_edit child's output.")
+        update_task_record(task_id, error_msg=err, progress_msg="Failed")
+        return {"error": err}
+
+    clear = None
+    if transparent is None:
+        transparent = _has_alpha(source_path)
+    if transparent:
+        # AFTER the child has exited, never alongside it. The subprocess holds
+        # the 7.1GB transformer for its whole life, and BiRefNet wants the card
+        # too; sequencing them is free here because process exit has already
+        # returned every byte.
+        update_task_record(task_id, progress_pct=90,
+                           progress_msg="Removing the background...")
+        try:
+            import numpy as _np
+            out = remove_background(Image.open(path))
+            out.save(path)
+            clear = float((_np.asarray(out.convert("RGBA"))[..., 3] < 128).mean())
+            logger.info("edit %s: cut out, %.1f%% transparent", task_id,
+                        clear * 100)
+        except Exception as e:
+            # Not fatal, and deliberately not retried. The edit itself is the
+            # expensive part and it succeeded; an opaque result is still worth
+            # returning as long as the caller is told. CUTOUT_MIN_CLEAR is not
+            # applied for the same reason - refusing here would throw away a
+            # good edit over a cut that can be redone for free.
+            logger.warning("edit %s: cutout failed (%s); returning the opaque "
+                           "edit", task_id, e)
+
+    ms = (time.time() - started) * 1000
+    update_task_record(task_id, file_path=path, duration_ms=ms,
+                       progress_pct=100, progress_msg="Complete")
+    logger.info(f"Edit complete in {ms/1000:.1f}s -> {name}")
+    return {"status": "success", "url": f"/images/{name}", "file_path": path,
+            "seed": seed, "duration_ms": ms,
+            # Reported rather than enforced, so a caller that needs
+            # transparency can see what it actually got.
+            "transparent": clear}
+
+
+def _has_alpha(path, floor: float = 0.02) -> bool:
+    """Does this image carry meaningful transparency?
+
+    A floor rather than "has an A channel": a PNG saved as RGBA with a fully
+    opaque alpha is common and means the opposite of what the mode suggests.
+    """
+    try:
+        import numpy as _np
+        im = Image.open(path)
+        if "A" not in im.getbands():
+            return False
+        return float((_np.asarray(im.convert("RGBA"))[..., 3] < 128).mean()) >= floor
+    except Exception as e:
+        logger.warning("could not read the alpha of %s (%s); assuming opaque",
+                       path, e)
+        return False
+
+
+def _edit_flux(task_id, source_path, instruction, lora, steps, cfg_scale, seed):
+    """The retired FLUX Kontext NF4 path, reachable with EDIT_ENGINE=flux-nf4.
+
+    Kept rather than deleted because `get_edit_pipeline`'s comments are the
+    measurement of why NF4 editing does not fit this card, and because the
+    weights are not on this machine - so this is also the only code that can
+    say so in those terms.
+    """
     p = get_edit_pipeline(lora)
     if not p:
         reason = _edit_load_error or "Editing pipeline failed to load"
         update_task_record(task_id, error_msg=reason, progress_msg="Failed")
         return {"error": reason}
-
-    if seed is None or seed < 0:
-        seed = random.randint(0, 10**9)
 
     src = Image.open(source_path).convert("RGB")
     if max(src.size) > EDIT_MAX_SIDE:

@@ -987,6 +987,94 @@ def turnaround(image, elevation: str = ISO_ELEVATION, seed: int = 0,
     return out
 
 
+# --- one-shot instruction edit, the subprocess behind /api/edit -----------
+
+def _edit_one(argv):
+    """`python qwen_edit.py edit-one ...` -> one edited PNG on disk.
+
+    A SUBPROCESS rather than an import, for the reason `tasks._run_qwen_stage`
+    gives for qwen_t2i.py: process exit is the only VRAM release that is
+    guaranteed complete, so the worker's own CUDA context stays clean for the
+    next SDXL job. It matters more here than there, because this is the task
+    `/api/edit` queues on demand and the worker is --pool=solo: a poisoned
+    context would take plain sprite generation down with it.
+
+    Two memory-disjoint passes, exactly as `turnaround_split` - see the module
+    docstring for why the text encoder and the transformer must never share a
+    process.
+
+    `with_angles=False` is the one substantive difference from the turnaround
+    path. The camera LoRA pins POSE as well as framing (see `denoise_only`),
+    which is the opposition of what an instruction edit wants: asked to remove
+    a figure from a prop concept it would hold the composition it was trained
+    to hold and fight the instruction.
+    """
+    import argparse
+
+    from PIL import Image
+
+    p = argparse.ArgumentParser(prog="qwen_edit.py edit-one")
+    p.add_argument("--image", required=True, help="source image path")
+    p.add_argument("--instruction", required=True,
+                   help="what to change, e.g. 'remove the shield'")
+    p.add_argument("--out", required=True, help="where to write the PNG")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--steps", type=int, default=None,
+                   help="default 4 with Lightning, 20 without")
+    p.add_argument("--size", type=int, default=512)
+    p.add_argument("--no-lightning", action="store_true",
+                   help="skip the 4-step LoRA; needs ~20 steps instead")
+    a = p.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+
+    # 4 steps on the UNDISTILLED model is not "a bit rough", it is noise -
+    # the same pairing _selftest documents.
+    steps = a.steps if a.steps else (20 if a.no_lightning else LIGHTNING_STEPS)
+
+    # Preflight, before either checkpoint is touched.
+    #
+    # `denoise_only` has no gate of its own - `load_pipeline` is where the
+    # turnaround path checks - and the failure it guards against is the
+    # expensive one: GGUF weights are placed as from_single_file walks the
+    # file, so a short card fills part-way through and dies with a CUDA error
+    # that reads like a driver fault. The budget is the same constant the
+    # single-pass loader uses, so the two paths cannot drift apart.
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        print(f"[edit] VRAM {free / 1024 ** 3:.1f}/{total / 1024 ** 3:.1f} "
+              f"GiB free", flush=True)
+        need = _parse_gib(os.environ.get("QWEN_GPU_BUDGET", "10.5GiB"))
+        if free < need:
+            print(f"ERROR: only {free / 1024 ** 3:.1f} GiB VRAM free, need "
+                  f"about {need / 1024 ** 3:.1f} GiB for {GGUF_FILE}. "
+                  f"Something else holds the card. Loading anyway fills it "
+                  f"mid-placement and poisons the CUDA context for every "
+                  f"later task.", flush=True)
+            return 2
+    else:
+        print("ERROR: no CUDA device; this will not finish on CPU", flush=True)
+        return 2
+
+    src = Image.open(a.image)
+
+    # STAGE lines are the parent's only progress signal (tasks._run_qwen_edit).
+    print("STAGE encode", flush=True)
+    embeds = encode_only(src, [a.instruction], size=ENCODE_SIZE)
+
+    print("STAGE denoise", flush=True)
+    rendered = denoise_only(src, embeds, seed=a.seed, steps=steps,
+                            size=a.size, with_angles=False,
+                            with_lightning=not a.no_lightning)
+
+    out = rendered[a.instruction]
+    os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
+    out.save(a.out)
+    print(f"DONE {a.out}", flush=True)
+    return 0
+
+
 # --- self-test ----------------------------------------------------------
 
 def _selftest(argv):
@@ -1069,4 +1157,8 @@ def _selftest(argv):
 
 
 if __name__ == "__main__":
+    # Subcommand first, bare flags otherwise: the self-test predates the
+    # one-shot edit and existing invocations pass --image/--selftest directly.
+    if sys.argv[1:2] == ["edit-one"]:
+        sys.exit(_edit_one(sys.argv[2:]))
     _selftest(sys.argv[1:])

@@ -229,6 +229,19 @@ services:
       # another bind mount does that.
       - ./downloader/models.toml:/etc/sprite/models.toml:ro
     environment:
+      # Read by tasks.py as EDIT_ENABLED. Both this service and sprite-worker
+      # import tasks.py, and main.py's /api/edit answers its 503 from the same
+      # constant, so the variable has to be set on BOTH or the endpoint refuses
+      # a request the worker would have accepted. It was spelled EDIT_ENABLE
+      # here and in .env, which nothing reads: `env` inside the container
+      # showed it set and /api/edit still returned 503 with
+      # "enable_with: EDIT_ENABLED=1".
+      #
+      # Turning it on is survivable now that the WSL VM has 41GB rather than
+      # the 11GB the refusal text still describes. The RAM and VRAM preflights
+      # in get_edit_pipeline remain the thing that stops a load that would
+      # OOM-kill the worker, so this is not the only guard.
+      - EDIT_ENABLED=${EDIT_ENABLED:-0}
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
@@ -313,6 +326,8 @@ services:
       # targets have something to execute.
       - ../../scripts:/app/scripts:ro
     environment:
+      # The same constant as on sprite-generator above; needed in both places.
+      - EDIT_ENABLED=${EDIT_ENABLED:-0}
       - HF_TOKEN=${HF_TOKEN}
       - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
       - REDIS_URL=redis://redis:6379/0
