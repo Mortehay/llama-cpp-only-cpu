@@ -266,12 +266,42 @@ AZIMUTH_HINTS = {
 # facing, so a consumer that walks a character west gets the east sprite and
 # the character moonwalks. something2 maps world facings onto these rows.
 #
-# NOT fixed here because the obvious fix is a design decision, not a bug fix:
-# rendering `w` as a horizontal mirror of `e` is geometrically right for a
-# bilaterally symmetric subject, costs one cell instead of two, and is
-# strictly better than today's unmirrored duplicate - but it swaps the hands
-# of anything asymmetric, so a sword changes sides between rows. Decide that
-# before implementing it.
+# PROMPT WORDING DOES NOT FIX IT. Three wordings, one encode, seed 0, same
+# subject, scored right-against-left as above:
+#
+#   , exact side profile, one eye visible            4.70 vs 24.55  broken
+#   , exact side profile facing left/right, ...     12.55 vs 24.28  broken
+#   , facing left/right, one eye visible             9.44 vs 24.25  broken
+#
+# Spelling out the screen direction moves the pair apart a little and never
+# makes it a mirror. Dropping the generic hint is worse than broken: both
+# panels came back near-FRONTAL, which is the measurement behind this hint
+# existing at all.
+#
+# MIRRORING THE OUTPUT IS NOT THE FIX EITHER, and not because it looks wrong -
+# it swaps the hands of anything asymmetric, so a sword changes sides between
+# rows. Rejected by the owner on those grounds, correctly.
+#
+# WHAT DOES WORK: mirror the SOURCE, ask for `right side`, mirror the result.
+# Mirroring an image mirrors the whole scene, so
+#
+#     M(render(M(C), east)) == render(C, west)
+#
+# exactly. The model is only ever asked for the azimuth it can actually do,
+# and the character it is shown genuinely has its left and right swapped, so
+# the hand a sword is in is correct once the result is flipped back. That is
+# the whole difference from mirroring the finished east render.
+#
+# Measured, same subject and seed, against the known-good east panel:
+#
+#   west via the `left side` prompt   |e-w| 4.70   |e-mirror(w)| 24.55  broken
+#   west via mirrored source         |e-w| 25.56   |e-mirror(w)|  6.27  correct
+#
+# NOT wired in. It costs a second encode pass per stage, because an embedding
+# is a function of the (prompt, IMAGE) pair and the mirrored source is a
+# different image - so the four western azimuths cannot share the eastern
+# encode. The denoise cell count is unchanged. See `_flipsrc` in the session
+# that measured this, and decide before build-sheet.py grows a second pass.
 #
 # What IS established: `e` is a genuine right-side profile and the subject in
 # it faces SCREEN-RIGHT. A viewer who sees your right side sees you facing
