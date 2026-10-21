@@ -1017,6 +1017,89 @@ def action_frames(image, frame_prompts: list[str], seed: int = 0,
                         angles_scale=angles_scale)
 
 
+# Azimuths rendered from a MIRRORED source rather than asked for directly.
+#
+# `left side` does not work - it returns the same facing as `right side`, and
+# no prompt wording fixes it. The measurements are by AZIMUTH_HINTS.
+#
+# Mirroring an image mirrors the whole scene, so
+#
+#     M(render(M(C), east)) == render(C, west)
+#
+# exactly. The model is only ever asked for an azimuth it can actually do, and
+# the character it is shown genuinely has its left and right swapped, so a
+# sword is in the right hand once the result is flipped back. That is the
+# difference from mirroring the finished east render, which swaps the hands.
+#
+# The pairing is azimuth -> -azimuth: 270 <- 90, 225 <- 135, 315 <- 45. `s`
+# (0) and `n` (180) are their own mirrors and are rendered directly.
+MIRRORED_AZIMUTHS = {"w": "e", "nw": "ne", "sw": "se"}
+
+
+def flip(im):
+    """Mirror an image left-to-right."""
+    from PIL import Image as _I
+    return im.transpose(_I.FLIP_LEFT_RIGHT)
+
+
+_LR = {"left": "right", "right": "left"}
+
+
+def swap_lr(text: str) -> str:
+    """Swap the words `left` and `right`. For POSE text only, never a camera.
+
+    A mirrored scene swaps the character's own left and right, so asking the
+    mirrored view to raise "its right knee" raises what is the ORIGINAL
+    character's left knee once the result is flipped back. The pose library is
+    lateralised - "right knee raised high", "left foot well off the ground" -
+    so the words have to be swapped to cancel that out.
+
+    Applied to the pose clause alone. The camera clause is built from
+    MIRRORED_AZIMUTHS instead, and running this over it would turn `right
+    side` back into `left side` and undo the whole thing.
+    """
+    import re
+    return re.sub(r"\b(left|right)\b", lambda m: _LR[m.group(0).lower()],
+                  text, flags=re.IGNORECASE)
+
+
+def turnaround_cells(image, directions=None, elevation: str = ISO_ELEVATION,
+                     distance: str = ISO_DISTANCE) -> list:
+    """Turnaround cells, western azimuths sourced from a mirrored image.
+
+    Costs nothing extra. `encode_cells` and `denoise_cells` already take a
+    per-cell image, so the mirrored source rides along inside the same text
+    encoder load and the same transformer load - the cell count is unchanged.
+
+    Pass the rendered views through `unmirror_views` before using them.
+    """
+    flipped = None
+    cells = []
+    for d in (directions or list(AZIMUTHS)):
+        src = image
+        if d in MIRRORED_AZIMUTHS:
+            if flipped is None:
+                flipped = flip(image)
+            src = flipped
+        cells.append({
+            "key": d,
+            "image": src,
+            "prompt": angle_prompt(MIRRORED_AZIMUTHS.get(d, d),
+                                   elevation, distance),
+        })
+    return cells
+
+
+def unmirror_views(views: dict) -> dict:
+    """Flip the mirror-sourced directions back. The inverse of turnaround_cells.
+
+    Must be applied to anything turnaround_cells produced, and exactly once.
+    Applying it twice is silent - the images simply face the wrong way again.
+    """
+    return {d: (flip(im) if d in MIRRORED_AZIMUTHS else im)
+            for d, im in views.items()}
+
+
 def turnaround_split(image, elevation: str = ISO_ELEVATION, seed: int = 0,
                      distance: str = ISO_DISTANCE,
                      directions=None, size: int = 512, steps=None,
@@ -1024,17 +1107,26 @@ def turnaround_split(image, elevation: str = ISO_ELEVATION, seed: int = 0,
     """One concept image -> one image per direction, in two memory-disjoint passes.
 
     This is the shape the whole conveyor has to take on this hardware.
-    """
-    dirs = list(directions or AZIMUTHS)
-    prompts = {d: angle_prompt(d, elevation, distance) for d in dirs}
 
+    Uses the cells API rather than encode_only/denoise_only so that it renders
+    exactly what build-sheet.py renders - including the mirrored western
+    azimuths, which a per-image pass cannot express.
+    """
+    if sequential:
+        # Same refusal denoise_only gives, made before an hour of work: the
+        # sequential offload hook moves parameters to the meta device and a
+        # GGUFParameter loses its quant_type on the way.
+        raise RuntimeError(
+            "enable_sequential_cpu_offload is incompatible with a GGUF "
+            "transformer. Use a smaller quant via QWEN_EDIT_GGUF_FILE instead."
+        )
+    cells = turnaround_cells(image, directions, elevation, distance)
     # ENCODE_SIZE, not `size`. Encoding is memory-bound on sequence length;
     # rendering is not. They are deliberately decoupled.
-    embeds = encode_only(image, list(prompts.values()), size=ENCODE_SIZE)
-    rendered = denoise_only(image, embeds, seed=seed, steps=steps, size=size,
-                            with_lightning=with_lightning,
-                            sequential=sequential)
-    return {d: rendered[p] for d, p in prompts.items()}
+    embeds = encode_cells(cells, size=ENCODE_SIZE)
+    views = denoise_cells(cells, embeds, seed=seed, steps=steps, size=size,
+                          with_lightning=with_lightning)
+    return unmirror_views(views)
 
 
 def turnaround(image, elevation: str = ISO_ELEVATION, seed: int = 0,

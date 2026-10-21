@@ -102,20 +102,35 @@ def stage_turnaround_encode(a):
     # One strip on the input is both cheaper and more reliable. It also cannot
     # amputate anything the way a per-cell rule can, because the concept is a
     # single known-good rest pose rather than 96 poses of varying width.
+    concept_path = a.concept
     if a.clean_concept:
         import pixelate
         before = concept.size
         concept = pixelate.strip_ground_patch(
             pixelate.key_background(concept, tolerance=10))
         log.info("cleaned concept %s -> %s", before, concept.size)
-        concept.save(os.path.join(a.work, "concept_clean.png"))
+        concept_path = os.path.join(a.work, "concept_clean.png")
+        concept.save(concept_path)
 
-    cells = [{"key": d, "image": concept, "prompt": qwen_edit.angle_prompt(d)}
-             for d in directions]
+    # turnaround_cells, not a comprehension over angle_prompt: the western
+    # azimuths are rendered from a MIRRORED concept and flipped back, because
+    # `left side` returns the same facing as `right side` (qwen_edit,
+    # MIRRORED_AZIMUTHS). The denoise stage must build its cells the same way
+    # or the embeddings will not match the images they were encoded against.
+    cells = qwen_edit.turnaround_cells(concept, directions)
     torch.save(qwen_edit.encode_cells(cells), _embeds_path(a.work, "turn"))
 
     with open(_cfg_path(a.work), "w") as f:
-        json.dump({"concept": a.concept, "directions": directions,
+        # The CLEANED concept when there is one, not a.concept.
+        #
+        # This stage encoded against the cleaned image and recorded the raw
+        # path, so the denoise stage reloaded the raw one - and an embedding
+        # belongs to the (prompt, IMAGE) pair, so every direction was denoised
+        # against conditioning its embedding had never seen. Silent: the
+        # output still looks like a turnaround, just a worse one. Found while
+        # wiring MIRRORED_AZIMUTHS, which depends on the two stages agreeing
+        # about the image.
+        json.dump({"concept": concept_path, "directions": directions,
                    "size": a.size, "seed": a.seed}, f, indent=2)
     log.info("encoded %d direction prompt(s)", len(cells))
 
@@ -128,8 +143,10 @@ def stage_turnaround_denoise(a):
     with open(_cfg_path(a.work)) as f:
         cfg = json.load(f)
     concept = Image.open(cfg["concept"])
-    cells = [{"key": d, "image": concept, "prompt": ""}
-             for d in cfg["directions"]]
+    # Must mirror the same cells the encode stage did - an embedding belongs to
+    # the (prompt, IMAGE) pair, so feeding the unmirrored concept here would
+    # pair a western embedding with the wrong image.
+    cells = qwen_edit.turnaround_cells(concept, cfg["directions"])
 
     # angles LoRA at FULL strength here: between directions the body must not
     # move. The action stage deliberately lowers it.
@@ -137,9 +154,46 @@ def stage_turnaround_denoise(a):
         cells, torch.load(_embeds_path(a.work, "turn")),
         seed=cfg["seed"], size=cfg["size"], with_angles=True, angles_scale=1.0)
 
+    # Flip the mirror-sourced directions back exactly once, here, so that
+    # everything downstream - the action stage, compose, the atlas - sees a
+    # normal turnaround and needs to know nothing about this.
+    views = qwen_edit.unmirror_views(views)
+
     for d, img in views.items():
         img.save(os.path.join(a.work, f"dir_{d}.png"))
     log.info("wrote %d direction image(s) to %s", len(views), a.work)
+
+
+def _action_cell(qwen_edit, views, act, d, f_i, pose):
+    """One action cell.
+
+    OPEN BUG, and the mirror trick that fixes the turnaround does NOT fix it.
+    The turnaround stage now hands back a correct west-facing `dir_w.png`, but
+    this stage re-conditions on it with `angle_prompt(d)`, and `left side` is
+    the token that does not work - so the finished w row comes back facing
+    EAST. Measured on a 2-direction walk, frame 0: |e-w| 9.91 against
+    |e-mirror(w)| 25.28, and the cell looked at directly faces right.
+
+    Mirroring here the way `turnaround_cells` does was implemented and
+    reverted. Feeding `flip(views[d])` with the eastern camera and
+    `qwen_edit.swap_lr(pose)`, then flipping the render back, still produced a
+    right-facing w cell - so the raw render must already have been left-facing,
+    which means this stage does not treat the camera clause the way the
+    turnaround does. The likely reason is that the turnaround rotates FROM a
+    front-ish concept whereas this stage is handed an already-rotated view, so
+    the camera clause is holding framing rather than setting it (which is what
+    the comment below has always said it is for). Establish that before trying
+    again - the reverted attempt also swapped the pose text, which would have
+    desynchronised the w row's gait from the e row's without fixing anything.
+    """
+    return {
+        "key": f"{act}|{d}|{f_i}",
+        "image": views[d],
+        # The camera prompt is carried into EVERY action prompt. Without it the
+        # model reverts to its own framing and the cells stop matching.
+        "prompt": f"{qwen_edit.angle_prompt(d)}, the character is {pose}",
+        "action": act, "direction": d, "frame": f_i,
+    }
 
 
 def stage_actions(a):
@@ -158,16 +212,9 @@ def stage_actions(a):
     # head-on, where the same walk has to be a knee lift.
     views = {d: Image.open(os.path.join(a.work, f"dir_{d}.png"))
              for d in directions}
-    cameras = {d: qwen_edit.angle_prompt(d) for d in directions}
     plan = _action_plan({**cfg, "actions": actions}, frames=a.frames)
-    cells = [{
-        "key": f"{act}|{d}|{f_i}",
-        "image": views[d],
-        # The camera prompt is carried into EVERY action prompt. Without it the
-        # model reverts to its own framing and the cells stop matching.
-        "prompt": f"{cameras[d]}, the character is {pose}",
-        "action": act, "direction": d, "frame": f_i,
-    } for act, d, f_i, pose in plan]
+    cells = [_action_cell(qwen_edit, views, act, d, f_i, pose)
+             for act, d, f_i, pose in plan]
 
     import torch
     log.info("actions: %d cell(s)", len(cells))
@@ -234,11 +281,15 @@ def stage_actions_denoise(a):
 
     # (cell, members) side by side, so the copy step needs no second lookup.
     work = []
-    for (d, _pose), members in groups.items():
+    for (d, pose), members in groups.items():
         act, _, f_i = members[0]
-        work.append(({"key": f"{act}|{d}|{f_i}", "image": views[d],
-                      "prompt": "", "action": act, "direction": d,
-                      "frame": f_i}, members))
+        # Rebuilt through _action_cell, not by hand: the western azimuths are
+        # conditioned on a MIRRORED view, and an embedding belongs to the
+        # (prompt, IMAGE) pair - pairing the encode stage's mirrored embedding
+        # with an unmirrored image here would silently denoise against the
+        # wrong conditioning.
+        work.append((_action_cell(qwen_edit, views, act, d, f_i, pose),
+                     members))
 
     cells = [c for c, _ in work]
     saved = len(plan) - len(cells)
@@ -253,6 +304,8 @@ def stage_actions_denoise(a):
     written = 0
     for c, members in work:
         img = rendered[c["key"]]
+        # No flip here: _action_cell does not mirror. Its docstring records
+        # why the turnaround's trick does not transfer to this stage.
         for act, d, f_i in members:
             img.save(os.path.join(a.work, f"cell_{act}_{d}_{f_i}.png"))
             written += 1
