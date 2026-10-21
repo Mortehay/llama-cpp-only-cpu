@@ -4523,8 +4523,116 @@ def edit_image_task(self, source_path: str, instruction: str, lora: str = None,
                       transparent)
 
 
+# How many times an edit may be regenerated on a fresh seed before giving up,
+# and how far the result's framing may drift from the source's before it counts
+# as a reframe rather than an edit.
+#
+# Both exist because of one measurement (0015): this editor re-renders the
+# whole image, and whether it KEEPS the composition is a property of the seed.
+# The same request on the same source returned 61.3% transparent on one seed
+# and an unusable 12.7% zoom into foliage on another. Nothing in the response
+# distinguished them.
+#
+# 1.6 is deliberately loose. A real edit changes the subject's extent a little
+# - removing a figure standing beside a tree legitimately shrinks the opaque
+# area - so this is sized to catch a RECOMPOSITION, not to police a few per
+# cent. The measured separation is wide enough that it does not need to be
+# tight: good edits landed at ratio 0.99, reframes at 2.2, 3.1 and 4.7.
+EDIT_ATTEMPTS = int(os.environ.get("EDIT_ATTEMPTS", "3"))
+EDIT_FRAMING_TOLERANCE = float(os.environ.get("EDIT_FRAMING_TOLERANCE", "1.6"))
+
+
+def _opaque_share(path) -> float | None:
+    """Share of pixels that are opaque, or None if it cannot be read.
+
+    This is the framing proxy. It only means anything when the image HAS
+    alpha - on an opaque source it is 1.0 either side and carries no signal,
+    which is why the caller only consults it on the transparent path.
+    """
+    try:
+        import numpy as _np
+        im = Image.open(path).convert("RGBA")
+        return float((_np.asarray(im)[..., 3] >= 128).mean())
+    except Exception as e:
+        logger.warning("could not measure the framing of %s (%s)", path, e)
+        return None
+
+
 def _edit_qwen(task_id, source_path, instruction, steps, seed, transparent=None):
-    """Qwen-Image-Edit-2511 (GGUF) in a child process. See .ai/decisions/0015.
+    """One edit, regenerated on a new seed when the model recomposes instead.
+
+    The retry is the same lever generate_core_task and generate_raw_task pull,
+    and for the same reason: the failure is seeded, so a fresh seed is the only
+    dial that moves it. Re-sending the identical request cannot help, which is
+    exactly the loop 0015 records something2 getting stuck in against the old
+    editor.
+
+    Only a REFRAME is retried. A failed child is not - that is the storm the
+    GPU breaker exists to stop - and neither is a merely disappointing edit,
+    which this cannot see.
+    """
+    if transparent is None:
+        transparent = _has_alpha(source_path)
+
+    # No alpha means no framing signal (see _opaque_share), so there is nothing
+    # to check and the first result stands.
+    src_share = _opaque_share(source_path) if transparent else None
+    attempts = max(1, EDIT_ATTEMPTS)
+    lo, hi = 1.0 / EDIT_FRAMING_TOLERANCE, EDIT_FRAMING_TOLERANCE
+    result, ratio, got = {}, None, None
+
+    for attempt in range(1, attempts + 1):
+        result = _edit_qwen_once(task_id, source_path, instruction, steps,
+                                 seed, transparent)
+        if result.get("error") or not src_share:
+            return result
+
+        got = _opaque_share(result.get("file_path"))
+        ratio = (got / src_share) if got else None
+        if ratio is None:
+            # Unmeasurable, so nothing to object to. Returning the edit beats
+            # discarding a minute of GPU over a failed PNG read.
+            return result
+        if lo <= ratio <= hi:
+            return {**result, "framing_ratio": round(ratio, 2)}
+
+        logger.info("edit %s: the subject was reframed (%.0f%% of the frame "
+                    "against the source's %.0f%%, ratio %.1fx) on attempt "
+                    "%d/%d", task_id, (got or 0) * 100, src_share * 100, ratio,
+                    attempt, attempts)
+        if attempt < attempts:
+            # Drop the reframed file; the last one is kept so a human can look
+            # at what the refusal is talking about.
+            try:
+                os.remove(result["file_path"])
+            except OSError:
+                pass
+            seed = random.randint(0, 10**9)
+            update_task_record(task_id, progress_msg=(
+                f"The editor recomposed the image - retrying on a new seed "
+                f"({attempt + 1}/{attempts})"))
+
+    msg = (f"The editor recomposed the image instead of editing it on all "
+           f"{attempts} seeds: the subject ends up filling {ratio or 0:.1f}x "
+           f"as much of the frame as it did in the source. This model re-renders "
+           f"the whole image, so it does this to subjects that leave a lot of "
+           f"empty space - see .ai/decisions/0015. The last attempt is kept at "
+           f"{result.get('url')}.")
+    logger.error("edit %s refused: %s", task_id, msg)
+    update_task_record(task_id, error_msg=msg, progress_msg="Failed")
+    # `status` is DROPPED, not overwritten. The last attempt's result carries
+    # status="success" - it is a real file and really was produced - and
+    # merging the refusal over it left a dict saying both at once, which a
+    # caller testing `status == "success"` reads as an accepted edit. Every
+    # other failure here returns {"error": ...} with no status at all, so this
+    # matches them rather than inventing a third shape.
+    return {k: v for k, v in result.items() if k != "status"} | {
+        "error": msg, "error_kind": "edit_reframed"}
+
+
+def _edit_qwen_once(task_id, source_path, instruction, steps, seed,
+                    transparent=None):
+    """One attempt. See _edit_qwen for the retry, .ai/decisions/0015 for why.
 
     `cfg_scale` is NOT passed through, and that is deliberate rather than an
     oversight. `qwen_edit.denoise_only` pins true_cfg_scale to 1.0 because the

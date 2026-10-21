@@ -27,7 +27,7 @@ live, and the Make-commands rows describe `models.txt`.
 |---|---|
 | Current state, hardware, environment, known-broken | `.ai/project-context.md` |
 | A word means three things — "core", "task", "map"; also the four kinds of "model" on disk and the four answers to "what models does this have" | `.ai/domain.md` |
-| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0013) |
+| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0015) |
 | Model choice, LoRA rules, trigger words | `.ai/decisions/0002` |
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
@@ -36,6 +36,8 @@ live, and the Make-commands rows describe `models.txt`.
 | Qwen-Image-2512 GGUF lane; the downloaded-GGUF verdicts | `.ai/decisions/0012` |
 | How weights get onto a machine; `make provision` | `.ai/decisions/0014`, `.ai/specs/model-provisioning/` |
 | `/api/text` brain for something2; why `llm_engine` leaves the GPU | `.ai/decisions/0013`, `.ai/specs/something2-text/contract.md` |
+| `/api/edit`: which editor runs, `EDIT_ENABLED`, and what editing destroys | `.ai/decisions/0015` |
+| A concept that is not a character (tree, crate, banner) | `.ai/specs/prop-concepts/` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so
@@ -285,6 +287,52 @@ fragment of it.
 - **The D: cold archive is gone.** `/mnt/d/wsl-model-archive` does not exist,
   so `scripts/archive-models.sh restore` recovers nothing and the "28 GB parked
   2026-08-23" is not retrievable. Missing weights must come from the Hub again.
+
+**Editing — `/api/edit` repairs nothing, and the flag that gates it has a trap**
+- **`EDIT_ENABLE` (no `D`) is read by nothing.** The code reads `EDIT_ENABLED`.
+  Set the short spelling and `env` inside the container shows it while
+  `/api/edit` keeps answering 503 `enable_with: EDIT_ENABLED=1`. It must be
+  set on **both** `sprite-generator` and `sprite-worker` - the API answers that
+  503 from the same constant the worker reads - and the containers
+  **recreated**, not restarted, for compose to re-read the environment.
+- **The editor is Qwen-Image-Edit-2511 (GGUF), not FLUX Kontext** (0015, since
+  2026-10-21). `tasks.EDIT_ENGINE` selects it. The Kontext weights are
+  `[[dead]]` in `models.toml` and `make provision` does not fetch them, so
+  `EDIT_ENGINE=flux-nf4` can only fail offline - which is exactly how the old
+  default behaved once the flag was finally spelled right.
+- **An edit re-renders the WHOLE image. It is not a masked inpaint**, so it
+  cannot be used to repair a concept. Measured: a 39%-coverage subject held
+  its framing, but 8-14% ones were recomposed 2-3x and one invented content
+  that was never in the source. The VAE round trip also replaces the pixel
+  grid with gradients (26,847 -> 74,579 distinct colours on one prop), and
+  cropping to the subject first fixes the hallucination but not that. It is
+  **seed-dependent**: the same request on the same source returned 61.3%
+  transparent on one seed and an unusable 12.7% zoom on another.
+- **It returns RGB.** Without the cutout step an edit of a 60.8%-transparent
+  core comes back 0.0% transparent, and a sheet built from it carries that
+  backdrop into the game. `_edit_qwen` matches the source's alpha by default;
+  the result reports `transparent`, and a caller that needs it should gate on
+  that number rather than assume.
+
+**Prop concepts — do not reword `_core_prompt` to fix them**
+- `_core_prompt` asks for "one character alone, full body, standing" whatever
+  the subject is, and that wording **is** the isolation. A "prop mode" that
+  replaced it was built and measured over 12 fixed seeds on 2026-10-21: three
+  replacements all scored 6-7/12 forests and contact sheets against the
+  current wording's 2-3/12. Reverted; the numbers are in `_core_prompt` and
+  `.ai/specs/prop-concepts/`. The token "character" is carrying it.
+- The working route for a non-character subject is `/sdapi/v1/txt2img`
+  (`generate_raw_task`), which rewrites nothing, with `cutout: true`. Verified
+  2026-10-21: one generation, one isolated tree, transparent, no person. **A
+  prop ends there - it is a finished static asset.**
+- **Never send a prop through `POST /api/jobs`.** Measured 2026-10-21: that
+  tree, `actions: ["idle"]`, one frame, seven minutes of GPU - and the sheet
+  came back as **a green humanoid in a dark shirt and trousers**. The
+  conveyor's turnaround and action stages drive the editor with pose and
+  camera prompts, and the angles LoRA pins pose, so a subject with no pose has
+  a body invented for it. `concept.judge` will NOT catch this: it measures
+  isolation, not species, and a clean cut-out prop passes it. The gate also
+  runs in the worker, so `/api/jobs` answers 202 either way.
 
 **The something2 contract**
 - **Synchronous only.** Submit/poll is explicitly unsupported on their side, so

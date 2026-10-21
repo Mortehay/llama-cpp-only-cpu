@@ -121,6 +121,40 @@ gateway gating against a model the worker is not loading.
   still appears in `tasks.py`, so `make test-models-manifest` still needs the
   declaration.
 
+## The reframe guard
+
+The limits below are not just documentation: the one that can be *detected* is
+enforced.
+
+An edit whose subject ends up filling a very different share of the frame than
+the source's was a recomposition, not an edit, and that is a property of the
+SEED - the same request on the same source measured 61.3% transparent on one
+seed and an unusable 12.7% zoom into foliage on another. So `_edit_qwen`
+retries on a fresh seed (`EDIT_ATTEMPTS`, default 3) rather than returning it,
+which is the same lever `generate_core_task` and `generate_raw_task` pull for
+the same reason. Re-sending the identical request cannot help.
+
+`EDIT_FRAMING_TOLERANCE` (default 1.6) is the bound on
+`result_opaque_share / source_opaque_share`. Deliberately loose: a real edit
+changes the subject's extent a little - removing a figure beside a tree
+legitimately shrinks the opaque area - so this is sized to catch a
+recomposition, not to police a few per cent. It can afford to be, because the
+measured separation is wide: good edits landed at **0.99**, reframes at
+**2.2, 3.1 and 4.7**.
+
+Three deliberate restrictions:
+
+- **Only a reframe is retried.** A failed child is not - that is the storm the
+  GPU breaker exists to stop - and a merely disappointing edit cannot be seen
+  from here.
+- **It needs alpha to work at all.** The share is the framing proxy, and on an
+  opaque source it is 1.0 either side and carries no signal, so the guard is
+  skipped rather than guessing. That is the right place for it anyway: the
+  transparent path is where a bad result does real damage downstream.
+- **The last rejected attempt is kept**, and its url is in the refusal, so the
+  complaint can be looked at rather than taken on trust. Earlier attempts are
+  deleted.
+
 ## Known limits
 
 - **Output is square**, at `EDIT_MAX_SIDE` (512). `denoise_only` renders

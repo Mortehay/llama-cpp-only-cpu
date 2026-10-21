@@ -87,16 +87,48 @@ Then feed the result into a sheet build by **filename**:
     POST /api/jobs
       { "concept_image": "raw_abc123.png", "concept_check": false, ... }
 
-Two gotchas, both of which have cost time before:
+**Verified on 2026-10-21**, not read off the source: a prop generated this way
+("pixel art, a tall dense dark green pine tree, 16-bit, sharp focus, plain
+white background", `cutout: true`, seed 4242) came back as one isolated tree,
+transparent, with no person in it. One generation, no edit, no VAE round trip.
+
+**Stop there. A prop is a finished static asset.**
+
+### Do NOT send a prop through `POST /api/jobs`
+
+An earlier draft of this file recommended exactly that, and it is wrong. The
+run that proved it: the tree above, `actions: ["idle"]`, one direction, one
+frame. The job was accepted, passed the concept gate, ran all five stages for
+seven minutes, and produced **a green humanoid person in a dark shirt and
+trousers** - `images/sheet_32e0657d-....png`, 48x64.
+
+The sheet conveyor is character-only by construction and not by accident. Its
+turnaround and action stages drive Qwen-Image-Edit with camera and pose
+instructions ("idle", facing south) from `action_prompts.json`, and the
+multiple-angles LoRA pins pose as well as framing (see `qwen_edit.denoise_only`).
+Handed a subject with no pose, the model invents a body that can hold one. A
+tree has no idle animation, so there is nothing for the conveyor to do but
+turn it into something that does.
+
+This is the same requirement ADR 0004 and 0005 record from the 3D side: the
+constraint on a concept is isolation **and** that it is a character.
+
+Two further details, for anyone who does need the hand-off for an actual
+character:
 
 - **`concept_image` is a basename resolved under `images/`**, not an arbitrary
   path (`build_sheet_job` does `os.path.basename`). There is no upload
   endpoint; anything already in `images/` is addressable, including every
   `core_*.png` and `edit_*.png`.
-- **`POST /api/jobs` refuses a prop by default.** `concept.judge` measures
-  isolation and a tree fails it with "concept does not look like an isolated
-  character" - the gate is about characters by design (ADR 0004). Pass
-  `concept_check: false`.
+- **`concept_check: false` is NOT needed for a clean cut-out prop**, which is
+  the other thing the earlier draft got wrong. It claimed a tree would be
+  refused with "concept does not look like an isolated character". It was not:
+  the job passed. `concept.judge` measures *isolation* - coverage, aspect,
+  border - not species, and a cleanly keyed prop on a transparent background
+  looks exactly like an isolated subject by those numbers. **So the gate will
+  not save you from the humanoid above.** Note also that the check runs in the
+  WORKER: `POST /api/jobs` returns 202 either way and a refusal arrives later
+  as a failed job, never as a 400.
 
 ## The route that is NOT supported: generate, then edit the person out
 
