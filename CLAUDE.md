@@ -333,14 +333,24 @@ fragment of it.
   8-direction sheet therefore still has `w`/`nw`/`sw` facing the wrong way**,
   so a consumer that walks a character west gets the east sprite. something2
   maps world facings onto these rows and has been told not to map `w` yet.
-- The same mirror trick was tried in the action stage and **reverted**: it
-  still produced a right-facing cell, so that stage is not treating the camera
-  clause the way the turnaround does — probably because it is handed an
-  already-rotated view rather than a front-ish concept, so the clause holds
-  framing rather than sets it. Establish that before retrying. The revert also
-  removed a pose-text left/right swap that would have desynchronised the `w`
-  gait from the `e` gait without fixing the facing. `qwen_edit.swap_lr` and
-  `flip` are kept for whoever tries again.
+- **The camera clause is NOT the cause, and the obvious fixes are all dead.**
+  Measured on one known-good left-facing `dir_w` at the action stage's own
+  `angles_scale=0.4`, with the real side-family pose, four variants: the
+  current `angle_prompt("w")`, the eastern `angle_prompt("e")`, no camera
+  clause at all, and the mirrored-source trick that fixes the turnaround.
+  **All four came back facing right.** So do not bother dropping, swapping or
+  weakening the camera clause, and do not re-try mirroring here - it was
+  implemented and reverted, and the revert also removed a pose-text swap that
+  would have desynchronised the `w` gait from the `e` gait for nothing.
+  `qwen_edit.swap_lr` and `flip` are kept for whoever tries again.
+- **Next hypothesis, untested: the POSE text sets the facing.** The side
+  family's frame 0 is "left leg forward heel down, **right arm forward**,
+  contact", and the renders put the arm out to screen-right regardless of
+  view. A front-family pose ("right knee raised high, left foot well off the
+  ground") did NOT break the facing in the same harness - A and B held left -
+  which is what points at the lateralised words rather than the camera.
+  Beware: that earlier run also used `angles_scale=1.0` by mistake, so it is
+  suggestive, not evidence.
 - **Do not "fix" this by mirroring the finished east render.** It swaps the
   hands of anything asymmetric, so a sword changes sides between rows.
 
