@@ -314,6 +314,36 @@ fragment of it.
   the result reports `transparent`, and a caller that needs it should gate on
   that number rather than assume.
 
+**Turnaround rows — half fixed, and the broken half is the one you ship**
+- **`left side` returns the same facing as `right side`.** Measured on two
+  subjects and two seeds (`qwen_edit`, by `AZIMUTH_HINTS`): on a humanoid the
+  `w` panel is a near-duplicate of `e` (|e−w| 4.7 against |e−mirror(w)| 24.6).
+  No prompt wording fixes it; three were tried and the best left the pair
+  still unmirrored. Dropping the generic hint is worse — both panels go
+  near-frontal.
+- **FIXED for the turnaround stage** (0015-era work, `MIRRORED_AZIMUTHS`):
+  `w`/`nw`/`sw` are rendered from a *mirrored source* and flipped back, since
+  `M(render(M(C), east)) == render(C, west)` exactly. Costs nothing — the
+  cells API already takes a per-cell image. Verified through `POST /api/jobs`:
+  `dir_e` faces screen-right, `dir_w` faces screen-left, |e−mirror(w)| 6.27.
+- **STILL BROKEN for the ACTION stage, which is what reaches the sheet.**
+  `_action_cell` re-conditions on `dir_{d}.png` with `angle_prompt(d)`, so the
+  western rows come back facing east again — measured frame 0: |e−w| 9.91
+  against |e−mirror(w)| 25.28, and the cell looked at faces right. **An
+  8-direction sheet therefore still has `w`/`nw`/`sw` facing the wrong way**,
+  so a consumer that walks a character west gets the east sprite. something2
+  maps world facings onto these rows and has been told not to map `w` yet.
+- The same mirror trick was tried in the action stage and **reverted**: it
+  still produced a right-facing cell, so that stage is not treating the camera
+  clause the way the turnaround does — probably because it is handed an
+  already-rotated view rather than a front-ish concept, so the clause holds
+  framing rather than sets it. Establish that before retrying. The revert also
+  removed a pose-text left/right swap that would have desynchronised the `w`
+  gait from the `e` gait without fixing the facing. `qwen_edit.swap_lr` and
+  `flip` are kept for whoever tries again.
+- **Do not "fix" this by mirroring the finished east render.** It swaps the
+  hands of anything asymmetric, so a sword changes sides between rows.
+
 **Prop concepts — do not reword `_core_prompt` to fix them**
 - `_core_prompt` asks for "one character alone, full body, standing" whatever
   the subject is, and that wording **is** the isolation. A "prop mode" that
