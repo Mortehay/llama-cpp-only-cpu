@@ -232,19 +232,25 @@
           "one arm drawn back low, a small glowing ember gathering in the hand",
           "arm sweeping forward, bright light growing around the hand",
           "arm fully extended forward, a glowing orb held at the fingertips",
-          "arm lowering, faint sparks at the fingertips"
+          "arm lowering, faint sparks at the fingertips",
+          "arm swept low across the body, hand closed, no light left",
+          "arm lifting in front of the chest, a new ember kindling in the palm"
         ],
         "front": [
           "both arms raised overhead, a bright orb of energy held between the hands",
           "arms held high and wide, glowing sparks around both hands",
           "arms swept down in front, a glowing orb pushed forward at chest height",
-          "arms returning to the sides, faint sparks at the fingertips"
+          "arms returning to the sides, faint sparks at the fingertips",
+          "arms crossed low in front of the hips, hands dark and empty",
+          "arms lifting outward to shoulder height, an ember kindling between the palms"
         ],
         "back": [
           "both arms raised overhead, a bright orb of energy held between the hands",
           "arms held high and wide, glowing sparks around both hands",
           "arms swept down in front, a glowing orb pushed forward at chest height",
-          "arms returning to the sides, faint sparks at the fingertips"
+          "arms returning to the sides, faint sparks at the fingertips",
+          "arms crossed low in front of the hips, hands dark and empty",
+          "arms lifting outward to shoulder height, an ember kindling between the palms"
         ]
       }
     },
@@ -325,19 +331,25 @@
           "struck, head snapped back, torso bent backward, arms flung out",
           "staggering backward, one foot dragged back for balance",
           "doubled over forward, arms clutched against the body, knees bent",
-          "straightening up, arms lowering, weight recentred"
+          "straightening up, arms lowering, weight recentred",
+          "upright again, head still turned aside, one arm raised to guard the face",
+          "shoulders squared, guarding arm lowering back to the side"
         ],
         "front": [
           "flinching, head tilted away, both arms thrown up and out wide",
           "hunched low, both arms pulled tight across the chest, knees bent",
           "crouched down, head lowered, shoulders drawn up high",
-          "rising back upright, arms lowering to the sides"
+          "rising back upright, arms lowering to the sides",
+          "standing upright, both arms raised high to shield the head",
+          "arms spreading down and outward to the sides, shoulders level"
         ],
         "back": [
           "flinching, head tilted away, both arms thrown up and out wide",
           "hunched low, both arms pulled tight across the chest, knees bent",
           "crouched down, head lowered, shoulders drawn up high",
-          "rising back upright, arms lowering to the sides"
+          "rising back upright, arms lowering to the sides",
+          "standing upright, both arms raised high to shield the head",
+          "arms spreading down and outward to the sides, shoulders level"
         ]
       }
     },
@@ -360,7 +372,9 @@
           "standing still, arms at sides",
           "standing still, shoulders slightly raised",
           "standing still, arms at sides",
-          "standing still, shoulders slightly lowered"
+          "standing still, shoulders slightly lowered",
+          "standing still, weight shifted onto one leg, one hip raised",
+          "standing still, weight centred on both feet, arms at sides"
         ]
       }
     },
@@ -384,19 +398,25 @@
           "one arm reaching forward, hand open",
           "arm extended forward, hand closed around an object",
           "arm drawn back toward the chest, holding the object close",
-          "arms returning to the sides"
+          "arms returning to the sides",
+          "arm swinging low behind the hip, hand closed around the object",
+          "arm forward at waist height, hand opening to release"
         ],
         "front": [
           "both hands raised to chest height, holding an object out in front",
           "arms lifted high overhead, holding the object up",
           "arms lowered to the waist, head bowed toward the hands",
-          "arms returning to the sides"
+          "arms returning to the sides",
+          "both arms held wide to the sides, hands open and empty",
+          "hands brought together low in front of the hips"
         ],
         "back": [
           "both hands raised to chest height, holding an object out in front",
           "arms lifted high overhead, holding the object up",
           "arms lowered to the waist, head bowed toward the hands",
-          "arms returning to the sides"
+          "arms returning to the sides",
+          "both arms held wide to the sides, hands open and empty",
+          "hands brought together low in front of the hips"
         ]
       }
     },
@@ -421,7 +441,9 @@
           "leaning gently to the left, top bending with the breeze",
           "upright, settling back through centre",
           "leaning gently to the right, top bending with the breeze",
-          "upright, settling back through centre"
+          "upright, settling back through centre",
+          "tipping slightly to the left, only the top bending",
+          "upright, arms hanging still"
         ]
       }
     }
