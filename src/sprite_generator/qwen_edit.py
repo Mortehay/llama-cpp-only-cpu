@@ -241,6 +241,43 @@ AZIMUTH_HINTS = {
     "w": ", exact side profile, one eye visible",
 }
 
+# OPEN BUG: the hint above fixed `e`. It did NOT fix `w`, and on a humanoid the
+# two come back as the SAME facing rather than mirrored.
+#
+# Measured 2026-10-21, `qwen_edit.py --selftest --directions s,e,w`, mean
+# absolute pixel difference between the two rendered panels:
+#
+#   subject            |e - w|   |e - mirror(w)|   verdict
+#   zombie, seed 0        4.70           24.55     w duplicates e
+#   zombie, seed 7        6.14           21.26     w duplicates e
+#   grey wolf, seed 0    52.01           33.81     mirrored, but see below
+#
+# A correct left profile would be far from `e` and CLOSE to `mirror(e)`. The
+# humanoid is the opposite on both seeds, and 4.7 is near-identical - looked
+# at, both panels put the feet toward screen-right. The quadruped does mirror,
+# but its `w` is closer to the FRONT view (|s - w| 28.1) than to `e` (52.0),
+# so it is a weak near-frontal profile rather than a clean left side. Neither
+# subject produced a usable left profile.
+#
+# `s` is also not reliably a true front view: the wolf's came back holding the
+# source's 3/4 pose (|s - e| 52.7 against |s - w| 28.1).
+#
+# Why this matters beyond aesthetics: an 8-direction sheet maps one row per
+# facing, so a consumer that walks a character west gets the east sprite and
+# the character moonwalks. something2 maps world facings onto these rows.
+#
+# NOT fixed here because the obvious fix is a design decision, not a bug fix:
+# rendering `w` as a horizontal mirror of `e` is geometrically right for a
+# bilaterally symmetric subject, costs one cell instead of two, and is
+# strictly better than today's unmirrored duplicate - but it swaps the hands
+# of anything asymmetric, so a sword changes sides between rows. Decide that
+# before implementing it.
+#
+# What IS established: `e` is a genuine right-side profile and the subject in
+# it faces SCREEN-RIGHT. A viewer who sees your right side sees you facing
+# their right, so "right side" is subject-relative and the compass keys are
+# camera azimuths, which is what a caller mapping facings onto rows needs.
+
 # Global override, still available for experiments. Applied to every azimuth.
 EXTRA_PROMPT = os.environ.get("QWEN_EXTRA_PROMPT", "")
 
