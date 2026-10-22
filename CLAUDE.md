@@ -437,6 +437,22 @@ fragment of it.
 - A new GPU task still has to go in `model_gateway.GATED` —
   `tasks.redraw_frames_job` is registered there under the same label as
   `build_sheet_job`, because it is the same transformer.
+- **A sheet stays redrawable only while `images/_job_<id>/` survives, and
+  nothing deletes it today** (checked 2026-10-22). `POST
+  /api/jobs/{id}/redraw` re-reads `config.json`, every `cut_*.png`,
+  `dir_<d>.png` and `scores.json`; without them it answers 410 and the sheet
+  can only be rebuilt. **Adding a cleanup sweep is therefore deciding how
+  long a sheet stays repairable** — say so rather than letting something2's
+  admin UI discover it. They are not small: 490 MB for a 7-action sheet,
+  4.3 GB across all jobs. **71% of that is `embeds_*.pt`, which nothing reads
+  once the build is finished** — pruning those plus `att*_*.png` would take a
+  sheet to ~105 MB with redraw intact. Not implemented; see
+  `.ai/specs/sheet-quality/contract.md` §5d.
+- **`/api/action-catalog` now reports what a redraw actually does**
+  (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
+  consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
+  box does neither — frames are rendered in ONE batched pass and neighbours
+  condition nothing. Keep it honest if that ever changes.
 - **The sheet conveyor has NO negative prompt and cannot be given one.**
   `denoise_cells` passes `true_cfg_scale=1.0`, so there is no
   classifier-free guidance to subtract with. Spell glow and invented props

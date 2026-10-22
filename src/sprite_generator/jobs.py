@@ -69,6 +69,10 @@ IMAGES_DIR = "/app/images"
 # Terminal states. A client that sees one of these can stop polling.
 TERMINAL = {"done", "failed", "cancelled"}
 
+# The cap on one redraw request, named once so the validator and the
+# capability block the UI reads cannot disagree about it.
+REDRAW_MAX_FRAMES = 64
+
 
 def _db():
     return psycopg2.connect(DB_URL)
@@ -364,10 +368,11 @@ class RedrawSpec(BaseModel):
         # apart to guess between.
         if not v:
             raise ValueError("name at least one frame to redraw")
-        if len(v) > 64:
+        if len(v) > REDRAW_MAX_FRAMES:
             raise ValueError(
-                f"{len(v)} frames is more than a redraw is for. Past about a "
-                f"row and a half it is cheaper to rebuild the sheet.")
+                f"{len(v)} frames is more than a redraw is for; the cap is "
+                f"{REDRAW_MAX_FRAMES}. Past about a row and a half it is "
+                f"cheaper to rebuild the sheet.")
         return v
 
 
@@ -610,6 +615,44 @@ def _sheet_engine() -> dict:
     }
 
 
+def _redraw_capabilities() -> dict:
+    """What a redraw actually does, so a consumer need not assume.
+
+    This exists because something2's admin UI was built against a stand-in
+    box and captioned a redraw "f1, f2 redrawn in order - context: f0, f3".
+    Neither half is true here: marked frames are rendered together in one
+    batched pass, and neighbours do not condition anything. A UI that states
+    otherwise is telling an operator something the box did not do, and the
+    only way it could know is if the box says so.
+
+    `frame_context` is read from the environment rather than from the
+    conveyor, because the conveyor runs in the WORKER and this is the API
+    process. The worker is the authority: if SHEET_FRAME_CONTEXT is set on
+    one container and not the other, this reports the API's view and the
+    worker's behaviour wins. Set it on both or neither.
+    """
+    on = os.environ.get("SHEET_FRAME_CONTEXT", "0").strip() != "0"
+    return {
+        "supported": True,
+        "max_frames": REDRAW_MAX_FRAMES,
+        # False: a redrawn cell is conditioned on its direction view and its
+        # camera+pose prompt, on a fresh seed. Measured at +115% time and
+        # +600 MB for one extra image, degrading superlinearly with the cells
+        # in a pass, so it does not fit this card.
+        "frame_context": on,
+        # Every marked frame is embedded and denoised in ONE pass. Strict
+        # ordering would need a re-encode per frame - an embedding belongs to
+        # the (prompt, image) pair - and the text encoder and transformer
+        # cannot be co-resident on 12 GB, so it would cost ~180 s of model
+        # loading per frame.
+        "ordering": "batched",
+        # Marking w/nw/sw redraws its e/ne/se source, and BOTH rows change.
+        "mirrored_rows_map_to_source": True,
+        # A redraw needs the parent job's work directory. 410 once it is gone.
+        "requires_parent_work_dir": True,
+    }
+
+
 @router.get("/api/action-catalog")
 def action_catalog():
     """What the pose library can build, for the UI to constrain its inputs.
@@ -636,6 +679,8 @@ def action_catalog():
         # The model the sheet lane runs. Not a choice, which is exactly why
         # it has to be stated somewhere a user can see it.
         "engine": _sheet_engine(),
+        # What POST /api/jobs/{id}/redraw will and will not do.
+        "redraw": _redraw_capabilities(),
     }
 
 

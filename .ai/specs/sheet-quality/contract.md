@@ -460,6 +460,40 @@ That is a close-up, and this repo's own `close_up` check would reject it.
 Read `|s-se|` beside the figure fraction and the position on the s->e path,
 never alone.
 
+## 5d. Work-directory retention: today it is "keep forever"
+
+**A redraw is only possible while the parent's work directory survives.** It
+needs `config.json`, `dir_<d>.png`, `cut_*.png` for every OTHER cell (compose
+re-reads them all), and `scores.json` for the attempt ledger. Without them the
+endpoint answers 410 and the sheet can only be rebuilt from scratch.
+
+Nothing deletes those directories today - there is no sweeper anywhere in the
+codebase (checked 2026-10-22). That is the behaviour the redraw feature wants
+and it should stay, but it is an accident rather than a decision, so it is
+written down here: **anyone adding a cleanup sweep is deciding how long a
+sheet stays redrawable**, and should say so rather than discover it from a
+410 in something2's admin UI.
+
+The cost, measured on the 7-action 8-direction Cultist sheet (490 MB; 4.3 GB
+across all job directories, against 82 GB free):
+
+    embeds_*.pt     348 MB   71%   dead once the build finishes
+    cell_*.png       59 MB   210   raw renders: re-scoring, flood-fill fallback
+    cut_*.png        43 MB   210   REQUIRED by every later compose
+    att*_*.png       38 MB   141   per-attempt raws, historical after the build
+    dir_*.png       2.3 MB     8   REQUIRED: conditioning and QC references
+    frames/         1.4 MB         served by the API; compose regenerates it
+
+**The embeddings are 71% of a sheet and are dead weight after the build.**
+`embeds_act.pt` is read only by the automatic redraw rounds, which run during
+the build; the explicit redraw encodes its own `embeds_redraw.pt`. Deleting
+`embeds_*.pt` and `att*_*.png` on completion would take a sheet from 490 MB
+to ~105 MB, a 79% saving, with redraw fully intact.
+
+That is NOT implemented. It deletes files, so it is a decision for the owner,
+and the only thing it costs is the ability to re-run `actions-redraw --round
+N` by hand on a finished job for debugging.
+
 ## 6. Re-running any of this
 
     # re-score a finished job; --anti-goals is the regression gate
