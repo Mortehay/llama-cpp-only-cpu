@@ -397,6 +397,69 @@ nothing depends on.
 
 ---
 
+## 5b. The first full sheet on the new conveyor
+
+Job `2ff8af36`, 2026-10-22: the same concept, seed, actions and directions as
+`8d9d164d`, so the only variable is the conveyor. The turnaround views came
+out **byte-identical** to the old job (|new-old| = 0.00 on every direction),
+which is what makes this an A/B of the action stages alone.
+
+    flagged, of the 210 rendered cells
+      old sheet                70  (33.3%)
+      new, before redraws      61  (29.0%)
+      after round 1            38
+      final                    27  (12.9%)
+
+    by check   old -> final      by action   old -> final
+      backdrop  20 -> 1            cast       25 -> 6
+      close_up  23 -> 3            attack     13 -> 5
+      border    19 -> 1            use        14 -> 7
+      facing    26 -> 8            damage     11 -> 8
+      identity  45 -> 22           sway        5 -> 0
+                                   walk        2 -> 1
+                                   idle        0 -> 0
+
+Two changes did most of the work and did exactly what they were predicted to:
+**backdrop 20 -> 1** is the segmenter, **cast 25 -> 6** is the pose rewrite.
+
+Rounds: 61 cells / 41 improved, 38 / 17, then 42 / 14 as seven whole rows
+(`attack ne,se`, `cast ne`, `damage ne,se`, `use ne,se`). Total 141 redraw
+renders on top of 196 initial. 3 h 07 against roughly 2 h 50 for the old
+sheet - the mirroring saving funded the redraws almost exactly.
+
+Against the brief's acceptance criteria: figure height within +-15% of idle s
+**passes** (0 of 336 outside, idle s 45 px of 64); cells over 40% opaque went
+**54 -> 2** (one cell and its mirror, so a 96% reduction but not zero);
+`se`/`sw` visibly different from `s` **fails, unchanged** (|s-se| 5.8 against
+|s-e| 11.1, was 5.6/12.0).
+
+**The residual is one defect, not many.** `ne` is 18 of the 27, and identity
+is 22 of the failures across all checks. Within the `ne` row identity runs
+0.005-0.009 at the clean end and up to 0.059 at the bad end, so it is real
+drift in back-three-quarter poses rather than a mis-set threshold - three
+rounds of fresh seeds barely moved it. That is the next thing worth
+investigating, and a camera hint will not touch it.
+
+## 5c. The front-quarter hint: a candidate, not a fix
+
+`scripts/try-quarter-hints.py`, same subject and seed. Appending
+`", halfway between front and profile"` moves `se` from 0.22 to 0.45 on the
+front->profile path with framing preserved (1.02x), and the turn is visible
+at full size - angled shoulders, face turned, talisman hand set back, where
+the control is square-shouldered and straight-on.
+
+Not adopted. It is one subject on one seed, and `sw` does not become a clean
+mirror of `se` under it (|se-sw| 54.35 against |se-mirror(sw)| 55.90, a tie).
+
+**A metric warning worth more than the result.** The first scoring here used
+`|s-se|` alone, and it is actively misleading: the angles LoRA crops
+differently per azimuth, so a wording that merely zooms scores as a
+rotation. The wording that scored the biggest `|s-se|` of all - 78.72,
+nearly five times the control - did it by framing the subject 1.62x larger.
+That is a close-up, and this repo's own `close_up` check would reject it.
+Read `|s-se|` beside the figure fraction and the position on the s->e path,
+never alone.
+
 ## 6. Re-running any of this
 
     # re-score a finished job; --anti-goals is the regression gate
