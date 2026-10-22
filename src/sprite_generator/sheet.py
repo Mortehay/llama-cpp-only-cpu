@@ -22,6 +22,7 @@ import logging
 import os
 from collections import OrderedDict
 
+import numpy as np
 from PIL import Image
 
 import pixelate
@@ -36,6 +37,11 @@ DIRECTIONS = ["s", "se", "e", "ne", "n", "nw", "w", "sw"]
 # 4-way sheets are still common and cost half the rows. Kept as a named subset
 # rather than a flag so the atlas records which convention was used.
 DIRECTIONS_4 = ["s", "e", "n", "w"]
+
+# Below this mean per-pixel step, two consecutive frames are the same picture
+# as far as a player is concerned. Measured: a clean row's smallest step runs
+# 3-15, while the pairs worth seeing sit at 0.18-0.84.
+DUPLICATE_STEP = float(os.environ.get("SHEET_DUPLICATE_STEP", "1.0"))
 
 
 class SheetBuilder:
@@ -300,10 +306,14 @@ class SheetBuilder:
                 if img is None:
                     continue
                 sheet.paste(img, (f * self.cell_w, r * self.cell_h))
-            entry = {"row": r, "action": action, "direction": direction,
-                     # The directory the per-frame PNGs live in, so a consumer
-                     # that wants one cell does not have to slice the grid.
-                     "frames_dir": f"{action}_{direction}"}
+            entry: dict = {
+                "row": r, "action": action, "direction": direction,
+                # The directory the per-frame PNGs live in, so a consumer
+                # that wants one cell does not have to slice the grid.
+                "frames_dir": f"{action}_{direction}"}
+            motion = self.row_motion(cells, action, direction)
+            if motion:
+                entry["motion"] = motion
             src = self.mirrored.get(direction)
             if src:
                 # Named rather than implied. something2 mirrors in game and is
@@ -357,6 +367,50 @@ class SheetBuilder:
             out.paste(i, (x, 0))
             x += i.width
         return out
+
+    def row_motion(self, cells: dict, action: str, direction: str) -> dict:
+        """How much this row actually moves, frame to frame.
+
+        REPORTED, NOT CHECKED, and that distinction is the whole point.
+
+        The per-frame quality checks all score a cell against a REFERENCE, so
+        a row of six near-identical frames passes every one of them. This is
+        the measurement that would notice, and it deliberately does not feed
+        the redraw loop: motion is a property of a ROW, and a row that does
+        not move needs different pose text, not another seed. Re-rolling a
+        frame cannot fix a prompt that asks for a pose the camera cannot see.
+
+        Measured on the 7-action Cultist sheet, mean step by view family,
+        excluding idle and sway which are meant to be still:
+
+            side 19.08    front 14.84    back 12.20
+
+        and the two that gave this away: `walk n` at 4.40 - a walk cycle
+        barely moving - and `attack n` with consecutive frames 0.39 apart.
+        Both are back rows, and every action's `back` pose list was a
+        verbatim copy of its `front` list at the time.
+
+        `duplicates` counts consecutive pairs under DUPLICATE_STEP. Some are
+        structural rather than a defect: the conveyor renders one image per
+        distinct (direction, pose) and copies it, so a pose list that repeats
+        an entry produces byte-identical frames by construction. Either way
+        it is a frame of the animation that does not animate, which is worth
+        seeing.
+        """
+        frames = [cells.get((action, direction, f)) for f in range(self.frames)]
+        frames = [f for f in frames if f is not None]
+        if len(frames) < 2:
+            return {}
+        arr = [np.asarray(f, dtype=np.float32) for f in frames]
+        # Wraps from the last frame back to the first: these play as loops,
+        # so the closing step is as real as the others.
+        steps = [float(np.abs(arr[i] - arr[(i + 1) % len(arr)]).mean())
+                 for i in range(len(arr))]
+        return {
+            "mean_step": round(float(np.mean(steps)), 2),
+            "min_step": round(min(steps), 2),
+            "duplicates": sum(1 for s in steps if s < DUPLICATE_STEP),
+        }
 
     def write_frames(self, root: str, cells: dict) -> dict:
         """Write every finished cell to `root/<action>_<direction>/<n>.png`.

@@ -460,6 +460,63 @@ That is a close-up, and this repo's own `close_up` check would reject it.
 Read `|s-se|` beside the figure fraction and the position on the s->e path,
 never alone.
 
+## 5e. Motion: the defect none of the checks can see
+
+Every check in section 2 scores a cell against a REFERENCE. None of them
+looks at a frame's neighbours, so **a row of six near-identical frames
+passes all of them.** That is a whole defect class the system was blind to,
+and it is not hypothetical - it was shipping.
+
+`atlas.rows[].motion` now reports it: `mean_step`, `min_step` and
+`duplicates` (consecutive pairs under `SHEET_DUPLICATE_STEP`, default 1.0)
+over the fitted cells, wrapping from the last frame to the first because
+these play as loops.
+
+**Reported, not checked, and that is deliberate.** Motion is a property of a
+ROW, and a row that does not move needs different pose text, not another
+seed - re-rolling a frame cannot fix a prompt asking for a pose the camera
+cannot see. Feeding this into the redraw loop would spend GPU on something a
+redraw structurally cannot repair.
+
+Measured on the 7-action Cultist sheet, mean step by view family, excluding
+idle and sway which are meant to be still:
+
+    side 19.08     front 14.84     back 12.20
+
+and the rows that gave it away:
+
+    idle   n    mean  0.35   min 0.18   duplicates 6 of 6   entirely frozen
+    walk   n    mean  4.40   min 2.54   duplicates 0        a WALK cycle
+    attack n    mean  7.86   min 0.39   duplicates 1        two frames identical
+    idle   ne   mean  7.04   min 0.84   duplicates 1
+
+Nine of 56 rows carry at least one duplicate pair.
+
+### The cause, and the fix
+
+**Every action's `back` pose list was a verbatim copy of its `front` list.**
+From behind the torso occludes anything held in front of it, so "arms swept
+down in front, both palms pushed forward at chest height" and "hands brought
+together low in front of the hips" have no silhouette to change - the model
+was handed a frame with nothing to draw and filled the gap however it liked.
+That violates the file's own rule, which has said since August that a pose
+must change the silhouette *as seen from that camera*.
+
+Rewritten 2026-10-22 for all five actions that have a back family, naming
+what is visible from behind: elbows flaring, shoulder blades drawing
+together, the back arching or rounding, heels lifting, knees rising.
+
+A second, structural cause: **a repeated pose inside one list produces
+byte-identical frames**, because the conveyor renders one image per distinct
+(direction, pose) and copies it. The old walk list named "both feet flat on
+the ground, standing upright" at frames 2 AND 5, so a third of that cycle
+could not move. All five rewritten lists have six distinct poses.
+
+`idle` and `sway` are untouched - they have only a `side` family, so every
+direction falls back to it. `idle n` at 0.35 with six duplicate pairs is the
+clearest remaining case, and whether an idle should visibly breathe from
+behind is a judgement call rather than a bug.
+
 ## 5d. Work-directory retention: today it is "keep forever"
 
 **A redraw is only possible while the parent's work directory survives.** It

@@ -448,6 +448,24 @@ fragment of it.
   once the build is finished** — pruning those plus `att*_*.png` would take a
   sheet to ~105 MB with redraw intact. Not implemented; see
   `.ai/specs/sheet-quality/contract.md` §5d.
+- **The checks cannot see a row that does not ANIMATE** — every one of them
+  scores a cell against a reference, never against its neighbours, so six
+  near-identical frames pass all five. `atlas.rows[].motion` reports
+  `mean_step`, `min_step` and `duplicates` instead. **Reported, not checked,
+  on purpose**: motion is a property of a ROW and a static row needs
+  different pose text, not another seed — a redraw structurally cannot fix
+  it, so wiring this into the redraw loop would only spend GPU.
+- **`back` pose lists were verbatim copies of `front` for every action**
+  (fixed 2026-10-22). From behind the torso occludes anything held in front
+  of it, so those frames had no silhouette to change. Measured: back rows
+  moved least of the three families (12.20 against 19.08 for side), `walk n`
+  — a walk cycle — managed 4.40, and `attack n` had two frames 0.39 apart.
+  Also **never repeat a pose inside one list**: the conveyor renders one
+  image per distinct (direction, pose) and copies it, so the old walk list
+  naming "both feet flat..." at frames 2 AND 5 froze a third of the cycle.
+  Rules in `action_prompts.json` `_readme.sheet_frames.back_is_not_front`.
+  `idle`/`sway` have only a `side` family and were left alone; `idle n` is
+  still frozen (0.35, six duplicate pairs).
 - **`/api/action-catalog` now reports what a redraw actually does**
   (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
   consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
