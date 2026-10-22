@@ -547,9 +547,30 @@ the build; the explicit redraw encodes its own `embeds_redraw.pt`. Deleting
 `embeds_*.pt` and `att*_*.png` on completion would take a sheet from 490 MB
 to ~105 MB, a 79% saving, with redraw fully intact.
 
-That is NOT implemented. It deletes files, so it is a decision for the owner,
-and the only thing it costs is the ability to re-run `actions-redraw --round
+### `make prune-job-cache` - opt-in, dry by default
+
+    make prune-job-cache                 what it would delete, deletes nothing
+    make prune-job-cache apply=1         delete it
+    make prune-job-cache only=<job-id>   one job
+    make prune-job-cache older=7         only jobs finished over 7 days ago
+    make prune-job-cache orphans=1       include dirs with no job row
+
+It removes `embeds_*.pt` and `att*_*.png` and nothing else. A job is a
+candidate only when its row says `done`, `failed` or `cancelled` - a queued
+or running job is skipped whatever its files look like, because its
+embeddings are what the next stage is about to read.
+
+**There is no scheduler and no hook, deliberately.** A redraw is only
+possible while the parent's work directory survives, so anything deleting
+from it is setting a retention policy; `make up` must not acquire one by
+accident. The only capability it costs is re-running `actions-redraw --round
 N` by hand on a finished job for debugging.
+
+Verified 2026-10-22 on job 8707839c: the directory went 15.9 MB -> 3.4 MB,
+`config.json`, `dir_*.png`, `cut_*.png`, `cell_*.png`, `scores.json` and
+`frames/` all survived, and a redraw queued against the pruned job
+succeeded - which is the claim the whole command rests on. Across the box at
+the time: **3.7 GB reclaimable of 4.3 GB**, 41 jobs.
 
 ## 6. Re-running any of this
 

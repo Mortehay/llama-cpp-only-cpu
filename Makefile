@@ -267,6 +267,28 @@ models:
 # bind mount. Passing the host's MODELS_DIR here would name a path that is not
 # the mount, and the download would land in a layer `--rm` discards - the same
 # trap documented on fetch-qwen below, inverted.
+# Reclaim the build scratch from FINISHED sheet jobs. DRY RUN unless apply=1.
+#
+#   make prune-job-cache                 what it would delete, deletes nothing
+#   make prune-job-cache apply=1         delete it
+#   make prune-job-cache older=7         only jobs finished over 7 days ago
+#   make prune-job-cache orphans=1       include dirs with no job row
+#
+# Deletes only `embeds_*.pt` and `att*_*.png`, which nothing reads once a
+# build has finished - 71% of a 490 MB sheet is the embeddings alone. It never
+# touches config.json, dir_*.png, cut_*.png, cell_*.png, scores.json or
+# frames/, because POST /api/jobs/{id}/redraw re-reads all of those.
+#
+# OPT-IN ON PURPOSE, with no scheduler and no hook: a redraw is only possible
+# while the parent work directory survives, so anything that deletes from it
+# is deciding how long a sheet stays repairable. `make up` must not acquire a
+# retention policy by accident. See .ai/specs/sheet-quality/contract.md 5d.
+prune-job-cache:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) exec -T \
+		sprite-generator python3 /app/scripts/prune-job-cache.py \
+		$(if $(apply),--apply,) $(if $(older),--older-than $(older),) \
+		$(if $(only),--only $(only),) $(if $(orphans),--orphans,)
+
 tier ?= required
 provision:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
