@@ -38,6 +38,7 @@ live, and the Make-commands rows describe `models.txt`.
 | `/api/text` brain for something2; why `llm_engine` leaves the GPU | `.ai/decisions/0013`, `.ai/specs/something2-text/contract.md` |
 | `/api/edit`: which editor runs, `EDIT_ENABLED`, and what editing destroys | `.ai/decisions/0015` |
 | A concept that is not a character (tree, crate, banner) | `.ai/specs/prop-concepts/` |
+| Per-frame sheet checks, redraws, the frames store, mirrored west rows | `.ai/specs/sheet-quality/contract.md` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so
@@ -52,6 +53,14 @@ fragment of it.
 - `.py` edits do **not** hot-reload — neither the API nor the worker, despite
   `uvicorn --reload`. inotify does not cross the 9p mount. Restart the
   container. Jinja templates *are* the exception and reload per request.
+  - **`scripts/build-sheet.py` is the opposite trap: it reloads whether you
+    want it to or not.** Each conveyor stage is a fresh `python` subprocess
+    reading the file off disk, so editing it while a job is running changes
+    what the NEXT stage runs. A half-finished edit killed a job at
+    `actions-denoise` with `NameError: name 'stage_actions_explicit_redraw'
+    is not defined` — the dispatch table is built inside `main()`, so a name
+    that is briefly missing breaks *every* stage, not just the one being
+    edited. Check `docker top sprite_worker | grep build-sheet` first.
 - `df` inside WSL reports the VHDX's nominal size, not free disk. Check
   `Get-PSDrive C` on the Windows side before pulling weights.
 - After any reboot or `wsl --shutdown`, re-run `scripts/wsl-keepalive.ps1`
@@ -270,12 +279,17 @@ fragment of it.
   shape. An `hf-file` GGUF needs an explicit destination two levels deep. The
   acestep checkpoint tree has its own layout. `loras/*.safetensors` were
   trained here and **cannot be downloaded at all**. See `.ai/domain.md`.
-- **Both openpose ControlNets are absent** (checked 2026-10-13): neither
-  `lllyasviel/control_v11p_sd15_openpose` nor its SDXL substitute
-  `thibaud/controlnet-openpose-sdxl-1.0` is cached. `use_pose` turns on
-  automatically for any action with a cycle (`tasks.py`), and `from_pretrained`
-  under `HF_HUB_OFFLINE=1` cannot recover a missing repo, so **pose-conditioned
-  step 2 cannot run here today**, either family.
+- **Both openpose ControlNets ARE cached - the "absent" note above it was
+  wrong** (re-checked 2026-10-22 by listing the snapshots, not by
+  `is_cached`). `lllyasviel/control_v11p_sd15_openpose` holds
+  `diffusion_pytorch_model.safetensors` (1.44 GB) plus fp16 variants, and
+  `thibaud/controlnet-openpose-sdxl-1.0` holds `OpenPoseXL2.safetensors`
+  (5.0 GB) and the rank-256 control-lora. Both were fetched 2026-10-12, the
+  day before the note claiming they were missing. So **pose-conditioned step 2
+  is not blocked on weights**; if it fails, read the actual error rather than
+  assuming the repo is absent. Step 2 is still locked to SD1.5 for the reason
+  above (the SDXL ControlNet measured 3.6x weaker), and nothing here has been
+  run end to end to confirm the pose path works - only that the weights exist.
 - **`stabilityai/sdxl-turbo` was a live default and is not cached — fixed
   2026-10-13.** `generate_sheet`'s `Form` default, `main.py`'s retry fallback,
   `model_gateway.GATED` and both `tasks.py` signatures named it, though 0002
@@ -314,7 +328,7 @@ fragment of it.
   the result reports `transparent`, and a caller that needs it should gate on
   that number rather than assume.
 
-**Turnaround rows — half fixed, and the broken half is the one you ship**
+**Turnaround rows — the west rows are answered by mirroring; the front quarters are not**
 - **`left side` returns the same facing as `right side`.** Measured on two
   subjects and two seeds (`qwen_edit`, by `AZIMUTH_HINTS`): on a humanoid the
   `w` panel is a near-duplicate of `e` (|e−w| 4.7 against |e−mirror(w)| 24.6).
@@ -326,13 +340,44 @@ fragment of it.
   `M(render(M(C), east)) == render(C, west)` exactly. Costs nothing — the
   cells API already takes a per-cell image. Verified through `POST /api/jobs`:
   `dir_e` faces screen-right, `dir_w` faces screen-left, |e−mirror(w)| 6.27.
-- **STILL BROKEN for the ACTION stage, which is what reaches the sheet.**
-  `_action_cell` re-conditions on `dir_{d}.png` with `angle_prompt(d)`, so the
-  western rows come back facing east again — measured frame 0: |e−w| 9.91
-  against |e−mirror(w)| 25.28, and the cell looked at faces right. **An
-  8-direction sheet therefore still has `w`/`nw`/`sw` facing the wrong way**,
-  so a consumer that walks a character west gets the east sprite. something2
-  maps world facings onto these rows and has been told not to map `w` yet.
+- **ANSWERED for the action stage, by not rendering those rows at all**
+  (2026-10-22). `_action_cell` re-conditioned on `dir_{d}.png` with
+  `angle_prompt(d)` and the western rows came back facing east — measured
+  frame 0: |e−w| 9.91 against |e−mirror(w)| 25.28. Nothing fixed that, so
+  compose now **flips the finished `e`/`ne`/`se` cells** into `w`/`nw`/`sw`
+  (`build-sheet.MIRROR_WEST`, default on; `SHEET_MIRROR_WEST=0` renders all
+  eight the old, wrong way). A 336-cell sheet renders 210.
+  - The cost is the handedness the owner rejected this for before: a
+    one-handed sword changes hands between the `e` row and the `w` row.
+    Accepted because something2 already mirrors `e`/`ne`/`se` in game. Every
+    flipped row carries `mirrored_from` and `handedness: "swapped"` in the
+    atlas so a consumer that does NOT mirror can see it.
+  - **Flip the FITTED cell, never the 512px render.** `pixelate` centres with
+    `(cell_w - width) // 2`, so flipping before the fit rounds the sprite one
+    pixel left in both cells and the pair is off by one — in game, a sprite
+    that jumps sideways when the character turns around. Caught by
+    `scripts/check-sheet-assembly.py`, which exists to keep catching it.
+- **`se` and `sw` are still the FRONT view, and it starts at the turnaround.**
+  Measured on both evidence jobs: |s−se| 12.8/16.4 against |s−e| 52.2/60.4,
+  and |se−sw| 18.1/33.9 against |se−mirror(sw)| 43.6/53.7 — the front quarters
+  collapse onto the front view and are near-duplicates of each other rather
+  than mirrors. The mirrored-source trick cannot help here, which is why `sw`
+  already uses it and still equals `se`: the collapse is toward a
+  near-symmetric front view, so the mirror maps it onto itself. The back
+  quarters are fine (`nw` is a correct mirror of `ne`). Unfixed - but a
+  candidate hint now exists, see below.
+- **A quarter-view hint that WORKS has been measured, and is deliberately not
+  wired in** (`scripts/try-quarter-hints.py`, 2026-10-22). Appending
+  `", halfway between front and profile"` to the front-quarter azimuths moved
+  `se` from a fifth of the way round (0.22 on the front->profile path) to
+  0.45, with framing preserved, and the turn is visible at full size. Two
+  other wordings failed: one merely ZOOMED (figure 1.62x, a close-up the
+  `close_up` check would flag) while scoring the *largest* raw pixel
+  difference of all - which is why **`|s-se|` alone must never be the
+  metric**; read it beside the figure fraction and the path position.
+  Not adopted because it is one subject on one seed, and because `sw` does
+  not become a clean mirror of `se` under it. Validate on two more subjects
+  and two seeds before editing `AZIMUTH_HINTS`.
 - **The camera clause is NOT the cause, and the obvious fixes are all dead.**
   Measured on one known-good left-facing `dir_w` at the action stage's own
   `angles_scale=0.4`, with the real side-family pose, four variants: the
@@ -353,6 +398,71 @@ fragment of it.
   suggestive, not evidence.
 - **Do not "fix" this by mirroring the finished east render.** It swaps the
   hands of anything asymmetric, so a sword changes sides between rows.
+
+**Sheet cells are checked per frame now — and the checks measure the RAW render**
+- `sheet_qc.py` scores every cell before it is fitted into 48x64, because the
+  fitted cell cannot answer the question. Pre-fit figure height is **478-512
+  of 512 on every cell** of both evidence jobs (the LoRA frames edge to edge),
+  so a chest close-up and a full body are the same height and any
+  height-based rule passes everything. **Area** against that direction's
+  turnaround view is the signal: clean 1.07-1.09x, close-ups 1.85-1.98x.
+- **The sheet-wide scale is the MINIMUM fit over all cells**, bound by the
+  widest one — so one bloated cell shrinks all 336, and measuring after the
+  fit measures the contamination instead of the cause. It is pinned in
+  `config.json` after the first compose so a redraw cannot resize the whole
+  sheet; when a redrawn cell genuinely needs a smaller scale the sheet refits
+  and the atlas says `refit: true`. Do not "fix" the min-scale rule.
+- **The sheet path keys with BiRefNet now, not the corner flood fill.** That
+  was the last place still using it, and it structurally cannot clear a glow,
+  a scene or a painted transparency checkerboard — measured 9-39% of frame
+  removed on the cells the owner complained about, with no redraw. Compose
+  reads `cut_*.png` and falls back to `key_background(cell_*.png)` only for
+  old work directories or a box without the weights.
+- **Backdrop is a SET DIFFERENCE, not a difference of fractions.** BiRefNet
+  also keeps pixels the flood fill dropped, so subtracting the two percentages
+  nets them off: on `attack se f4` that reads 7.3% and passes an 8% cut while
+  the real backdrop-and-not-figure area is 9.0%. That cell is one the owner
+  named, and the first version of the module let it through on that
+  arithmetic.
+- **`scripts/score-sheet.py --anti-goals` is the gate that stops the checks
+  becoming a check that always passes.** It asserts the five cells the owner
+  named still fire for the right reason and exits non-zero otherwise. Run it
+  after touching a threshold. Scoring 672 cells takes ~25 min, almost all
+  BiRefNet at ~1.8 s/cell — **not while a sheet job is on the card.**
+- **Redraws are batched by round, not row by row**, and that is forced by the
+  hardware: a cell is checked from decoded pixels and the VAE cannot share the
+  card with a resident transformer, so checking after each row would cost a
+  ~90 s transformer reload per row (~35 rows). Rounds reuse the embeddings,
+  because a seed re-roll changes neither the prompt nor the image.
+- A new GPU task still has to go in `model_gateway.GATED` —
+  `tasks.redraw_frames_job` is registered there under the same label as
+  `build_sheet_job`, because it is the same transformer.
+- **A sheet stays redrawable only while `images/_job_<id>/` survives, and
+  nothing deletes it today** (checked 2026-10-22). `POST
+  /api/jobs/{id}/redraw` re-reads `config.json`, every `cut_*.png`,
+  `dir_<d>.png` and `scores.json`; without them it answers 410 and the sheet
+  can only be rebuilt. **Adding a cleanup sweep is therefore deciding how
+  long a sheet stays repairable** — say so rather than letting something2's
+  admin UI discover it. They are not small: 490 MB for a 7-action sheet,
+  4.3 GB across all jobs. **71% of that is `embeds_*.pt`, which nothing reads
+  once the build is finished** — pruning those plus `att*_*.png` would take a
+  sheet to ~105 MB with redraw intact. Not implemented; see
+  `.ai/specs/sheet-quality/contract.md` §5d.
+- **`/api/action-catalog` now reports what a redraw actually does**
+  (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
+  consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
+  box does neither — frames are rendered in ONE batched pass and neighbours
+  condition nothing. Keep it honest if that ever changes.
+- **The sheet conveyor has NO negative prompt and cannot be given one.**
+  `denoise_cells` passes `true_cfg_scale=1.0`, so there is no
+  classifier-free guidance to subtract with. Spell glow and invented props
+  came from `action_prompts.json` asking for them by name ("a glowing orb
+  held at the fingertips", "holding an object out in front"); the fix was to
+  rewrite the pose text, stripped from `cast` and `use` on 2026-10-22. Adding
+  "no glow, no aura, no particles" to the positive prompt is the "no frame,
+  no border, no card" trap and makes it worse. The rule and the measured
+  2026-08-25 fix it supersedes are in that file's
+  `_readme.sheet_frames.effects_stay_on_the_body`.
 
 **Prop concepts — do not reword `_core_prompt` to fix them**
 - `_core_prompt` asks for "one character alone, full body, standing" whatever
