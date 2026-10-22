@@ -843,6 +843,23 @@ def _decode_latent(vae, latents, height: int, width: int,
     return processor.postprocess(image, output_type="pil")[0]
 
 
+def _as_sources(image, size: int) -> list:
+    """A cell's conditioning image(s) as the list the pipeline wants.
+
+    Qwen-Image-Edit-2511 takes SEVERAL reference images, which is how a cell
+    can be conditioned on its direction view AND on the previous frame of its
+    row at once. One image stays one image, so every existing caller is
+    unaffected.
+
+    Each extra image is extra vision tokens in the text encoder's sequence,
+    and that sequence is what this module's OOM history is about - see
+    `encode_only` on the bitsandbytes dequantisation fallback. Measure before
+    adding a third.
+    """
+    imgs = image if isinstance(image, (list, tuple)) else [image]
+    return [im.convert("RGB").resize((size, size)) for im in imgs]
+
+
 def encode_cells(cells: list, size: int = ENCODE_SIZE,
                  cache_dir: str = "/models") -> dict:
     """Embed a whole sheet's worth of (image, prompt) pairs in ONE encoder load.
@@ -871,10 +888,10 @@ def encode_cells(cells: list, size: int = ENCODE_SIZE,
     # directions and the same image across a direction's frames, but the PAIR
     # is what an embedding belongs to.
     for i, c in enumerate(cells):
-        src = c["image"].convert("RGB").resize((size, size))
+        src = _as_sources(c["image"], size)
         with torch.no_grad():
             embeds, mask = pipe.encode_prompt(
-                prompt=[c["prompt"]], image=[src],
+                prompt=[c["prompt"]], image=src,
                 device=torch.device(DEVICE_STR))
         out[c["key"]] = (embeds.detach().cpu(),
                          mask.detach().cpu() if mask is not None else None)
@@ -943,15 +960,24 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
     latents = {}
     for i, c in enumerate(cells):
         pe, mask = embeds[c["key"]]
+        # A per-cell seed, defaulting to the pass-wide one. A redraw re-rolls
+        # ONE frame, and re-rolling the whole pass would change every cell
+        # that already passed - including the neighbours the redrawn frame is
+        # about to be checked for continuity against.
+        cell_seed = int(c.get("seed", seed))
+        # One image is passed as a bare image, not as a list of one. The
+        # pipeline accepts both, but every sheet ever rendered went through
+        # the bare form and this is not the place to find out they differ.
+        srcs = _as_sources(c["image"], size)
         latents[c["key"]] = pipe(
-            image=c["image"].convert("RGB").resize((size, size)),
+            image=(srcs[0] if len(srcs) == 1 else srcs),
             height=size, width=size,
             prompt_embeds=pe.to(DEVICE_STR),
             prompt_embeds_mask=(mask.to(DEVICE_STR)
                                 if mask is not None else None),
             num_inference_steps=steps,
             true_cfg_scale=1.0,
-            generator=torch.Generator(device="cpu").manual_seed(seed),
+            generator=torch.Generator(device="cpu").manual_seed(cell_seed),
             output_type="latent",
         ).images
         logger.info("  denoised %d/%d  %s", i + 1, len(cells), c["key"])

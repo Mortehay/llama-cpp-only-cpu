@@ -3168,12 +3168,34 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
 
 
 JOB_STAGES = [
-    ("turnaround-encode", 10),
-    ("turnaround-denoise", 30),
-    ("actions-encode", 40),
-    ("actions-denoise", 90),
+    ("turnaround-encode", 8),
+    ("turnaround-denoise", 24),
+    ("actions-encode", 32),
+    ("actions-denoise", 74),
+    ("actions-redraw-1", 84),
+    ("actions-redraw-2", 91),
+    ("actions-redraw-rows", 96),
     ("compose", 100),
 ]
+
+# Stages that are not simply their own subcommand. A redraw round is the same
+# subcommand with a different round number, named separately in JOB_STAGES so
+# the job row says which round it is in rather than sitting on one label for
+# three passes.
+#
+# Each redraw round exits immediately when nothing is failing, so a clean
+# sheet pays three process starts (~2 s) and no model load at all.
+JOB_STAGE_CMD = {
+    "actions-redraw-1": ("actions-redraw", ["--round", "1"]),
+    "actions-redraw-2": ("actions-redraw", ["--round", "2"]),
+    "actions-redraw-rows": ("actions-redraw", ["--round", "3", "--whole-rows"]),
+}
+
+# The stages a job skips when it asks for no quality checks. The checks
+# themselves still RUN in actions-denoise - they cost one BiRefNet pass per
+# cell, which is also what produces the cut-out the sheet is built from - so
+# the atlas still reports quality. Only the redraws are skipped.
+REDRAW_STAGES = tuple(JOB_STAGE_CMD)
 
 
 # Job bookkeeping lives in job_runner: DB patches, stage subprocesses and the
@@ -3311,15 +3333,22 @@ def build_sheet_job(self, job_id: str):
     _job_update(job_id, status="running", started_at=_now(), progress_pct=0,
                 progress_msg="starting")
 
+    stages = list(JOB_STAGES)
+    if not spec.get("quality_checks", True):
+        stages = [(s, p) for s, p in stages if s not in REDRAW_STAGES]
+        logger.info("job %s: quality_checks=false, skipping the redraw rounds",
+                    job_id)
+
     pct_done = 0
-    for stage, pct in JOB_STAGES:
+    for stage, pct in stages:
         if is_cancelled(self.request.id):
             _job_update(job_id, status="cancelled", finished_at=_now(),
                         progress_msg=f"cancelled during {stage}")
             return {"status": "cancelled"}
 
         _job_update(job_id, stage=stage, progress_msg=f"running {stage}")
-        cmd = base + [stage] + per_stage.get(stage, []) + common
+        sub, extra = JOB_STAGE_CMD.get(stage, (stage, []))
+        cmd = base + [sub] + extra + per_stage.get(stage, []) + common
         logger.info("job %s: %s", job_id, " ".join(cmd))
 
         # Interpolate this stage between the previous mark and its own.
@@ -3338,6 +3367,93 @@ def build_sheet_job(self, job_id: str):
                 atlas_path=atlas_path, finished_at=_now())
     logger.info("job %s done -> %s", job_id, sheet_path)
     return {"status": "done", "sheet": sheet_path}
+
+
+@celery_app.task(name="tasks.redraw_frames_job", bind=True)
+def redraw_frames_job(self, job_id: str):
+    """Redraw named frames of a finished sheet, then re-assemble it.
+
+    Its own job row, so the existing GET /api/jobs/{id} polling works
+    unchanged and a redraw can be cancelled like anything else. The row's spec
+    carries `parent_job` and `frames`.
+
+    It writes into the PARENT's work directory, because a redraw of one frame
+    that regenerated the turnaround and the other 200 cells would not be a
+    redraw. Only the named frames' files change; compose then re-reads every
+    frame file and lays the grid out again.
+    """
+    import json as _json
+
+    conn = get_db()
+    with conn, conn.cursor() as cur:
+        cur.execute("SELECT spec, status FROM jobs WHERE id = %s", (job_id,))
+        row = cur.fetchone()
+    conn.close()
+    if not row:
+        logger.error("redraw job %s vanished before it started", job_id)
+        return {"error": "job not found"}
+    spec = row[0] if isinstance(row[0], dict) else _json.loads(row[0])
+    if row[1] == "cancelled":
+        return {"status": "cancelled"}
+
+    parent = spec.get("parent_job")
+    frames = spec.get("frames") or []
+    work = os.path.join(IMAGES_DIR, f"_job_{parent}")
+    if not os.path.isdir(work):
+        _job_update(job_id, status="failed", finished_at=_now(),
+                    error=f"parent job {parent} has no work directory left; "
+                          f"its cells were cleaned up and a frame cannot be "
+                          f"redrawn without them")
+        return {"error": "no parent work dir"}
+
+    # The parent's own sheet and atlas paths. A redraw updates the sheet the
+    # caller already has a URL for rather than creating a second one.
+    sheet_path = os.path.join(IMAGES_DIR, f"sheet_{parent}.png")
+    atlas_path = os.path.splitext(sheet_path)[0] + ".json"
+
+    frames_json = os.path.join(work, f"redraw_{job_id}.json")
+    with open(frames_json, "w") as fh:
+        _json.dump(frames, fh)
+
+    base = ["python", "/app/scripts/build-sheet.py"]
+    common = ["--work", work]
+    # Encode and denoise are separate processes here for the same reason they
+    # are in the main conveyor: the text encoder and the transformer must not
+    # be resident together on a 12 GB card.
+    plan = [
+        ("explicit-encode", ["--frames-json", frames_json], 25),
+        ("explicit-denoise", [], 80),
+        ("compose",
+         [sheet_path, "--cell", spec.get("cell", "48x64"),
+          "--colors", str(spec.get("colors", 24))], 100),
+    ]
+
+    _job_update(job_id, status="running", started_at=_now(), progress_pct=0,
+                progress_msg=f"redrawing {len(frames)} frame(s)")
+
+    pct_done = 0
+    for stage, args, pct in plan:
+        if is_cancelled(self.request.id):
+            _job_update(job_id, status="cancelled", finished_at=_now(),
+                        progress_msg=f"cancelled during {stage}")
+            return {"status": "cancelled"}
+        _job_update(job_id, stage=stage, progress_msg=f"running {stage}")
+        cmd = base + [stage] + args + common
+        logger.info("redraw job %s: %s", job_id, " ".join(cmd))
+        rc, tail = _run_stage(cmd, job_id, pct_done, pct)
+        if rc != 0:
+            logger.error("redraw job %s failed in %s:\n%s", job_id, stage, tail)
+            _job_update(job_id, status="failed", stage=stage,
+                        finished_at=_now(), error=f"{stage}: {tail}")
+            return {"error": f"{stage} failed"}
+        pct_done = pct
+
+    _job_update(job_id, status="done", progress_pct=100, stage="compose",
+                progress_msg=f"redrew {len(frames)} frame(s)",
+                sheet_path=sheet_path, atlas_path=atlas_path,
+                finished_at=_now())
+    logger.info("redraw job %s done -> %s", job_id, sheet_path)
+    return {"status": "done", "sheet": sheet_path, "frames": len(frames)}
 
 
 # How many times a cutout request may be regenerated on a fresh seed before

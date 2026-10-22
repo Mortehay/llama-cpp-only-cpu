@@ -151,6 +151,11 @@ GATED = {
     "maps.resolve_map_props":
         lambda a, k: _job_model(_arg(a, k, 0, "props_job_id")),
     "tasks.build_sheet_job": lambda a, k: QWEN_EDIT,
+    # Same label as build_sheet_job because it is the same transformer: a
+    # redraw re-renders cells of a sheet with Qwen-Image-Edit. Registering it
+    # is not optional - a GPU task missing from GATED bypasses the gateway
+    # silently and can land on the card beside a model that is already there.
+    "tasks.redraw_frames_job": lambda a, k: QWEN_EDIT,
     # QWEN_EDIT, not FLUX_EDIT, since /api/edit moved onto Qwen-Image-Edit
     # (tasks.EDIT_ENGINE, .ai/decisions/0015). Sharing the label with
     # build_sheet_job is the point and not an accident: it is the same

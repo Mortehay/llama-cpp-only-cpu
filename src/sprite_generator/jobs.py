@@ -26,6 +26,20 @@ Endpoints:
     GET    /api/jobs/{job_id}/sheet  -> the finished PNG
     GET    /api/jobs/{job_id}/atlas  -> the atlas JSON
     DELETE /api/jobs/{job_id}     -> request cancellation
+
+    GET    /api/jobs/{job_id}/frames               -> the per-frame PNG index
+    GET    /api/jobs/{job_id}/frames/{row}/{n}.png -> one finished cell
+    POST   /api/jobs/{job_id}/redraw               -> 202, a child job id
+
+A sheet is a folder of per-frame images and sheet.png is assembled from them,
+so one cell can be re-rendered without touching the other 335. The redraw
+endpoint returns a NEW job id to poll through the same GET above rather than
+inventing a second status shape, and it rewrites the PARENT's sheet in place -
+a caller holding /api/jobs/{parent}/sheet keeps working.
+
+Every addition here is additive. The POST /api/jobs body, the job status
+fields, the /sheet PNG layout and the existing /atlas fields are unchanged;
+the atlas gains `quality`, `frames` and, on a flipped row, `mirrored_from`.
 """
 
 import json
@@ -124,6 +138,14 @@ class JobSpec(BaseModel):
     # the dump explicitly, `{**spec.model_dump(), "tile_h": h}`, for values the
     # server computes rather than the caller supplies.
     concept_check: bool = True
+
+    # Run the redraw rounds. The CHECKS always run - they are a by-product of
+    # the cutout that every cell needs anyway, and the atlas reports them
+    # either way - so this only controls whether a failing frame is
+    # re-rendered. Declared here rather than read with `.get` downstream for
+    # the reason `concept_check` records: Pydantic drops an undeclared field
+    # silently and the caller cannot tell it was ignored.
+    quality_checks: bool = True
 
     def cells(self) -> int:
         """Cell count, which is what actually predicts runtime."""
@@ -321,6 +343,178 @@ def get_sheet(job_id: str, authorization: str | None = Header(None)):
 def get_atlas(job_id: str, authorization: str | None = Header(None)):
     _require_auth(authorization)
     return _finished_file(job_id, "atlas_path", "application/json")
+
+
+class RedrawFrame(BaseModel):
+    action: str
+    direction: str
+    frame: int
+
+
+class RedrawSpec(BaseModel):
+    """Which cells to re-render. Everything else on the sheet is left alone."""
+
+    frames: list[RedrawFrame] = Field(default_factory=list)
+
+    @field_validator("frames")
+    @classmethod
+    def _not_empty(cls, v):
+        # An empty list is refused rather than treated as "all": a redraw is
+        # GPU time, and "redraw nothing" and "redraw everything" are too far
+        # apart to guess between.
+        if not v:
+            raise ValueError("name at least one frame to redraw")
+        if len(v) > 64:
+            raise ValueError(
+                f"{len(v)} frames is more than a redraw is for. Past about a "
+                f"row and a half it is cheaper to rebuild the sheet.")
+        return v
+
+
+def _work_dir(job_id: str) -> str:
+    """The job's work directory, for the routes that read files from it.
+
+    The id is parsed as a UUID first, and that is not decoration. Every other
+    route puts `job_id` into a parameterised SQL query, where a strange value
+    is simply not found; these are the first to put it into a FILESYSTEM
+    PATH, and `_job_../../etc` normalises to `/etc`. A job id is a uuid4 in
+    every code path that creates one, so parsing it costs nothing and closes
+    the traversal.
+    """
+    try:
+        return os.path.join(IMAGES_DIR, f"_job_{uuid.UUID(job_id)}")
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="bad job id")
+
+
+@router.get("/api/jobs/{job_id}/frames")
+def list_frames(job_id: str, authorization: str | None = Header(None)):
+    """The per-frame PNGs that this sheet was assembled from.
+
+    A sheet IS a folder of frames; the grid is the packaging. Exposed so a
+    consumer can fetch one cell without slicing, and so an admin UI can show a
+    frame beside its quality verdict and ask for that one to be redrawn.
+    """
+    _require_auth(authorization)
+    root = os.path.join(_work_dir(job_id), "frames")
+    if not os.path.isdir(root):
+        raise HTTPException(
+            status_code=404,
+            detail="no per-frame output for this job; it was built before "
+                   "frames were written, or its work directory is gone")
+    rows = {}
+    for row in sorted(os.listdir(root)):
+        d = os.path.join(root, row)
+        if not os.path.isdir(d):
+            continue
+        names = sorted((f for f in os.listdir(d) if f.endswith(".png")),
+                       key=lambda f: int(os.path.splitext(f)[0] or 0))
+        rows[row] = [f"/api/jobs/{job_id}/frames/{row}/{f}" for f in names]
+    return {"job_id": job_id, "rows": rows,
+            "count": sum(len(v) for v in rows.values())}
+
+
+@router.get("/api/jobs/{job_id}/frames/{row}/{name}")
+def get_frame(job_id: str, row: str, name: str,
+              authorization: str | None = Header(None)):
+    """One finished cell as its own PNG."""
+    _require_auth(authorization)
+    # Both components are joined into a filesystem path, so they are checked
+    # rather than trusted. `..` in either would otherwise read any file the
+    # API process can see.
+    for part in (row, name):
+        if not part or "/" in part or "\\" in part or part.startswith("."):
+            raise HTTPException(status_code=400, detail="bad frame path")
+    if not name.endswith(".png"):
+        raise HTTPException(status_code=400, detail="frames are .png")
+    path = os.path.join(_work_dir(job_id), "frames", row, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="no such frame")
+    return FileResponse(path, media_type="image/png")
+
+
+@router.post("/api/jobs/{job_id}/redraw", status_code=202)
+def redraw_frames(job_id: str, spec: RedrawSpec,
+                  authorization: str | None = Header(None)):
+    """Re-render named frames of a finished sheet.
+
+    Returns a NEW job id to poll with the usual GET /api/jobs/{id}, rather
+    than inventing a second status shape. The parent's sheet and atlas URLs
+    are unchanged and are rewritten in place when the redraw finishes, so a
+    caller holding `/api/jobs/{parent}/sheet` keeps working.
+    """
+    _require_auth(authorization, "generate")
+
+    # Parsed before the query, so a malformed id is a 400 rather than a
+    # psycopg2 DataError surfacing as a 500.
+    work = _work_dir(job_id)
+
+    with _db() as conn, conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("SELECT status, spec FROM jobs WHERE id = %s", (job_id,))
+        parent = cur.fetchone()
+    if not parent:
+        raise HTTPException(status_code=404, detail="no such job")
+    if parent["status"] != "done":
+        raise HTTPException(
+            status_code=409,
+            detail=f"job is {parent['status']}, not done; there is nothing "
+                   f"to redraw yet")
+    if not os.path.isdir(work):
+        raise HTTPException(
+            status_code=410,
+            detail="this job's cells are no longer on disk, so a single "
+                   "frame cannot be re-rendered; rebuild the sheet")
+
+    pspec = parent["spec"] if isinstance(parent["spec"], dict) else {}
+    known = set(pspec.get("actions") or [])
+    bad = [f"{f.action}/{f.direction}/{f.frame}" for f in spec.frames
+           if (known and f.action not in known)
+           or f.direction not in (pspec.get("directions") or [])
+           or f.frame < 0]
+    if bad:
+        raise HTTPException(
+            status_code=400,
+            detail=f"not in this sheet: {', '.join(bad[:6])}. It has "
+                   f"actions {sorted(known)} and directions "
+                   f"{pspec.get('directions')}.")
+
+    child = uuid.uuid4()
+    cspec = {
+        "parent_job": job_id,
+        "frames": [f.model_dump() for f in spec.frames],
+        "cell": pspec.get("cell", "48x64"),
+        "colors": pspec.get("colors", 24),
+        "kind": "redraw",
+    }
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs (id, status, spec, progress_msg) "
+            "VALUES (%s, 'queued', %s, %s)",
+            (str(child), json.dumps(cspec),
+             f"queued, redraw of {len(spec.frames)} frame(s)"),
+        )
+
+    from tasks import redraw_frames_job
+
+    async_result = redraw_frames_job.delay(str(child))
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute("UPDATE jobs SET celery_task_id = %s WHERE id = %s",
+                    (async_result.id, str(child)))
+
+    logger.info("redraw %s queued for job %s: %d frame(s)", child, job_id,
+                len(spec.frames))
+    return {
+        "job_id": str(child),
+        "parent_job": job_id,
+        "status": "queued",
+        "frames": len(spec.frames),
+        # One encode pass and one denoise pass over the named frames, plus a
+        # compose. The model loads dominate for a small redraw.
+        "estimated_seconds": len(spec.frames) * 33 + 200,
+        "poll": f"/api/jobs/{child}",
+        "sheet_url": f"/api/jobs/{job_id}/sheet",
+    }
 
 
 @router.delete("/api/jobs/{job_id}")
