@@ -3167,6 +3167,26 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     return {"status": "success", "url": f"/images/{filename}", "duration_ms": duration_ms}
 
 
+def _job_cancelled(job_id: str) -> bool:
+    """Has this job's ROW been cancelled?
+
+    The authoritative answer, used beside the Redis flag because that flag
+    expires in 10 minutes and a single conveyor stage runs for up to 100.
+    Never raises: a bookkeeping read must not fail a build, and the flag
+    still covers the common case if the database is briefly unreachable.
+    """
+    try:
+        conn = get_db()
+        with conn, conn.cursor() as cur:
+            cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
+            row = cur.fetchone()
+        conn.close()
+        return bool(row) and row[0] == "cancelled"
+    except Exception as e:
+        logger.warning("could not read cancel state for job %s: %s", job_id, e)
+        return False
+
+
 JOB_STAGES = [
     ("turnaround-encode", 8),
     ("turnaround-denoise", 24),
@@ -3341,9 +3361,26 @@ def build_sheet_job(self, job_id: str):
 
     pct_done = 0
     for stage, pct in stages:
-        if is_cancelled(self.request.id):
+        # BOTH the flag and the row, because the flag expires and a stage
+        # outlives it. `set_cancel_flag` writes a Redis key with a 600 s TTL
+        # and this loop only looks between stages - but `actions-denoise`
+        # measured 1 h 43 m on a 7-action sheet and each redraw round 30+ min.
+        # Cancel during one of those and the flag is long gone by the time the
+        # stage ends, so the job walks into the next one.
+        #
+        # Observed exactly that: job 148edc23 sat at status `cancelled`, stage
+        # `actions-redraw-2`, while running `actions-redraw --round 3`. It had
+        # been burning the card for hours and would have ended by setting
+        # itself to `done` and publishing a sheet for a job the caller had
+        # cancelled.
+        #
+        # The row is the authority: it does not expire, it survives a worker
+        # restart, and it survives Celery redelivering the message under a new
+        # task id - none of which the flag does.
+        if is_cancelled(self.request.id) or _job_cancelled(job_id):
             _job_update(job_id, status="cancelled", finished_at=_now(),
                         progress_msg=f"cancelled during {stage}")
+            logger.info("job %s: cancelled before %s", job_id, stage)
             return {"status": "cancelled"}
 
         _job_update(job_id, stage=stage, progress_msg=f"running {stage}")
@@ -3433,7 +3470,10 @@ def redraw_frames_job(self, job_id: str):
 
     pct_done = 0
     for stage, args, pct in plan:
-        if is_cancelled(self.request.id):
+        # The row as well as the flag - see _job_cancelled. A redraw's stages
+        # are shorter than a build's, but `explicit-denoise` on a full row
+        # still outlives the flag's 600 s TTL.
+        if is_cancelled(self.request.id) or _job_cancelled(job_id):
             _job_update(job_id, status="cancelled", finished_at=_now(),
                         progress_msg=f"cancelled during {stage}")
             return {"status": "cancelled"}
