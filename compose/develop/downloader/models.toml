@@ -522,6 +522,74 @@ download rather than a path mistake.
 """
 
 [[model]]
+name = "qwen-edit-transformer-q6k"
+kind = "hf-file"
+tier = "optional"
+repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+file = "qwen-image-edit-2511-Q6_K.gguf"
+dest = "image-gguf/transformers"
+bytes = 16852417120
+used_by = ["qwen_edit.GGUF_FILE via QWEN_EDIT_GGUF_FILE (opt-in, needs QWEN_GROUP_OFFLOAD=1)"]
+why = """
+The editor quant that finally WINS, and the first one that does not pay for a
+gain with a regression somewhere else. 15.70 GiB - more than the card has - so
+it exists only because `QWEN_GROUP_OFFLOAD=1` streams the transformer from host
+RAM. Without that flag it cannot load at all.
+
+Gated on a 48-cell subset rather than a whole sheet (`scripts/quant-ab.py`),
+against the Q2_K baseline 2ff8af36 - same concept, same seed 1916017834, same
+(action, direction, frame) cells, first attempts on both sides:
+
+  flagged              28  ->  12
+  close_up             14  ->   1
+  border                9  ->   0
+  identity             15  ->   5
+  identity median  0.02025 ->  0.0184
+  identity max      0.2165 ->  0.0705
+  facing                9  ->   8      unchanged - the point
+  backdrop              2  ->   2
+
+**`close_up` 14 -> 1** is the symptom the owner reported as "at attack option
+it looks like the llm increased the image, but it does not fit the border box
+and was cut". **`facing` is flat**, which is what separates this from Q3_K_S:
+that quant improved identity too and then went 21 -> 48 on facing, which is
+why it was rejected. Read both stanzas before touching the default.
+
+Cost: 48 cells in 55 min, 68.8 s/cell all-in, against ~30.1 s/cell for Q2_K
+resident. But it flags 25% of cells where Q2_K flags 58%, so there is less
+than half as much to redraw - and redraw rounds were a large share of the
+3h07 baseline. The sheet-level cost is therefore NOT the 2.2x the per-cell
+figure suggests; measure it rather than quoting that ratio.
+
+VRAM is no longer the binding constraint on this lane: 10.7 GiB free after
+placement, 10.9 GiB at the end of the pass.
+
+NOT VALIDATED AT SHEET LEVEL. A subset cannot set the sheet-wide scale, which
+is the MINIMUM fit over every cell - one bloated cell still shrinks all 336.
+Only a full build answers the final sprite size.
+"""
+skipping = """
+Nothing breaks: the default is still Q2_K from the cache repo. You lose the
+opt-in path only.
+"""
+notes = """
+Needs TWO environment variables, and the absolute path:
+
+  QWEN_EDIT_GGUF_FILE=/models/image-gguf/transformers/qwen-image-edit-2511-Q6_K.gguf
+  QWEN_GROUP_OFFLOAD=1
+
+A bare filename goes to the Hub and fails offline - see the q3ks notes. And
+without QWEN_GROUP_OFFLOAD the file is 15.70 GiB against a 12 GB card, so it
+OOMs on load; that failure reads like a broken quant and is a missing flag.
+
+Fetching this by hand cost a day's confusion twice over, both self-inflicted
+and both now tripwires in CLAUDE.md: a dropped `docker exec` leaves the
+download running, so a second attempt halves the throughput (1.0 MiB/s with
+two streams, 9.0 MiB/s with one), and a staging dir outside /models turns the
+final move into a 16 GB cross-filesystem copy. `make provision` does neither.
+"""
+
+[[model]]
 name = "qwen-edit-config"
 kind = "hf-cache"
 tier = "optional"
