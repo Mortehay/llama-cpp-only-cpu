@@ -73,6 +73,20 @@ fragment of it.
   **something2 reports an error but the API log has no `sdapi` lines? Run
   `make lan-check`** — the portproxy forwards are gone or stale. `make
   lan-expose` re-runs the script elevated (UAC prompt) and re-checks.
+  - **The keepalive is not only an after-reboot step, and your own `wsl.exe`
+    command is not a substitute for it.** WSL2 sweeps the distro once no
+    `wsl.exe` client is attached, so a session that merely runs commands
+    holds it up only while a command is in flight. Hit 2026-10-23 with no
+    reboot involved: **every container exited 255 at the same second**,
+    mid-16 GB download, and `uptime` inside the distro read `up 0 min`.
+    Simultaneous 255 across all services is this, not an OOM — check
+    `Get-Process wsl` (none running is the tell) before reading any
+    container log. Recovery is `wsl-keepalive.ps1` then `make up`; it needs
+    no admin, unlike *registering* it with `-Install`.
+  - The portproxy forwards may well still be fine afterwards, because they
+    target the distro's IP and that often survives the restart. **Run
+    `make lan-check` (no UAC) and only reach for `lan-expose` if it fails** —
+    on 2026-10-23 the IP was unchanged and all five forwards still answered.
 - The repo path holds Cyrillic and a space. Quote every path; prefer
   `-LiteralPath` in PowerShell; keep `scripts/*.ps1` **ASCII-only** (5.1 reads
   ANSI without a BOM and a curly quote becomes a parse error).
@@ -261,6 +275,20 @@ fragment of it.
   between you and the HF file-lock deadlock. A download is **not** a Celery
   task on purpose — `sprite-worker` is `--pool=solo`, so one would block every
   generation for its whole duration.
+  - **A hand-rolled `docker exec` download outlives the client that started
+    it.** Ctrl-C, a killed background task or a dropped `exec -T` does not
+    stop the python inside the container. Starting the "same" download again
+    therefore gives you two streams fighting for the link. Measured
+    2026-10-23: **1.0 MiB/s with two running, 9.0 MiB/s with one** — so a
+    slow download is evidence of contention long before it is evidence of a
+    slow link. `ps aux | grep hf_hub_download` inside the container first;
+    do not conclude anything about bandwidth until it prints exactly one.
+  - **Point `hf_hub_download(local_dir=...)` INSIDE `/models`.** A staging
+    dir on the container's own filesystem (`/tmp/dl`) makes the final
+    `shutil.move` a cross-filesystem **copy** of the whole file, not a
+    rename — a 16 GB second pass during which the destination exists at the
+    wrong size. Anything watching for the file to appear fires early; watch
+    for the *size* or for the process to exit.
 - **`make up` warns instead of downloading.** A `models-warn` step compares
   `models.toml` against `MODELS_DIR` — host-only, no network — and prints the
   missing *required* entries plus "Run: make provision". Silent when complete,
