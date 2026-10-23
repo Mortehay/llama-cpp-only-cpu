@@ -169,8 +169,16 @@ def image_to_mesh(image_path: str, out_path: str, device: str = None,
     t_infer = time.time() - t1
 
     t2 = time.time()
-    # has_vertex_color=False: colour is irrelevant at sprite scale and the
-    # rigging step that follows cares only about geometry.
+    # Colour is OFF by default because the RIGGING step that follows cares
+    # only about geometry - and repair_for_rigging fills holes, which adds
+    # vertices that carry no colour.
+    #
+    # It is NOT off because "colour is irrelevant at sprite scale", which is
+    # what this comment used to say and is the opposite of what this project
+    # measured: ADR 0005 found that at 48px a hue shift is what reads as "a
+    # different character", far more than silhouette detail does, which is
+    # why palette lock exists at all. So a mesh destined for the RENDER stage
+    # needs --bake-texture; a mesh destined for the rigger does not.
     meshes = model.extract_mesh(codes, has_vertex_color=bake_texture,
                                 resolution=mc_resolution)
     t_mesh = time.time() - t2
@@ -202,6 +210,12 @@ def main():
     ap.add_argument("--mc-resolution", type=int, default=256,
                     help="marching cubes grid; higher = finer and slower")
     ap.add_argument("--device", default=None)
+    ap.add_argument("--bake-texture", action="store_true",
+                    help="keep TripoSR's vertex colour. Needed when the mesh "
+                         "will be RENDERED into sprite cells; pointless when "
+                         "it is only feedstock for the rigger. Export to .ply "
+                         "or .glb rather than .obj to be sure the colour "
+                         "survives the write")
     args = ap.parse_args()
 
     if not os.path.exists(args.image):
@@ -210,7 +224,8 @@ def main():
 
     report = image_to_mesh(args.image, args.out, device=args.device,
                            remove_bg=args.remove_bg,
-                           mc_resolution=args.mc_resolution)
+                           mc_resolution=args.mc_resolution,
+                           bake_texture=args.bake_texture)
     for k, v in report.items():
         print(f"{k:16s} {v}")
     return 0

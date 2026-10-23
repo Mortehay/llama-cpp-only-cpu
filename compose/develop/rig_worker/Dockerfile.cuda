@@ -61,11 +61,17 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 #
 # --no-build-isolation because both compile against the INSTALLED torch; an
 # isolated build env has no torch and setup.py fails immediately.
-# MAX_JOBS=2 on a 4-thread i3-8100: unbounded nvcc jobs are the standard way to
-# exhaust WSL's 11GB, and an OOM here takes down the distro, not just pip.
+# MAX_JOBS bounds nvcc concurrency: unbounded is the standard way to exhaust
+# WSL's RAM, and an OOM here takes down the distro, not just pip.
+#
+# 6 on 2026-10-23, up from 2. The old value's stated reasons were "a 4-thread
+# i3-8100" and "WSL's 11GB" and BOTH have expired: the host is a Ryzen 5 5500
+# (6c/12t) and ~/.wslconfig now grants the VM processors=10, memory=42GB.
+# Kept well under 10 because nvcc is memory-hungry per job, and the failure
+# mode is the whole distro rather than this one build.
 ENV TORCH_CUDA_ARCH_LIST=8.6
 RUN --mount=type=cache,target=/root/.cache/pip \
-    MAX_JOBS=2 pip install --no-build-isolation \
+    MAX_JOBS=6 pip install --no-build-isolation \
         torch_scatter==2.1.2 torch_cluster==1.6.3
 
 # blinker must be shadowed BEFORE the requirements install, or that install dies:
@@ -91,9 +97,20 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # UniRig is a repo, not a package: its inference is driven by shell scripts in
 # launch/ that call into src/. Cloned rather than installed.
-ARG UNIRIG_REF=main
-RUN git clone --depth 1 --branch ${UNIRIG_REF} \
-    https://github.com/VAST-AI-Research/UniRig.git /opt/UniRig
+# PINNED, not `main`. patch_unirig.py below exits nonzero when its anchors
+# move, which is the designed behaviour - but it turns an upstream commit into
+# a build failure at a moment unrelated to anything being changed here. This
+# is UniRig's tip as of 2026-10-23 ("Update README.md", 2026-06-04); the last
+# code-bearing change is older still, so the tree the August build was patched
+# against is very likely this one. Bump it deliberately, and expect to re-read
+# patch_unirig.py when you do.
+#
+# `--depth 1 --branch` is gone because it accepts only branch and tag names,
+# never a bare commit. A full clone of the code is cheap - the weights live on
+# the Hub, not in the repo.
+ARG UNIRIG_REF=6793c6640ff01c8fb389f3993434124bb43d2933
+RUN git clone https://github.com/VAST-AI-Research/UniRig.git /opt/UniRig \
+    && git -C /opt/UniRig checkout --detach ${UNIRIG_REF}
 
 # Two edits the skeleton path needs: drop the eager spconv import, and swap
 # flash_attention_2 for sdpa. Both remove dependencies that this path does not
