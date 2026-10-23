@@ -107,13 +107,47 @@ coat of prompt wording. Distinct from the action prompt text, which is the
 descriptive fragment in `action_prompts.json` - both end up in the same string,
 so do not use "trigger" for both.
 
-## Skeleton / control image
+## Skeleton / control image - and the second, unrelated "skeleton"
 
 **Skeleton** - the COCO-18 keypoint dict authored in `poses.py`.
 **Control image** - that skeleton rendered to RGB for ControlNet.
 
 Worth separating because a bug can be in the keypoints (wrong anatomy) or in the
 rendering and fitting (right anatomy, landed off the character).
+
+**A second meaning already exists in this repo and means something else
+entirely.** In `src/rig_worker/` - `dump_skeleton.py`, `identify_limbs.py`,
+`compare_skeletons.py`, and UniRig's own output - a *skeleton* is a **3D
+armature**: named bones with head/tail positions and a parent hierarchy, in an
+FBX. It is not a 2D pose, it has no keypoints, and no ControlNet consumes it.
+
+The two are not variants of one idea. The pose sense drives *what a character
+is doing* in one image; the armature sense is *how a mesh deforms* across many.
+Say **control skeleton** for the `poses.py` one and **armature** for the 3D one
+when both could be meant - which is any discussion of the 3D lane
+([decisions/0016](decisions/0016-rig-gate-retest-and-off-card-3d.md)).
+
+**Rig** is a third word and a fourth object: mesh + armature + skinning weights
+together. An armature alone is not a rig, which is why 0016's gate could report
+a usable *armature shape* (28 bones, 5 limb ends, the right figure) on a
+character that still could not be rigged.
+
+## Frame - a sheet cell, not a moment in time
+
+**Frame** in this codebase is a **cell index within a row**: the `f` in
+`cut_{action}_{direction}_{f}.png`, `--frames N`, `atlas.rows[].motion`, and
+`/api/action-catalog`'s `redraw.frame_context` and `.max_frames`.
+
+It is *not* a timestamp, and it is not an animation keyframe. The two coincide
+today only because the conveyor renders exactly one image per cell and the
+consumer plays cells in order - so nothing has forced the distinction yet.
+
+It would be forced immediately by anything that poses a model over time rather
+than sampling an image per cell, because such a lane has **keyframes** (poses at
+time offsets, interpolated between) and **clips** (a named sequence of them),
+and neither maps one-to-one onto a cell. If that ever gets built, keep `cell`
+for the sheet unit and do not let `frame` drift to mean both; the atlas, the
+redraw API and something2's packing all read the current sense.
 
 ## "Map" is overloaded - five meanings, and it is the worst one yet
 
