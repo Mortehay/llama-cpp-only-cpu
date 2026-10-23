@@ -952,6 +952,7 @@ def _place(pipe, transformer) -> None:
         # is small and is used after the transformer is released anyway.
         pipe.vae.to(DEVICE_STR)
     else:
+        logger.info("Placing the pipeline on %s (no CPU offload)", DEVICE_STR)
         pipe.to(DEVICE_STR)
     if torch.cuda.is_available():
         free, total = torch.cuda.mem_get_info()
