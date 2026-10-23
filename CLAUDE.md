@@ -439,6 +439,24 @@ fragment of it.
   RAM (41 GB in WSL) and PCIe bandwidth, not VRAM — and the Lightning LoRA's
   4 steps bound the streaming cost, because weights cross the bus four times
   per image rather than fifty.
+- **No longer a projection — Q6_K was run through the real conveyor**
+  (2026-10-23, `QWEN_GROUP_OFFLOAD=1`, blocks=4). A **15.70 GiB** quant on a
+  12 GB card: **10.7 GiB free after placement**, 10.9 GiB at the end of a
+  48-cell pass, **68.8 s/cell all-in** against ~30.1 s/cell for Q2_K
+  resident. VRAM is not the constraint on this lane any more; wall clock is.
+  Quality verdict in the editor-quant section below.
+- **It is wired into both `denoise_cells` and `denoise_only`** (`_place`), so
+  a quant chosen with `QWEN_EDIT_GGUF_FILE` loads on the sheet path AND on
+  `/api/edit`. Without the flag a 15.70 GiB file OOMs on load, and that
+  failure reads like a broken quant rather than a missing flag.
+- **It is NOT CPU compute, and the brain's trick does not transfer.**
+  Group offload keeps weights in host RAM and streams them to the card; every
+  multiply still happens on the GPU. `--n-cpu-moe` works for the brain
+  because that model is **MoE** — sparse, a few experts per token. The editor
+  is a **dense DiT**: 1920 tensors across 60 `transformer_blocks`, no expert
+  tensors in the file, so every block runs for every step. Moving any share
+  of it to CPU runs that share at CPU speed with no sparsity to recover it.
+  Do not reach for a hybrid split here.
 - **`blocks` is a SPEED dial, not a memory dial**: peak VRAM is identical at
   2, 4 and 8, because the resident set is activations + VAE + LoRAs rather
   than held blocks. It saturates at 4; `blocks=2` is 50% slower for nothing.
@@ -520,8 +538,21 @@ fragment of it.
   admin UI discover it. They are not small: 490 MB for a 7-action sheet,
   4.3 GB across all jobs. **71% of that is `embeds_*.pt`, which nothing reads
   once the build is finished** — pruning those plus `att*_*.png` would take a
-  sheet to ~105 MB with redraw intact. Not implemented; see
-  `.ai/specs/sheet-quality/contract.md` §5d.
+  sheet to ~105 MB with redraw intact. `make prune-job-cache` does it, opt-in
+  and dry by default; see `.ai/specs/sheet-quality/contract.md` §5d.
+  - **Never prune while a build is on the card.** "Nothing reads
+    `embeds_*.pt` once the build is finished" is the operative clause: a
+    RUNNING build reads them at every denoise and redraw stage, so
+    `apply=1` mid-build deletes the conditioning out from under it. Check
+    `docker top sprite_worker | grep build-sheet` first, same as for editing
+    `build-sheet.py`.
+- **Do not edit `action_prompts.json` while a build is on the card either**,
+  for the same reason the `build-sheet.py` tripwire exists: encode and
+  denoise are separate processes. The pose text is baked into `embeds_act.pt`
+  at `actions-encode`, so changing it mid-build leaves every later stage
+  rendering from embeddings that no longer match the file — and the scores,
+  the atlas and anyone reading the JSON afterwards all disagree about what
+  was asked for. Queue pose-text work for between builds.
 - **The checks cannot see a row that does not ANIMATE** — every one of them
   scores a cell against a reference, never against its neighbours, so six
   near-identical frames pass all five. `atlas.rows[].motion` reports
