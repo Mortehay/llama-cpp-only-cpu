@@ -774,16 +774,16 @@ def denoise_only(image, embeds: dict, seed: int = 0, steps: int | None = None,
     # and the VAE at 384px, and host RAM is never asked for anything.
     # Q3_K_M (9.92 GB) does NOT fit this way; that is what QWEN_EDIT_GGUF_FILE
     # is for.
+    #
+    # QWEN_GROUP_OFFLOAD is the way past that, and it goes through `_place`
+    # here for the same reason it does in denoise_cells: a quant selected with
+    # QWEN_EDIT_GGUF_FILE has to be loadable on BOTH paths, or /api/edit OOMs
+    # on a file the sheet conveyor renders happily.
     if os.environ.get("QWEN_OFFLOAD", "0").lower() in ("1", "true", "yes"):
         logger.info("Using model CPU offload (needs ~10 GiB free host RAM)")
         pipe.enable_model_cpu_offload()
     else:
-        logger.info("Placing the pipeline on %s (no CPU offload)", DEVICE_STR)
-        pipe.to(DEVICE_STR)
-        if torch.cuda.is_available():
-            free, total = torch.cuda.mem_get_info()
-            logger.info("VRAM after placement: %.1f/%.1f GiB free",
-                        free / 1024 ** 3, total / 1024 ** 3)
+        _place(pipe, transformer)
 
     # The VAE decodes in tiles, so its peak is set by tile size rather than by
     # image size. Cheap insurance on a card this full.
@@ -904,6 +904,61 @@ def _as_sources(image, size: int) -> list:
     return [im.convert("RGB").resize((size, size)) for im in imgs]
 
 
+# Stream the transformer in blocks from host RAM instead of keeping it
+# resident. OFF by default; the quant that is resident today does not need it.
+#
+# This is what makes a quant larger than Q2_K reachable on a 12 GB card.
+# Measured 2026-10-23 (scripts/probe-gguf-offload.py), Q2_K, 512px, 4 steps:
+#
+#   resident          peak 9408 MB, 2662 MB free, 30.1 s/cell
+#   group blocks=4    peak 2028 MB, 10939 MB free, 47.1 s/cell
+#
+# So it trades 1.57x the denoise time for ~7.4 GB of VRAM - which is the
+# whole budget a Q5/Q6 quant needs. The Lightning LoRA's 4 steps are what
+# keep that affordable: the offloaded weights cross the bus four times per
+# image, not fifty.
+#
+# NOT `enable_sequential_cpu_offload`, which this module refuses elsewhere for
+# a real reason (accelerate's hook moves parameters to the meta device and a
+# GGUFParameter loses its quant_type). Group offload moves parameters too and
+# does NOT hit that wall - measured, valid latents at every block size. Do not
+# "simplify" this back to the sequential call.
+#
+# `blocks` is a SPEED dial, not a memory dial: peak VRAM measured identical at
+# 2, 4 and 8, because the resident set is activations + VAE + LoRAs rather
+# than held blocks. It saturates at 4; 2 is 50% slower for nothing.
+GROUP_OFFLOAD = os.environ.get("QWEN_GROUP_OFFLOAD", "0").strip().lower() in (
+    "1", "true", "yes")
+GROUP_OFFLOAD_BLOCKS = int(os.environ.get("QWEN_GROUP_OFFLOAD_BLOCKS", "4"))
+
+
+def _place(pipe, transformer) -> None:
+    """Put the pipeline where it runs: resident, or streaming from host RAM.
+
+    The offload is applied to the TRANSFORMER and the VAE is placed
+    separately, because `pipe.to(cuda)` after a group-offload hook would drag
+    the whole transformer back onto the card and undo it.
+    """
+    if GROUP_OFFLOAD:
+        logger.info("Group offload: streaming the transformer in blocks of "
+                    "%d from host RAM", GROUP_OFFLOAD_BLOCKS)
+        transformer.enable_group_offload(
+            onload_device=torch.device(DEVICE_STR),
+            offload_device=torch.device("cpu"),
+            offload_type="block_level",
+            num_blocks_per_group=GROUP_OFFLOAD_BLOCKS,
+        )
+        # Everything that is NOT the transformer still needs a home. The VAE
+        # is small and is used after the transformer is released anyway.
+        pipe.vae.to(DEVICE_STR)
+    else:
+        pipe.to(DEVICE_STR)
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        logger.info("VRAM after placement: %.1f/%.1f GiB free",
+                    free / 1024 ** 3, total / 1024 ** 3)
+
+
 def encode_cells(cells: list, size: int = ENCODE_SIZE,
                  cache_dir: str = "/models") -> dict:
     """Embed a whole sheet's worth of (image, prompt) pairs in ONE encoder load.
@@ -988,16 +1043,14 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
     if adapters:
         pipe.set_adapters(adapters, adapter_weights=weights)
 
-    pipe.to(DEVICE_STR)
+    _place(pipe, transformer)
     try:
         pipe.vae.enable_tiling()
         pipe.vae.enable_slicing()
     except AttributeError:
         pass
-    if torch.cuda.is_available():
-        free, total = torch.cuda.mem_get_info()
-        logger.info("VRAM after placement: %.1f/%.1f GiB free",
-                    free / 1024 ** 3, total / 1024 ** 3)
+    # `_place` already logged the VRAM; no second reading here, or the log
+    # shows two different "after placement" numbers for one placement.
 
     # Latents first, transformer released, then decode - same reason as
     # denoise_only: the VAE cannot share the card with a resident transformer.
