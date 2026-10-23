@@ -11,15 +11,16 @@ Despite the repo name, this is **not** a CPU LLM cluster. The live component is
 with a Jinja/vanilla-JS UI, a React app under `frontend/`, and Postgres history.
 `collector/`, `orchestrator/`, `mesh_worker/`, `rig_worker/` are legacy.
 
-**`README.md` is mostly accurate; the warning that it "describes the old
-project" was itself stale** (checked 2026-10-13). Its Requirements, Storage
-and after-reboot sequence match this machine. Four parts are wrong: the
-`HF_TOKEN` line names FLUX/Llama/Gemma (all dead — the one gated repo now is
-`stabilityai/stable-audio-open-1.0`), "First run" step 5 claims `make build`
-downloads models (it fetches **none** of the live weights), the service table
-presents `model_orchestrator`/`stats_collector`/`open_webui`/`grafana` as
-live, and the Make-commands rows describe `models.txt`.
-`.ai/project-context.md` remains the authority on current state.
+**`README.md` is accurate now, and this note has been wrong in both
+directions** (re-checked 2026-10-23 by reading the file, not by trusting the
+note). First it warned the README "describes the old project", which was
+stale. Then it listed four wrong parts — and **all four have since been
+fixed**: the `HF_TOKEN` line names only `stabilityai/stable-audio-open-1.0`,
+"First run" step 5 says *"NOTHING ELSE DOES THIS — not `make up`, not `make
+build`"*, the legacy services sit in their own table under a "Was" column
+stating none of them is on the sprite path, and the `models.txt` rows are
+marked legacy. **Verify against the file before repeating any complaint from
+here.** `.ai/project-context.md` remains the authority on current state.
 
 ## Where to look
 
@@ -27,7 +28,7 @@ live, and the Make-commands rows describe `models.txt`.
 |---|---|
 | Current state, hardware, environment, known-broken | `.ai/project-context.md` |
 | A word means three things — "core", "task", "map"; also the four kinds of "model" on disk and the four answers to "what models does this have" | `.ai/domain.md` |
-| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0015) |
+| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0016) |
 | Model choice, LoRA rules, trigger words | `.ai/decisions/0002` |
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
@@ -39,6 +40,7 @@ live, and the Make-commands rows describe `models.txt`.
 | `/api/edit`: which editor runs, `EDIT_ENABLED`, and what editing destroys | `.ai/decisions/0015` |
 | A concept that is not a character (tree, crate, banner) | `.ai/specs/prop-concepts/` |
 | Per-frame sheet checks, redraws, the frames store, mirrored west rows | `.ai/specs/sheet-quality/contract.md` |
+| Why the 3D conveyor stays retired; T-pose feedstock measured; what runs off-card | `.ai/decisions/0016` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so

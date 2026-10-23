@@ -209,7 +209,7 @@ Then open **http://localhost:8001**.
 | `sprite_worker` | *(internal)* | Celery worker — **owns the GPU** |
 | `stats_db` | `localhost:5432` | Postgres: sprite history, settings |
 | `redis_broker` | `localhost:6379` | Celery broker |
-| `model_downloader` | *(idle)* | Holds `/models`; what `make provision` runs in |
+| `model_downloader` | *(internal)* | Holds `/models`. Two jobs: what `make provision` runs in, and the background download lane — `scripts/provision-daemon.py` is the single consumer of queued `POST /api/models/download` requests. Not idle |
 
 **Legacy, from the CPU-LLM-cluster era this repo is named after.** They still
 build and still start, and none of them is on the sprite path. Do not reach for
