@@ -589,3 +589,64 @@ the time: **3.7 GB reclaimable of 4.3 GB**, 41 jobs.
 
 Scoring 672 cells takes about 25 minutes, almost all of it BiRefNet at ~1.8 s
 per cell. Do not run it while a sheet job is on the card.
+
+---
+
+## 7. The editor quant: Q3_K_S measured, not adopted (2026-10-23)
+
+The editor runs Q2_K, the most aggressive quant available. The obvious
+question - does a bigger one hold the character better - was asked and
+answered properly rather than by inference.
+
+**Q3_K_S fits, and Q3_K_M's recorded OOM does not apply to it.** The OOM on
+record (~24 MiB short, mid-denoise) is Q3_K_M's, a larger file; Q3_K_S sits
+between it and Q2_K and had never been tried. It had been staged on disk at
+`image-gguf/transformers/` and declared `[[dead]]` precisely because
+declaring it would imply the default used it.
+
+### At 512px it is three times better. At 48x64 it changes nothing.
+
+Masked colour distance from the concept, armoured demon core_abac255e360e:
+
+    Q2_K   raw 512  0.0336        Q3_K_S raw 512  0.0108
+    Q2_K   @ 48x64  0.1322        Q3_K_S @ 48x64  0.1196
+    Q2_K   @ 96x128 0.1330        Q3_K_S @ 96x128 0.1257
+
+The gain is entirely upstream of the sprite. `qwen_edit`'s own comment
+already said "quality at 48px is dominated by the pixelation stage, not by
+the quant", and this measurement confirms it from the other direction.
+
+### A full sheet says the trade is not worth taking by default
+
+Job `d3083b62` against the identical Q2_K sheet `2ff8af36` - same concept,
+same seed, the same 210 rendered cells:
+
+                     Q2_K        Q3_K_S
+    flagged       27 (12.9%)   45 (21.4%)
+    identity          22           15      better, as predicted
+    identity med   0.0103       0.0069     33% better
+    facing             8           31      WORSE, unexplained
+    build time      3h07         ~4h02     +29%
+    peak VRAM      ~9.6 GB      11.48 GB   806 MiB headroom left
+
+It does what it was tried for and costs more than it returns. **The facing
+regression is not dismissable as noise**: the turnaround anchors got
+STRONGER under Q3_K_S (`dir_ne` lean -0.047 -> -0.105, `dir_e` -0.096 ->
+-0.128), so the facing check is more trustworthy there, not less. But the
+two quants' views also differ by 19-42 mean grey, so whether the cells
+genuinely face worse is unresolved and would need a per-cell look.
+
+Opt in with the ABSOLUTE path, which is the only form `_gguf_url` treats as
+local - a bare name goes to the Hub and fails offline with a message about
+the repo not having the file, which reads like a missing download:
+
+    QWEN_EDIT_GGUF_FILE=/models/image-gguf/transformers/qwen-image-edit-2511-Q3_K_S.gguf
+
+### A limitation of the identity check, found by this work
+
+`identity` is a masked colour histogram and is **spatially blind**. It scored
+48x64 and 96x128 as equally far from the concept (0.1322 vs 0.1330) while the
+96px render is plainly the more recognisable character. It catches drift - a
+differently-coloured robe - which is what it was built and validated for. It
+cannot see "the shape has become unreadable". **`identity` passing is not
+evidence that a sprite is usable at its cell size.**

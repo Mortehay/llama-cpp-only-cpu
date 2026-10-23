@@ -111,17 +111,61 @@ CONFIG_REPO = os.environ.get("QWEN_EDIT_CONFIG_REPO", "Qwen/Qwen-Image-Edit-2511
 # `qwen-image-edit-2511-*.gguf`. A wrong-cased name here does not 404 loudly -
 # it makes huggingface_hub match nothing and report success.
 GGUF_REPO = os.environ.get("QWEN_EDIT_GGUF_REPO", "unsloth/Qwen-Image-Edit-2511-GGUF")
-# Q2_K, and that is a measured choice, not a conservative one.
+# Q3_K_S, upgraded from Q2_K on 2026-10-23. The quant has to leave room for
+# activations and the VAE inside 11.7 GiB, because this module keeps the
+# transformer RESIDENT rather than offloading it (see denoise_only for why):
 #
-# This module keeps the transformer RESIDENT on the card rather than offloading
-# it (see denoise_only for why), so the quant has to leave room for activations
-# and the VAE inside 11.7 GiB:
-#
-#   Q2_K     7.47 GB   works. 2.7 GiB VRAM still free, 7.9 s/step at 512px
+#   Q2_K     7.47 GB   works. 2.7 GiB free, 7.9 s/step at 512px
+#   Q3_K_S   9.22 GB   works. 1.0 GiB free, ~10% slower per cell
 #   Q3_K_M   9.92 GB   does NOT fit resident - OOMs by ~24 MiB mid-denoise
 #
-# Q3_K_M only runs with QWEN_OFFLOAD=1, which then dies on host RAM instead.
-# Quality at 48px is dominated by the pixelation stage, not by the quant.
+# Q3_K_S sits between the two and had never been tried; the OOM on record is
+# Q3_K_M's, a different and larger file. Measured 2026-10-23 on the armoured
+# demon core_abac255e360e, masked colour distance from the concept:
+#
+#   Q2_K   raw 512  0.0336        Q3_K_S raw 512  0.0108   3x closer
+#   Q2_K   @ 48x64  0.1322        Q3_K_S @ 48x64  0.1196
+#
+# **The gain is in the 512px render and is NOT visible at 48x64**, which the
+# previous note here already said and which that measurement confirms: at the
+# production cell size both quants land in the same place, because what is
+# lost there is spatial structure and no quant restores it. The reason to run
+# Q3_K_S anyway is that everything downstream reads the 512px cell - the
+# cutout, the quality checks, and any larger cell a caller asks for.
+#
+# 1.0 GiB of headroom is thin. If a full sheet starts OOMing, set
+# QWEN_EDIT_GGUF_FILE=qwen-image-edit-2511-Q2_K.gguf to go back; that name
+# resolves from the unsloth cache repo and needs no download.
+# Q3_K_S IS AVAILABLE AND IS NOT THE DEFAULT. Built a full 7-action sheet
+# with it on 2026-10-23 (job d3083b62) against the identical Q2_K sheet
+# (2ff8af36) - same concept, same seed, same 210 cells:
+#
+#                      Q2_K        Q3_K_S
+#   flagged         27 (12.9%)   45 (21.4%)
+#   identity fails      22           15      better, as predicted
+#   identity median  0.0103       0.0069    33% better
+#   facing fails         8           31      WORSE, and unexplained
+#   build time        3h07         ~4h02     +29%
+#   peak VRAM        ~9.6 GB      11.48 GB   806 MiB headroom left
+#
+# So it does what it was adopted for - the 512px render is measurably closer
+# to the concept - and it costs more than it returns overall. The facing
+# regression is NOT dismissable as a measurement artefact: the turnaround
+# anchors got STRONGER under Q3_K_S (dir_ne lean -0.047 -> -0.105, dir_e
+# -0.096 -> -0.128), so the check is more trustworthy, not less. But the two
+# quants' views also differ a lot (|Q2-Q3| 19-42 mean grey), so whether the
+# cells genuinely face worse is unresolved.
+#
+# Left as a one-variable switch rather than a default, because 806 MiB of
+# headroom plus 29% more wall clock is a real operational cost for a trade
+# that is not clearly positive:
+#
+#   QWEN_EDIT_GGUF_FILE=/models/image-gguf/transformers/qwen-image-edit-2511-Q3_K_S.gguf
+#
+# It MUST be the absolute path - that file is fetched to a destination, not
+# into the HF cache, and `_gguf_url` only treats an absolute path as local.
+# A bare name goes to the Hub and fails offline with a message about the repo
+# not having the file, which reads like a missing download.
 GGUF_FILE = os.environ.get("QWEN_EDIT_GGUF_FILE", "qwen-image-edit-2511-Q2_K.gguf")
 
 # bfloat16, not float16, despite the 3060's weak bf16 throughput.

@@ -399,6 +399,29 @@ fragment of it.
 - **Do not "fix" this by mirroring the finished east render.** It swaps the
   hands of anything asymmetric, so a sword changes sides between rows.
 
+**The editor quant — Q3_K_S exists, fits, and is NOT the default**
+- The OOM on record (~24 MiB short, mid-denoise) is **Q3_K_M's**, a larger
+  file. **Q3_K_S fits**: 806 MiB headroom through a full 7-action sheet. Do
+  not read the Q3_K_M measurement as ruling out every Q3.
+- It buys the 512px render, not the sprite: masked colour distance from the
+  concept 0.0336 → **0.0108** at 512, but 0.1322 → 0.1196 at 48x64, which is
+  no visible change. Whatever is lost at 48px is spatial, and no quant
+  restores it.
+- A full sheet (`d3083b62` vs `2ff8af36`, same concept and seed) came out
+  **worse overall**: 27 → 45 flagged, because identity improved (22 → 15,
+  median 0.0103 → 0.0069) while **facing got worse (8 → 31)** and the build
+  took 29% longer. The facing regression is not noise — the turnaround
+  anchors got STRONGER under it (`dir_ne` −0.047 → −0.105) — but it is
+  unexplained. Opt in with the **ABSOLUTE** path in `QWEN_EDIT_GGUF_FILE`; a
+  bare name goes to the Hub and fails offline with a message that reads like
+  a missing download.
+- **`identity` is a colour histogram and is spatially blind.** It scored
+  48x64 and 96x128 as equally far from the concept while the 96px render is
+  plainly more recognisable. It catches drift, which is what it was built
+  for; it cannot see "the shape became mush". A passing `identity` is not
+  evidence a sprite is usable at its cell size — `.ai/specs/sheet-quality/`
+  §7.
+
 **Sheet cells are checked per frame now — and the checks measure the RAW render**
 - `sheet_qc.py` scores every cell before it is fitted into 48x64, because the
   fitted cell cannot answer the question. Pre-fit figure height is **478-512

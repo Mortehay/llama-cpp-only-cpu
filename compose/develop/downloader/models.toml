@@ -472,6 +472,56 @@ huggingface_hub match nothing and report success.
 """
 
 [[model]]
+name = "qwen-edit-transformer-q3ks"
+kind = "hf-file"
+tier = "optional"
+repo = "unsloth/Qwen-Image-Edit-2511-GGUF"
+file = "qwen-image-edit-2511-Q3_K_S.gguf"
+dest = "image-gguf/transformers"
+bytes = 9223372036
+used_by = ["qwen_edit.GGUF_FILE via QWEN_EDIT_GGUF_FILE (opt-in)"]
+why = """
+An alternative editor quant, measured and deliberately NOT made the default.
+
+It fits where Q3_K_M does not: the OOM on record (~24 MiB short, mid-denoise)
+is Q3_K_M's, a larger file. Q3_K_S sits between that and Q2_K and had never
+been tried. A full 7-action sheet built with it (job d3083b62) against the
+identical Q2_K sheet (2ff8af36) - same concept, same seed, 210 cells:
+
+  flagged         27 (12.9%)  ->  45 (21.4%)
+  identity fails      22      ->      15      better, as predicted
+  identity median  0.0103     ->   0.0069     33% better
+  facing fails         8      ->      31      worse, unexplained
+  build time        3h07      ->    ~4h02     +29%
+  peak VRAM        ~9.6 GB    ->   11.48 GB   806 MiB headroom left
+
+It does what it was tried for - the 512px render is three times closer to the
+concept by masked colour distance, 0.0336 -> 0.0108 - and costs more than it
+returns overall. The facing regression is not dismissable as noise: the
+turnaround anchors got STRONGER under it (dir_ne lean -0.047 -> -0.105), so
+the check is more trustworthy, not less.
+
+Opt in with the ABSOLUTE path in QWEN_EDIT_GGUF_FILE. A bare filename goes to
+the Hub and fails offline, because this file is fetched to a destination
+rather than into the HF cache.
+"""
+skipping = """
+qwen_edit falls back to qwen-image-edit-2511-Q2_K.gguf from the cache repo, so
+the conveyor still runs - on the older quant, with the 2.7 GiB headroom.
+"""
+notes = """
+1.0 GiB of headroom is thin. If sheets start OOMing, set
+QWEN_EDIT_GGUF_FILE=qwen-image-edit-2511-Q2_K.gguf to revert; that bare name
+resolves from the unsloth cache repo and needs no download.
+
+A BARE filename here goes to the Hub, not to this destination -
+qwen_edit._gguf_url only treats an ABSOLUTE path as a local file. Setting
+QWEN_EDIT_GGUF_FILE to the bare name of a dest-style file fails offline with
+"repo does not appear to have a file named ...", which reads like a missing
+download rather than a path mistake.
+"""
+
+[[model]]
 name = "qwen-edit-config"
 kind = "hf-cache"
 tier = "optional"
@@ -727,12 +777,3 @@ brain. Do not delete the directory wholesale.
 ref = "image-gguf/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors"
 why = "0.68 GB, the VAE half of the same sd.cpp bench. Safe to delete."
 
-[[dead]]
-ref = "image-gguf/transformers/qwen-image-edit-2511-Q3_K_S.gguf"
-why = """
-9.22 GB. An alternative Edit quant reachable only by setting
-QWEN_EDIT_GGUF_FILE to this absolute path. The default is Q2_K from the unsloth
-cache repo, which is what is actually loaded. Kept on disk as a manual
-experiment; not declared, because provisioning a second machine with it would
-imply the default uses it.
-"""
