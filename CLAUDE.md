@@ -399,6 +399,29 @@ fragment of it.
 - **Do not "fix" this by mirroring the finished east render.** It swaps the
   hands of anything asymmetric, so a sword changes sides between rows.
 
+**Group offload DOES work with a GGUF transformer — sequential is the one that doesn't**
+- `denoise_only` refuses `enable_sequential_cpu_offload` because the hook
+  moves parameters to the meta device and a `GGUFParameter` loses its
+  `quant_type`. **Do not generalise that to all offload.** Measured
+  2026-10-23 (`scripts/probe-gguf-offload.py`): block-level
+  `enable_group_offload` returns valid latents and drops the transformer's
+  resident footprint from **9408 MB to 2028 MB**, leaving ~10.9 GB free, for
+  **1.57x** the denoise time (30.1 s → 47.1 s per cell).
+- That is enough headroom for Q4_K_M, Q5_K_M or Q6_K. The limits become host
+  RAM (41 GB in WSL) and PCIe bandwidth, not VRAM — and the Lightning LoRA's
+  4 steps bound the streaming cost, because weights cross the bus four times
+  per image rather than fifty.
+- **`blocks` is a SPEED dial, not a memory dial**: peak VRAM is identical at
+  2, 4 and 8, because the resident set is activations + VAE + LoRAs rather
+  than held blocks. It saturates at 4; `blocks=2` is 50% slower for nothing.
+  `enable_model_cpu_offload` saves 26 MB and is not worth using.
+- **Encode before the transformer exists** when measuring this. A probe that
+  encoded after placing the pipeline asked for a ~6 GB text encoder on top of
+  a ~7 GB transformer and failed reproducibly with `CUDA driver error: device
+  not ready` — which reads as "resident is broken" and was really "this asked
+  for 13 GB". Every offload mode passed only because the transformer was not
+  fully resident at that moment.
+
 **The editor quant — Q3_K_S exists, fits, and is NOT the default**
 - The OOM on record (~24 MiB short, mid-denoise) is **Q3_K_M's**, a larger
   file. **Q3_K_S fits**: 806 MiB headroom through a full 7-action sheet. Do

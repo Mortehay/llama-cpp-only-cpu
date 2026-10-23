@@ -650,3 +650,55 @@ the repo not having the file, which reads like a missing download:
 differently-coloured robe - which is what it was built and validated for. It
 cannot see "the shape has become unreadable". **`identity` passing is not
 evidence that a sprite is usable at its cell size.**
+
+---
+
+## 8. Group offload survives GGUF (2026-10-23)
+
+`qwen_edit.denoise_only` refuses `enable_sequential_cpu_offload`, because the
+offload hook moves parameters to the meta device and a `GGUFParameter` loses
+its `quant_type` on the way. The reasonable inference - that ANY offload hits
+that wall, since they all move parameters - is **wrong**.
+
+`scripts/probe-gguf-offload.py`, Q2_K, 512px, 4 steps, one cell:
+
+    mode              peak VRAM   free after   denoise
+    none (today)        9408 MB      2662 MB     30.1 s
+    model                9382 MB         -       42.8 s
+    group blocks=2       2028 MB     10939 MB    74.6 s
+    group blocks=4       2028 MB     10939 MB    47.1 s
+    group blocks=8       2028 MB         -       50.4 s
+
+Block-level group offload returned valid latents of the right shape at every
+block size. **The transformer's resident footprint falls from 9.4 GB to
+2.0 GB**, leaving ~10.9 GB free, for 1.57x the denoise time.
+
+### What it unlocks
+
+That is far more headroom than Q4_K_M needs, and puts Q5_K_M and Q6_K within
+reach. The binding constraints become host RAM (41 GB in WSL) and PCIe
+bandwidth rather than VRAM - and the Lightning LoRA's 4 steps keep the
+streaming cost bounded, because the offloaded weights cross the bus four
+times per image rather than twenty or fifty.
+
+Cost at sheet scale: 196 cells at 47.1 s is ~2 h 34 m of action denoise
+against ~1 h 38 m resident, so a full sheet moves from roughly 3 h to 4 h 30.
+That is the price of a much larger quant, and it is a choice rather than a
+blocker.
+
+### Two traps this measurement walked into
+
+**`blocks` is a SPEED dial, not a memory dial.** Peak VRAM is identical at 2,
+4 and 8 - the resident set is dominated by activations, the VAE and the LoRAs
+rather than by held transformer blocks. It saturates at 4, and blocks=2 is
+50% slower for nothing. `model` mode is not competitive at all: 26 MB saved.
+
+**Encode before the transformer exists.** The first version of the probe
+encoded AFTER placing the pipeline, so `--mode none` asked for the ~6 GB text
+encoder on top of the ~7 GB transformer and failed reproducibly with
+`CUDA driver error: device not ready`, while every offload mode passed. That
+reads as "resident does not work" and is really "this probe asked for 13 GB"
+- the offload modes only passed because the transformer was not fully
+resident when the encoder loaded. Production avoids this by running encode
+and denoise as separate processes, which is the same reason the conveyor is
+split into stages at all.

@@ -30,6 +30,39 @@ quantised model fragments the allocator (see build-sheet.py).
 
 A failure here is a useful result. Print it and stop, rather than reaching
 for a smaller quant and calling the question closed.
+
+RESULT, 2026-10-23, Q2_K, 512px, 4 steps, one cell:
+
+    mode              peak VRAM   free after   denoise   verdict
+    none (today)        9408 MB      2662 MB     30.1 s  the baseline
+    model                9382 MB         -       42.8 s  saves nothing
+    group blocks=2       2028 MB     10939 MB    74.6 s  slow, no gain
+    group blocks=4       2028 MB     10939 MB    47.1 s  the setting
+    group blocks=8       2028 MB         -       50.4 s  no better
+
+**GROUP OFFLOAD SURVIVES GGUF.** That is the whole point of this file, and
+it was not obvious: `denoise_only` refuses sequential offload because the
+hook moves parameters to the meta device and a GGUFParameter loses its
+quant_type, and group offload moves parameters too. It does not hit that
+wall - it returned valid latents of the right shape at every block size.
+
+The transformer's resident footprint falls 9408 -> 2028 MB, leaving ~10.9 GB
+free, for 1.57x the denoise time. That is far more headroom than Q4_K_M
+needs and puts Q5_K_M and Q6_K in reach; the limits become host RAM (41 GB
+in WSL) and PCIe bandwidth rather than VRAM.
+
+`blocks` is a SPEED dial, not a memory dial - peak VRAM is identical at 2, 4
+and 8, because the resident set is dominated by activations, the VAE and the
+LoRAs rather than by held transformer blocks. It saturates at 4; blocks=2 is
+50% slower for nothing. `model` mode is not competitive: it saves 26 MB.
+
+ENCODE BEFORE THE TRANSFORMER EXISTS, which this script now does. The first
+version encoded after placing the pipeline, so `--mode none` asked for the
+~6 GB text encoder on top of the ~7 GB transformer and failed reproducibly
+with "CUDA driver error: device not ready" while every offload mode passed.
+That reads as "resident is broken" and is really "this probe asked for
+13 GB". Production avoids it by running encode and denoise as separate
+processes.
 """
 
 import argparse
@@ -65,6 +98,23 @@ def main():
     import qwen_edit as q
 
     out = {"mode": a.mode, "gguf": q.GGUF_FILE, "blocks": a.blocks}
+
+    # ENCODE FIRST, and release, before the transformer exists. Production
+    # runs these as separate processes for exactly this reason: the text
+    # encoder is ~6 GB and the transformer ~7 GB, and 12 GB does not hold
+    # both. The first version of this probe encoded AFTER placing the
+    # pipeline, which made `--mode none` fail reproducibly with "CUDA driver
+    # error: device not ready" while every offload mode passed - a result
+    # that looks like "resident does not work" and is really "this probe
+    # asked for 13 GB". The offload modes only passed because the transformer
+    # was not fully resident when the encoder loaded.
+    img = Image.open(a.image).convert("RGB").resize((a.size, a.size))
+    embeds = q.encode_cells([{"key": "probe", "image": img,
+                              "prompt": q.angle_prompt("s")}])
+    pe, mask = embeds["probe"]
+    del embeds
+    q._free()
+
     torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
     try:
@@ -109,12 +159,6 @@ def main():
             pass
 
         free_before = torch.cuda.mem_get_info()[0]
-        img = Image.open(a.image).convert("RGB").resize((a.size, a.size))
-
-        # A real embedding, so the shapes match production exactly.
-        embeds = q.encode_cells([{"key": "probe", "image": img,
-                                  "prompt": q.angle_prompt("s")}])
-        pe, mask = embeds["probe"]
 
         t1 = time.time()
         lat = pipe(image=img, height=a.size, width=a.size,
