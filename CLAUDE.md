@@ -28,7 +28,7 @@ here.** `.ai/project-context.md` remains the authority on current state.
 |---|---|
 | Current state, hardware, environment, known-broken | `.ai/project-context.md` |
 | A word means three things — "core", "task", "map"; also the four kinds of "model" on disk and the four answers to "what models does this have" | `.ai/domain.md` |
-| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0016) |
+| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0018) |
 | Model choice, LoRA rules, trigger words | `.ai/decisions/0002` |
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
@@ -41,6 +41,7 @@ here.** `.ai/project-context.md` remains the authority on current state.
 | A concept that is not a character (tree, crate, banner) | `.ai/specs/prop-concepts/` |
 | Per-frame sheet checks, redraws, the frames store, mirrored west rows | `.ai/specs/sheet-quality/contract.md` |
 | Why the 3D conveyor stays retired; T-pose feedstock measured; what runs off-card | `.ai/decisions/0016` |
+| C: is full again; what actually fills it; why compacting is not the fix | `.ai/decisions/0018`, `compact-wsl.md` |
 
 Read the decision before changing anything it covers. They are long because they
 record measurements; several correct an earlier claim *in the same document*, so
@@ -65,6 +66,30 @@ fragment of it.
     edited. Check `docker top sprite_worker | grep build-sheet` first.
 - `df` inside WSL reports the VHDX's nominal size, not free disk. Check
   `Get-PSDrive C` on the Windows side before pulling weights.
+  - **"Docker usage" means `/var/lib/containerd` + `/var/lib/docker`, summed.**
+    This box uses the containerd image store, so images and build cache live
+    under `containerd` and `/var/lib/docker` holds little but volumes. Reading
+    the latter alone makes Docker look negligible — that is how
+    `compact-wsl.md` came to claim weights dominated at "126 GB against 22 GB
+    of Docker" and nearly sent a session to migrate 126 GB of weights to D:
+    for nothing. Measured 2026-10-23: **containerd 151 + docker 22 = 173 GB**
+    against **149 GB** for all of `/home`. Docker wins, and it is the part
+    that churns.
+  - **Compaction is not always available as a fix, and it is not the fix.**
+    A 46-minute compaction that morning left C: with 108.7 GB free; the 0016
+    rig-gate retest put it back to **16.3 GB free the same day** (+90 GB, from
+    two 20-GB-class experiment images plus the build cache regrowing to
+    81.22 GB). By then ext4 held 325 GB in a 342.8 GB file — ~18 GB of slack,
+    so there was nothing to reclaim. **Delete inside first; delete dead
+    images BEFORE `builder prune`**, or the prune nets out layers still shared
+    with them (measured 56 GB freed one way, 13.66 GB reclaimable the other).
+    Retention rules in `0018`.
+  - **Use `wsl -d Ubuntu -u root`, not `sudo`.** `sudo` here requires a
+    password, and with no tty it **hangs forever** instead of failing — a `du`
+    over `/var/lib` that never returns is this, not a slow disk.
+  - A second project, `aod-gpubox`, shares this dockerd and holds ~32 GB
+    (`aod_ollama_models` is 22.65 GB). Subtract it before blaming the sprite
+    stack for disk use.
 - After any reboot or `wsl --shutdown`, re-run `scripts/wsl-keepalive.ps1`
   and `make lan-expose` (UAC prompt; it runs `lan-check` after), then
   `make up`. Symptoms of forgetting: LAN 404s, containers exiting 0 with clean
@@ -548,6 +573,14 @@ fragment of it.
     `apply=1` mid-build deletes the conditioning out from under it. Check
     `docker top sprite_worker | grep build-sheet` first, same as for editing
     `build-sheet.py`.
+  - **Nor compact the VHDX** (`compact-wsl.md`, `0018`). Compaction requires
+    `wsl --shutdown`, which stops dockerd and every container — so it does
+    not merely risk the build, it ends it. And `actions-denoise` holds all
+    210 latents in memory and writes cells only when the stage finishes, so
+    a 4-hour stage interrupted at hour 3 leaves **nothing**; the first Q6_K
+    attempt lost exactly that when C: filled at ~2h10. Disk maintenance on
+    this box is a between-builds job, and the same `docker top` check
+    answers it.
 - **Do not edit `action_prompts.json` while a build is on the card either**,
   for the same reason the `build-sheet.py` tripwire exists: encode and
   denoise are separate processes. The pose text is baked into `embeds_act.pt`
