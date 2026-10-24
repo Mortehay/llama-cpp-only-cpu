@@ -744,9 +744,23 @@ fragment of it.
   runs in the worker, so `/api/jobs` answers 202 either way.
 
 **The something2 contract**
-- **Synchronous only.** Submit/poll is explicitly unsupported on their side, so
-  anything 202-and-poll is not connectable today. The A1111 facade must stay a
-  blocking read. World specs are the one surface that is genuinely sync.
+- **NOT synchronous only — this entry was the superseded claim** (caught
+  2026-10-24). It said submit/poll "is explicitly unsupported on their side,
+  so anything 202-and-poll is not connectable today". The contract itself
+  **corrected that on 2026-08-23**: the original read their published docs
+  and SOMET-334 with an explicit caveat that their calling code had never
+  been reviewed, and the caveat was the accurate part. The owner states
+  something2 **queues the task, does not wait, and polls later**.
+- **There are TWO surfaces.** `/api/jobs` is async submit/poll and is what
+  character sheets go through; the A1111 facade (`/sdapi/v1/txt2img`) is the
+  synchronous one, for single images inside a 240 s budget, and *it* must
+  stay a blocking read. World specs are sync too. Read
+  `.ai/specs/something2-provider/contract.md` before repeating anything from
+  here - it opens with that correction.
+- **`cell` is already in the documented submit body**, so a larger sprite
+  cell needs no API work at all: `{"cell": "96x128"}` instead of `"48x64"`
+  on the request something2 already sends (`0019`, and `JobSpec.cell` is
+  live on `/openapi.json`).
 
 **Training data — three verdict columns, and they answer different questions**
 - `usable` gates style-profile derivation (measurement-grade). `trainable` is
