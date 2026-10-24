@@ -368,6 +368,88 @@ def _finished_file(job_id: str, column: str, media_type: str):
     return FileResponse(row["path"], media_type=media_type)
 
 
+class Turnaround3DSpec(BaseModel):
+    """A static 8-direction turnaround built from an existing job's views."""
+    source_job: str
+    cell: str = "48x64"
+
+
+@router.post("/api/turnaround3d", status_code=202)
+def create_turnaround3d(spec: Turnaround3DSpec, request: Request,
+                        authorization: str | None = Header(None)):
+    """Enqueue a static 8-direction turnaround from a finished sheet job.
+
+    WHAT THIS IS, AND WHAT IT IS NOT
+    Static only. It produces one 48x64 cell per direction and no action
+    frames: those need a rigged mesh, and the rigging gate failed 0 of 2 with
+    a clean synthetic control (decisions/0016). Do not read this route as a
+    revival of the 3D conveyor.
+
+    What it gives that `POST /api/jobs` cannot is eight structurally correct
+    directions. In the 2D lane a direction is a prompt, so the front quarters
+    collapse onto the front view (|s-se| 12.8) and the west rows are flipped
+    east rows with handedness swapped. Here a direction is a camera position,
+    so neither failure can occur.
+
+    IT DOES NOT TOUCH THE GPU. The work runs on the `mesh3d` queue in
+    mesh-worker, so it proceeds in parallel with whatever sprite-worker is
+    doing on the card rather than queueing behind it. That is also why it is
+    absent from model_gateway.GATED - see mesh_tasks.py.
+
+    202 and poll, like every other generation surface here. something2 cannot
+    poll (specs/something2-provider), so this is not connectable to them as it
+    stands even though a turnaround measures 2m42s, inside their 285s budget.
+    """
+    principal = _require_auth(authorization, "generate")
+
+    # Answer from the request rather than failing three minutes in: the source
+    # job's turnaround views are the whole input, and without them the first
+    # stage dies on a missing dir_s.png after the row has been created.
+    src = os.path.join(IMAGES_DIR, f"_job_{spec.source_job}")
+    if not os.path.isdir(src):
+        raise HTTPException(status_code=404,
+                            detail=f"No such job directory: _job_"
+                                   f"{spec.source_job}")
+    missing = [v for v in ("dir_s.png", "dir_e.png", "dir_n.png")
+               if not os.path.isfile(os.path.join(src, v))]
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{spec.source_job} has no usable turnaround: missing "
+                   f"{', '.join(missing)}. A turnaround3d is built from an "
+                   f"existing job's views, so that job must have completed "
+                   f"its turnaround stage.")
+
+    job_id = uuid.uuid4()
+    with _db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO jobs (id, status, kind, spec, progress_msg) "
+            "VALUES (%s, 'queued', 'turnaround3d', %s, %s)",
+            (str(job_id), json.dumps(spec.model_dump()),
+             f"queued, 8 directions from {spec.source_job[:8]}"),
+        )
+
+    # No `model`: TripoSR reconstructs and the colour comes from views the 2D
+    # lane already produced, so no single checkpoint describes this row. The
+    # view leaves it NULL and the model filter skips it, same as a sheet.
+    generations.begin(
+        kind="turnaround3d", route="/api/turnaround3d",
+        prompt=f"turnaround3d from {spec.source_job}",
+        job_id=str(job_id),
+        params={"source_job": spec.source_job, "cell": spec.cell,
+                "directions": 8, "static": True},
+        caller=generations.describe_caller(principal, request))
+
+    # send_task, not .delay(): this task is defined in mesh_worker, which the
+    # API process does not import - it has TripoSR's dependencies and the API
+    # has no business carrying them. The queue name is the contract.
+    from tasks import celery_app
+    celery_app.send_task("mesh3d.turnaround",
+                         args=[str(job_id), spec.source_job, spec.cell],
+                         queue="mesh3d")
+    return {"job_id": str(job_id), "status": "queued"}
+
+
 @router.get("/api/jobs/{job_id}/sheet")
 def get_sheet(job_id: str, authorization: str | None = Header(None)):
     _require_auth(authorization)

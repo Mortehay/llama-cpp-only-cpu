@@ -81,7 +81,27 @@ COLOUR_VIEWS = [("front", "dir_s.png", False),
 
 # --- view preparation ---------------------------------------------------
 
-def _keyed(path: str, size: int, tolerance: int):
+def _key(path: str, tolerance: int, engine: str):
+    """Background removal. Flood fill by default; BiRefNet on request.
+
+    The flood fill is the default because this lane's whole value is that it
+    never asks for the card, and BiRefNet in this codebase is CUDA-only
+    (`cutout.enabled` requires it and `cutout.mask` places the model on cuda).
+    But the fill cannot clear an ENCLOSED backdrop, which is what produced the
+    wolf medal, so `--engine birefnet` is offered for sources that need it and
+    accepts the GPU cost knowingly.
+    """
+    if engine == "birefnet":
+        import cutout
+        if cutout.weights_dir() is None:
+            raise SystemExit(
+                "--engine birefnet: no BiRefNet weights under "
+                f"{cutout.MODELS_DIR}. `make provision` fetches them.")
+        return cutout.cut_out(Image.open(path))
+    return pixelate.key_background(Image.open(path), tolerance=tolerance)
+
+
+def _keyed(path: str, size: int, tolerance: int, engine: str = "floodfill"):
     """Background-removed, bbox-cropped, centred on a square canvas.
 
     Raw dir_*.png carry an opaque backdrop (~69%), and consistent framing
@@ -90,7 +110,7 @@ def _keyed(path: str, size: int, tolerance: int):
     documented failure mode - and anything downstream reads inconsistent scale
     as inconsistent geometry.
     """
-    im = pixelate.key_background(Image.open(path), tolerance=tolerance)
+    im = _key(path, tolerance, engine)
     a = np.asarray(im)[..., 3] > 8
     ys, xs = np.where(a)
     if not len(ys):
@@ -111,24 +131,86 @@ def _keyed(path: str, size: int, tolerance: int):
 def stage_views(a):
     plan = RECON_VIEWS if a.frame == "mirrored" else COLOUR_VIEWS
     os.makedirs(a.out, exist_ok=True)
-    made = []
+    made, clears = [], {}
     for name, src, mirror in plan:
         p = os.path.join(a.job, src)
         if not os.path.isfile(p):
             log.warning("missing %s - skipping", p)
             continue
-        im = _keyed(p, a.size, a.tolerance)
+        im = _keyed(p, a.size, a.tolerance, engine=a.engine)
         if mirror:
             im = im.transpose(Image.FLIP_LEFT_RIGHT)
         im.save(os.path.join(a.out, f"{name}.png"))
         clear = 100.0 * (np.asarray(im)[..., 3] == 0).mean()
+        clears[name] = clear
         made.append(name)
         print(f"  {name:5s} <- {src:11s} mirror={int(mirror)} "
-              f"transparent={clear:5.1f}%"
-              + ("" if clear > 25 else "   <-- SUSPECT: barely keyed"))
+              f"transparent={clear:5.1f}%")
     if not made:
         raise SystemExit(f"no usable views in {a.job}")
+    _gate_views(clears, a)
     print(f"wrote {len(made)} view(s) to {a.out} (frame={a.frame})")
+
+
+def _gate_views(clears: dict, a) -> None:
+    """Refuse a source whose background did not come off. REFUSE, not warn.
+
+    THE WOLF MEDAL, 2026-10-24. Job f841ec70's turnaround renders the subject
+    inside a cream disc with a dark rim - the editor's own vignette, present
+    in the SOURCE, not added here. `key_background` is a corner flood fill and
+    structurally cannot clear a region the rim encloses, so TripoSR was handed
+    a wolf-inside-a-disc and faithfully reconstructed the disc: eight views of
+    a medal with a wolf on it.
+
+    That is ADR 0004's core-82 failure exactly ("the character was fine; the
+    border destroyed it"), and it had TWO warnings it did not act on - four
+    views at ~37% transparent against one at 68%, and a front/back separation
+    of 30 degrees. Both printed. Neither stopped anything, and three minutes
+    of CPU produced a plate.
+
+    The SPREAD is the stronger signal. Views of one subject at one framing
+    should clear similar fractions; one view keying cleanly while the rest do
+    not means the fill reached the border on that one alone.
+    """
+    if not clears:
+        return
+    lo, hi = min(clears.values()), max(clears.values())
+    worst = min(clears, key=clears.get)
+    problems = []
+    if lo < a.min_clear:
+        problems.append(f"{worst} cleared only {lo:.1f}% (need "
+                        f"{a.min_clear:.0f}%)")
+    if hi - lo > a.max_spread:
+        problems.append(f"views disagree by {hi - lo:.1f} points "
+                        f"({lo:.1f}-{hi:.1f}%, max {a.max_spread:.0f})")
+    if not problems:
+        return
+    cause = ("The background did not come off. The usual cause is an ENCLOSED "
+             "backdrop - a vignette, disc or frame whose rim reaches the "
+             "image border - which a corner flood fill cannot clear by "
+             "construction. Reconstructing from this produces geometry of "
+             "the BACKDROP, not the subject (ADR 0004, core 82).")
+    if a.engine == "birefnet":
+        # Do not recommend the engine already in use. Measured on the wolf
+        # medal: BiRefNet cleared the disc on 3 of 5 views and kept the whole
+        # medallion as the subject on the other 2 (36.8/64.8/65.0/35.6/73.3%),
+        # making the SPREAD worse than the flood fill's. A segmenter asked
+        # "what is salient here" can reasonably answer "the medal", and no
+        # keying choice makes five views agree about that.
+        fix = ("BiRefNet was already used and disagreed with itself across "
+               "views, so this source cannot be rescued by keying. Regenerate "
+               "the turnaround on a plain field - the vignette is in the 2D "
+               "output, so every consumer of it inherits the disc. --no-gate "
+               "proceeds anyway and gets a plate.")
+    else:
+        fix = ("Options: --engine birefnet (needs CUDA and the BiRefNet "
+               "weights; it clears enclosed regions, which is why the sprite "
+               "path uses it), a source job whose turnaround is on a plain "
+               "field, or --no-gate to proceed anyway and get a plate.")
+    msg = "; ".join(problems) + ".\n" + cause + "\n" + fix
+    if a.gate:
+        raise SystemExit("REFUSED: " + msg)
+    print("WARNING (gate disabled): " + msg)
 
 
 # --- geometry helpers ---------------------------------------------------
@@ -202,8 +284,22 @@ def _derive_azimuths(v, up, a, b, views, res, sweep):
         # Catches a gross mis-assignment. It does NOT catch a clean front/back
         # swap - silhouette IoU is front/back ambiguous for a robed figure, and
         # the giveaway there is a face on the back of the head. Look.
+        ok = abs(gap - 180) <= 35
         print(f"  front/back separation {gap} deg"
-              + ("" if abs(gap - 180) <= 35 else "   <-- SUSPECT"))
+              + ("" if ok else "   <-- SUSPECT"))
+        if not ok:
+            # RAISES now. On the wolf medal this printed "30 deg <-- SUSPECT"
+            # and the job carried on to render eight views of a plate. A
+            # rotationally symmetric reconstruction - which a disc is - cannot
+            # tell its front from its back, so a collapsed separation means
+            # the thing reconstructed is not the subject.
+            raise SystemExit(
+                f"REFUSED: front and back resolved to azimuths {gap} degrees "
+                f"apart; they must be roughly opposite. The reconstruction is "
+                f"probably rotationally symmetric - a disc, plate or slab "
+                f"rather than a figure - which happens when an enclosed "
+                f"backdrop survives keying. Check the view stage's "
+                f"transparency numbers, and see ADR 0004 core 82.")
     return out
 
 
@@ -418,6 +514,20 @@ def main():
                         "true = colour sources for the final mesh")
     v.add_argument("--size", type=int, default=512)
     v.add_argument("--tolerance", type=int, default=24)
+    v.add_argument("--engine", choices=("floodfill", "birefnet"),
+                   default="floodfill",
+                   help="birefnet clears ENCLOSED backdrops (vignettes, "
+                        "discs, frames) that a corner flood fill cannot, at "
+                        "the cost of needing CUDA and the weights")
+    v.add_argument("--min-clear", type=float, default=45.0,
+                   help="refuse if any view clears less than this percent")
+    v.add_argument("--max-spread", type=float, default=15.0,
+                   help="refuse if views disagree by more than this many "
+                        "points - the stronger signal that keying failed")
+    v.add_argument("--no-gate", dest="gate", action="store_false",
+                   default=True,
+                   help="proceed on a source that failed the checks. You will "
+                        "get geometry of the BACKDROP; see the wolf medal")
     v.set_defaults(fn=stage_views)
 
     c = sub.add_parser("colour", help="project observed views onto a mesh")

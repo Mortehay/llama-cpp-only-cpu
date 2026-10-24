@@ -414,7 +414,15 @@ services:
       context: ../../
       dockerfile: compose/develop/mesh_worker/Dockerfile.cuda
     container_name: mesh_worker
-    command: ["sleep", "infinity"]
+    # Was `sleep infinity` while the 3D route was a manual spike. It now
+    # consumes the mesh3d queue: a turnaround uses no GPU, so it runs in
+    # parallel with whatever sprite-worker is doing on the card.
+    #
+    # --pool=solo for a different reason than sprite-worker's: not one card,
+    # but stages that are subprocesses each loading torch. Two at once on 10
+    # threads is slower than one after the other.
+    command: ["celery", "-A", "mesh_tasks", "worker",
+              "--loglevel=info", "--pool=solo", "-Q", "mesh3d"]
     volumes:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/mesh_worker:/app
@@ -427,6 +435,8 @@ services:
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - PYTHONUNBUFFERED=1
+      - DB_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - REDIS_URL=redis://redis:6379/0
       # /opt/TripoSR FIRST and explicitly: the image sets
       # PYTHONPATH=/opt/TripoSR:/app for TripoSR's `tsr` package, and a
       # compose `environment` entry REPLACES it rather than extending

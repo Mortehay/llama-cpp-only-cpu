@@ -99,6 +99,26 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 ARG TRIPOSR_REF=main
 RUN git clone --depth 1 --branch ${TRIPOSR_REF} \
     https://github.com/VAST-AI-Research/TripoSR.git /opt/TripoSR
+# The turnaround lane runs as its own Celery worker on its own queue,
+# because sprite-worker is --pool=solo and a 2m42s CPU job there would block
+# every GPU request for most of three minutes to do work that never touches
+# the GPU. See src/mesh_worker/mesh_tasks.py.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install celery redis psycopg2-binary
+
+# timm + kornia are BiRefNet's, not TripoSR's. The segmenter loads with
+# trust_remote_code and its modeling file imports both, so without them
+# `--engine birefnet` dies with an ImportError raised inside transformers
+# rather than anything that reads as "optional feature unavailable".
+# cutout.py already anticipates this exact miss in its load error path.
+#
+# Needed because the corner flood fill STRUCTURALLY cannot clear an
+# enclosed backdrop - the wolf medal, 2026-10-24: a vignette whose rim
+# reaches the image border leaves the fill no route to the interior, so
+# the backdrop survives keying and gets reconstructed as geometry.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install timm kornia
+
 ENV PYTHONPATH=/opt/TripoSR:/app
 
 # Weights are NOT baked in. They live in the shared /models volume alongside the
