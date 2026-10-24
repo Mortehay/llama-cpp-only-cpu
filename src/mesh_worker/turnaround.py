@@ -268,6 +268,7 @@ def _derive_pose(v, views, res, sweep):
     print(f"  up axis derived as {'xyz'[best_up]} (mean IoU {best_score:.3f})")
     for n, (d, iou) in best_assign.items():
         print(f"  {n:5s} -> azimuth {d:3d} deg (IoU {iou:.3f})")
+    _report_distinct(best_assign)
     _gate_separation(best_assign)
     return best_up, best_assign
 
@@ -310,6 +311,49 @@ def _silhouette(v, up, a, b, deg, res):
     from scipy import ndimage
     m = ndimage.binary_dilation(m, np.ones((3, 3), bool), iterations=2)
     return _fit_mask(ndimage.binary_fill_holes(m), res)
+
+
+def _report_distinct(out: dict, min_sep: int = 30) -> None:
+    """How many genuinely different angles did the views resolve to?
+
+    REPORTS, never refuses. Duplicates are normal and usually harmless: on the
+    mage `q1` landed on `back`'s azimuth and `q2` on `left`'s, and that was the
+    best run measured - 94.3% colour coverage - because the remaining views
+    still covered the hemisphere between them.
+
+    It exists because the WOLF collapsed `front` and `left` onto 260 degrees:
+    the 2D turnaround gives a quadruped two profiles rather than a front and a
+    side, so one of three primary views was redundant. That cost nothing
+    measurable (94% coverage, the quarters filled in), but it was only
+    discoverable by reading a log closely, which is how a real version of this
+    would get missed.
+
+    A collapse to ONE angle is the degenerate case, and `_gate_separation`
+    already refuses that - a mesh whose front and back look alike is a disc.
+    """
+    angles = sorted({d for d, _ in out.values() if d is not None})
+    if not angles:
+        return
+    groups: list[list[int]] = []
+    for d in angles:
+        for g in groups:
+            if min(abs(d - x) % 360 for x in g) <= min_sep or \
+                    min(360 - (abs(d - x) % 360) for x in g) <= min_sep:
+                g.append(d)
+                break
+        else:
+            groups.append([d])
+    dupes = {}
+    for name, (d, _iou) in out.items():
+        if d is None:
+            continue
+        dupes.setdefault(d, []).append(name)
+    shared = {d: ns for d, ns in dupes.items() if len(ns) > 1}
+    print(f"  {len(out)} view(s) -> {len(groups)} distinct angle(s) "
+          f"(>{min_sep} deg apart)")
+    for d, ns in sorted(shared.items()):
+        print(f"    NOTE: {', '.join(ns)} all resolved to {d} deg - that view "
+              f"adds no new aspect, only more samples of one")
 
 
 def _gate_separation(out: dict) -> None:
@@ -540,8 +584,51 @@ def stage_sheet(a):
     print(f"wrote {a.out} {out.width}x{out.height} scale={atlas.get('scale')}")
     print(f"  transparent={100.0 * h[0] / (im.width * im.height):.1f}% "
           f"partial_alpha={sum(h[1:255])}px")
+    _report_fit(im, a.cell)
     with open(os.path.splitext(a.out)[0] + ".atlas.json", "w") as fh:
         json.dump(atlas, fh, indent=2)
+
+
+def _report_fit(sheet: Image.Image, cell: str) -> None:
+    """How much of each cell the sprite actually uses, and whether the cell is
+    the wrong way round for this subject.
+
+    A QUADRUPED IS WIDE. Measured on the wolf: a 46x43 sprite in a 48x64 cell
+    - it fills the width and wastes a third of the height, because 48x64 is a
+    portrait cell chosen for standing humanoids. Nothing was WRONG with that
+    sheet; it just spent a third of its pixels on empty space, which at this
+    size is a real cost.
+
+    Reported rather than auto-corrected: the cell size is part of what a
+    consumer expects, so transposing it silently would change the contract.
+    `--cell 64x48` is the lever.
+    """
+    cw, ch = (int(x) for x in cell.lower().split("x"))
+    rows = sheet.height // ch
+    widest = tallest = 0
+    for i in range(rows):
+        bb = sheet.crop((0, i * ch, cw, (i + 1) * ch)).getchannel("A").getbbox()
+        if bb:
+            widest = max(widest, bb[2] - bb[0])
+            tallest = max(tallest, bb[3] - bb[1])
+    if not widest or not tallest:
+        return
+    used = 100.0 * (widest * tallest) / (cw * ch)
+    wfill, hfill = 100.0 * widest / cw, 100.0 * tallest / ch
+    print(f"  cell fit: widest sprite {widest}x{tallest} of {cw}x{ch} "
+          f"({used:.0f}% of the cell; {wfill:.0f}% of width, "
+          f"{hfill:.0f}% of height)")
+    # Compare the FILL on each axis, not the fitted sprite's own aspect. The
+    # fitted sprite has already been squeezed to the cell, which hides the
+    # subject's shape: the wolf measured 46x43 - almost square - purely
+    # because 46 was all the width there was. What actually gives it away is
+    # filling 96% of the width against 67% of the height.
+    if wfill - hfill > 20:
+        print(f"    NOTE: the sprite fills the width and leaves "
+              f"{100 - hfill:.0f}% of the height empty - this subject is "
+              f"wider than the cell is shaped for. --cell {ch}x{cw} fits it "
+              f"at a larger scale (measured on a wolf: 64% -> 73% of the "
+              f"cell, scale 0.190 -> 0.204).")
 
 
 def main():
