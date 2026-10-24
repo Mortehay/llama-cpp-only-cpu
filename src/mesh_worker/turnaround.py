@@ -1,0 +1,458 @@
+#!/usr/bin/env python3
+"""A job's 2D turnaround -> a 3D mesh -> a 48x64 eight-direction sprite sheet.
+
+WHAT THIS IS FOR, AND WHAT IT IS NOT
+It produces a STATIC eight-direction turnaround. It does not produce action
+frames: that needs a rigged mesh, and the rigging gate failed 0 of 2 with a
+clean synthetic control (decisions/0016). Do not read this module as a revival
+of the 3D conveyor.
+
+What it IS good for is the thing the 2D lane cannot do. The 2D turnaround's
+front quarters collapse onto the front view (|s-se| 12.8) and its west rows are
+flipped east rows with handedness swapped. Here a direction is a camera
+position, so all eight are structurally correct and cannot drift.
+
+WHY THE COLOUR COMES FROM THE VIEWS AND NOT FROM THE RECONSTRUCTOR
+Measured 2026-10-24 (0016, "Colour projection"): a reconstructor EXTRAPOLATES
+colour for surfaces it could not see, and that - not palette, and not geometry
+- is what made cells unusable at 48x64. TripoSR's back geometry is fine when
+normal-shaded; its back colour is not. The 2D lane already emits a turnaround,
+so those surfaces ARE observed, just not by the reconstructor. Projecting the
+observed views onto the mesh replaces extrapolated colour with measured
+colour, and it is reconstructor-agnostic.
+
+EVERY ORIENTATION HERE IS DERIVED, NEVER ASSUMED
+Four orientation bugs were hit in one session before this rule went in: a +90
+offset calibrated on one mesh, a 180 on another, Z-up assumed for a Y-up mesh,
+and inverted winding after a mirror. Each presented as "the model produced
+something bad" rather than "the camera was pointed wrong". TripoSR emits Z-up,
+Hunyuan3D-2mv emits Y-up, and their azimuth origins differ too, so there is no
+convention to hardcode. Up comes from the tallest extent; azimuth comes from
+matching a rasterised silhouette against the source view, which IS the ground
+truth for where that camera was.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+
+import numpy as np
+import trimesh
+from PIL import Image
+
+# src/sprite_generator is mounted read-only at /sprite; pixelate and sheet are
+# standalone (numpy + PIL only), so the whole chain runs in this one container.
+for _c in ("/sprite", os.path.join(os.path.dirname(__file__), "..",
+                                   "sprite_generator")):
+    if os.path.isfile(os.path.join(_c, "pixelate.py")):
+        sys.path.insert(0, _c)
+        break
+
+import pixelate  # noqa: E402
+import sheet as sheet_mod  # noqa: E402
+
+log = logging.getLogger("turnaround")
+
+DIRECTIONS = ["s", "se", "e", "ne", "n", "nw", "w", "sw"]
+
+# Views fed to a MULTIVIEW reconstructor, in the mirrored frame. dir_w is
+# deliberately absent: measured across 11 jobs, w is a mirror-ish re-render of
+# e in most (|e-mirror(w)| 20-50) but in two it is a near-DUPLICATE of e facing
+# the same way (|e-w| 7.02), the documented left-side failure. Mirroring the
+# whole problem instead puts the one genuinely rendered profile into the slot
+# the model expects, with one handedness across all three inputs.
+RECON_VIEWS = [("front", "dir_s.png", True),
+               ("left", "dir_e.png", False),
+               ("back", "dir_n.png", True)]
+
+# Views used only as COLOUR sources, in the true frame. The quarters are
+# included here but never for reconstruction: colour projection does not care
+# that se collapses toward s, because it samples whatever the pixels show, and
+# more cameras means fewer surfaces falling back to the median fill.
+COLOUR_VIEWS = [("front", "dir_s.png", False),
+                ("left", "dir_e.png", True),
+                ("back", "dir_n.png", False),
+                ("q1", "dir_se.png", True),
+                ("q2", "dir_ne.png", True)]
+
+
+# --- view preparation ---------------------------------------------------
+
+def _keyed(path: str, size: int, tolerance: int):
+    """Background-removed, bbox-cropped, centred on a square canvas.
+
+    Raw dir_*.png carry an opaque backdrop (~69%), and consistent framing
+    matters as much as keying: these views are NOT uniformly framed - a
+    close-up `dir_w` cut off at the knees beside a full-body `dir_e` is a
+    documented failure mode - and anything downstream reads inconsistent scale
+    as inconsistent geometry.
+    """
+    im = pixelate.key_background(Image.open(path), tolerance=tolerance)
+    a = np.asarray(im)[..., 3] > 8
+    ys, xs = np.where(a)
+    if not len(ys):
+        raise SystemExit(f"{path}: keyed to nothing at tolerance {tolerance}")
+    im = im.crop((xs.min(), ys.min(), xs.max() + 1, ys.max() + 1))
+    pad = 0.92
+    h = int(size * pad)
+    w = max(1, round(im.width * h / im.height))
+    if w > int(size * pad):
+        w = int(size * pad)
+        h = max(1, round(im.height * w / im.width))
+    im = im.resize((w, h), Image.LANCZOS)
+    sq = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    sq.paste(im, ((size - w) // 2, (size - h) // 2))
+    return sq
+
+
+def stage_views(a):
+    plan = RECON_VIEWS if a.frame == "mirrored" else COLOUR_VIEWS
+    os.makedirs(a.out, exist_ok=True)
+    made = []
+    for name, src, mirror in plan:
+        p = os.path.join(a.job, src)
+        if not os.path.isfile(p):
+            log.warning("missing %s - skipping", p)
+            continue
+        im = _keyed(p, a.size, a.tolerance)
+        if mirror:
+            im = im.transpose(Image.FLIP_LEFT_RIGHT)
+        im.save(os.path.join(a.out, f"{name}.png"))
+        clear = 100.0 * (np.asarray(im)[..., 3] == 0).mean()
+        made.append(name)
+        print(f"  {name:5s} <- {src:11s} mirror={int(mirror)} "
+              f"transparent={clear:5.1f}%"
+              + ("" if clear > 25 else "   <-- SUSPECT: barely keyed"))
+    if not made:
+        raise SystemExit(f"no usable views in {a.job}")
+    print(f"wrote {len(made)} view(s) to {a.out} (frame={a.frame})")
+
+
+# --- geometry helpers ---------------------------------------------------
+
+def _up_axis(v):
+    """The tallest extent. Same rule inspect_mesh uses; never hardcoded."""
+    return int(np.argmax(np.ptp(v, axis=0)))
+
+
+def _project(v, up, a, b, deg):
+    t = np.radians(deg)
+    c, s = np.cos(t), np.sin(t)
+    return (v[:, a] * c - v[:, b] * s,      # screen x
+            v[:, up],                        # screen up
+            v[:, a] * s + v[:, b] * c)       # depth
+
+
+def _fit_mask(m, res):
+    ys, xs = np.where(m)
+    if not len(ys):
+        return None
+    m = m[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    im = Image.fromarray((m * 255).astype(np.uint8))
+    h, w = res, max(1, round(im.width * res / im.height))
+    if w > res:
+        w, h = res, max(1, round(im.height * res / im.width))
+    im = im.resize((w, h), Image.NEAREST)
+    out = np.zeros((res, res), bool)
+    y0, x0 = (res - h) // 2, (res - w) // 2
+    out[y0:y0 + h, x0:x0 + w] = np.asarray(im) > 127
+    return out
+
+
+def _silhouette(v, up, a, b, deg, res):
+    x, y, _ = _project(v, up, a, b, deg)
+    sx, sy = x - x.min(), y - y.min()
+    span = max(float(np.ptp(x)), float(np.ptp(y)))
+    if span <= 0:
+        return None
+    big = res * 2
+    xi = (sx / span * (big - 1)).astype(int)
+    yi = (sy / span * (big - 1)).astype(int)
+    m = np.zeros((big, big), bool)
+    m[big - 1 - yi, xi] = True
+    from scipy import ndimage
+    m = ndimage.binary_dilation(m, np.ones((3, 3), bool), iterations=2)
+    return _fit_mask(ndimage.binary_fill_holes(m), res)
+
+
+def _derive_azimuths(v, up, a, b, views, res, sweep):
+    """{view name: (azimuth, iou)} by matching silhouettes to the sources."""
+    cand = list(range(0, 360, sweep))
+    sil = {d: _silhouette(v, up, a, b, d, res) for d in cand}
+    out = {}
+    for name, im in views.items():
+        ref = _fit_mask(np.asarray(im)[..., 3] > 8, res)
+        best, bestd = -1.0, None
+        for d in cand:
+            s = sil[d]
+            if s is None or ref is None:
+                continue
+            u = np.logical_or(s, ref).sum()
+            if u and (iou := np.logical_and(s, ref).sum() / u) > best:
+                best, bestd = iou, d
+        out[name] = (bestd, best)
+        print(f"  {name:5s} -> azimuth {bestd:3d} deg (IoU {best:.3f})")
+    if "front" in out and "back" in out and None not in (out["front"][0],
+                                                         out["back"][0]):
+        gap = abs(out["front"][0] - out["back"][0]) % 360
+        gap = min(gap, 360 - gap)
+        # Catches a gross mis-assignment. It does NOT catch a clean front/back
+        # swap - silhouette IoU is front/back ambiguous for a robed figure, and
+        # the giveaway there is a face on the back of the head. Look.
+        print(f"  front/back separation {gap} deg"
+              + ("" if abs(gap - 180) <= 35 else "   <-- SUSPECT"))
+    return out
+
+
+# --- colour -------------------------------------------------------------
+
+def stage_colour(a):
+    mesh = trimesh.load(a.mesh, force="mesh")
+    if a.repair:
+        # Hunyuan3D-2mv output is RAW: not watertight, and carrying stray
+        # components that render as a slab across the sprite. TripoSR's path
+        # already does this, which is most of why its coloured result looked
+        # cleaner in the 0016 comparison.
+        before = len(mesh.faces)
+        parts = mesh.split(only_watertight=False)
+        if len(parts) > 1:
+            big = max(parts, key=lambda m: len(m.faces))
+            keep = [m for m in parts
+                    if len(m.faces) >= a.min_component * len(big.faces)]
+            mesh = trimesh.util.concatenate(keep) if len(keep) > 1 else big
+            print(f"  dropped {len(parts) - len(keep)} stray component(s), "
+                  f"{before - len(mesh.faces)} faces")
+    v = np.asarray(mesh.vertices, float)
+    up = _up_axis(v)
+    ax, bx = [i for i in range(3) if i != up]
+    print(f"{os.path.basename(a.mesh)}: {len(v)} verts, up={'xyz'[up]}")
+
+    views = {}
+    for n in ("front", "left", "back", "q1", "q2"):
+        p = os.path.join(a.views, f"{n}.png")
+        if os.path.isfile(p):
+            views[n] = Image.open(p).convert("RGBA")
+    if not views:
+        raise SystemExit(f"no views in {a.views}")
+    assign = _derive_azimuths(v, up, ax, bx, views, a.res, a.sweep)
+
+    vn = np.asarray(mesh.vertex_normals, float)
+    acc = np.zeros((len(v), 3))
+    wsum = np.zeros(len(v))
+    for n, (deg, _iou) in assign.items():
+        if deg is None:
+            continue
+        arr = np.asarray(views[n]).astype(float)
+        vis = arr[..., 3] > 8
+        ys, xs = np.where(vis)
+        if not len(ys):
+            continue
+        x, y, _ = _project(v, up, ax, bx, deg)
+        # Map the mesh's projected bbox onto the view's FIGURE bbox: the views
+        # were cropped to alpha and re-fitted, so raw image coordinates would
+        # sample the padding.
+        sx = (x - x.min()) / max(float(np.ptp(x)), 1e-9)
+        sy = (y - y.min()) / max(float(np.ptp(y)), 1e-9)
+        xi = np.clip((xs.min() + sx * (xs.max() - xs.min())).astype(int),
+                     0, arr.shape[1] - 1)
+        yi = np.clip((ys.max() - sy * (ys.max() - ys.min())).astype(int),
+                     0, arr.shape[0] - 1)
+        cam = np.zeros(3)
+        cam[ax], cam[bx] = -np.sin(np.radians(deg)), -np.cos(np.radians(deg))
+        w = np.clip(vn @ cam, 0, 1) ** 2 * vis[yi, xi]
+        acc += arr[yi, xi, :3] * w[:, None]
+        wsum += w
+        print(f"  sampled {n}: {int((w > 0).sum())}/{len(v)} verts")
+
+    hit = wsum > 1e-6
+    col = np.full((len(v), 4), 255, np.uint8)
+    col[hit, :3] = np.clip(acc[hit] / wsum[hit, None], 0, 255).astype(np.uint8)
+    if hit.any() and (~hit).any():
+        # Median, never white: unobserved pockets (under the arms, between the
+        # legs) would otherwise read as holes punched in the sprite.
+        col[~hit, :3] = np.median(col[hit, :3], axis=0).astype(np.uint8)
+    print(f"  coloured {int(hit.sum())}/{len(v)} from views, "
+          f"{int((~hit).sum())} median-filled")
+    mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=col)
+    mesh.export(a.out)
+    print(f"wrote {a.out} ({len(np.unique(col[:, :3], axis=0))} distinct RGB)")
+
+
+# --- render -------------------------------------------------------------
+
+def _rasterise(v, f, col, up, ax, bx, deg, res):
+    x, y, d = _project(v, up, ax, bx, deg)
+    span = max(np.ptp(v[:, 0]), np.ptp(v[:, 1]), np.ptp(v[:, 2]))
+    if span <= 0:
+        raise SystemExit("degenerate mesh")
+    pad = 0.06
+    px = (((x - (x.max() + x.min()) / 2) / span * (1 - pad) + 0.5) * (res - 1))
+    py = ((0.5 - (y - (y.max() + y.min()) / 2) / span * (1 - pad)) * (res - 1))
+
+    img = np.zeros((res, res, 3))
+    zbuf = np.full((res, res), np.inf)
+    hit = np.zeros((res, res), bool)
+    fx, fy, fd = px[f], py[f], d[f]
+    if col is None:
+        p = np.stack([x, y, d], axis=1)[f]
+        n = np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0])
+        ln = np.linalg.norm(n, axis=1, keepdims=True)
+        n /= np.where(ln == 0, 1, ln)
+        light = np.array([-0.3, 0.45, -1.0])
+        light /= np.linalg.norm(light)
+        # Two-sided: winding is not trustworthy after a mirror, and a one-sided
+        # clamp renders the whole figure at the ambient floor, which looks like
+        # a black mesh rather than a flipped normal.
+        fcol = np.repeat((0.25 + 0.75 * np.abs(n @ light))[:, None], 3, axis=1)
+    else:
+        fcol = col[f].mean(axis=1)
+
+    for i in np.argsort(fd.mean(axis=1)):
+        axx, bxx, cxx = fx[i]
+        ayy, byy, cyy = fy[i]
+        x0 = max(int(np.floor(min(axx, bxx, cxx))), 0)
+        x1 = min(int(np.ceil(max(axx, bxx, cxx))), res - 1)
+        y0 = max(int(np.floor(min(ayy, byy, cyy))), 0)
+        y1 = min(int(np.ceil(max(ayy, byy, cyy))), res - 1)
+        if x1 < x0 or y1 < y0:
+            continue
+        gx, gy = np.meshgrid(np.arange(x0, x1 + 1), np.arange(y0, y1 + 1))
+        det = (byy - cyy) * (axx - cxx) + (cxx - bxx) * (ayy - cyy)
+        if abs(det) < 1e-12:
+            mask = np.ones(gx.shape, bool)
+            depth = np.full(gx.shape, fd[i].mean())
+        else:
+            l1 = ((byy - cyy) * (gx - cxx) + (cxx - bxx) * (gy - cyy)) / det
+            l2 = ((cyy - ayy) * (gx - cxx) + (axx - cxx) * (gy - cyy)) / det
+            l3 = 1.0 - l1 - l2
+            mask = (l1 >= -1e-6) & (l2 >= -1e-6) & (l3 >= -1e-6)
+            if not mask.any():
+                continue
+            depth = l1 * fd[i][0] + l2 * fd[i][1] + l3 * fd[i][2]
+        sub = zbuf[y0:y1 + 1, x0:x1 + 1]
+        closer = mask & (depth < sub)
+        if not closer.any():
+            continue
+        sub[closer] = depth[closer]
+        img[y0:y1 + 1, x0:x1 + 1][closer] = fcol[i]
+        hit[y0:y1 + 1, x0:x1 + 1] |= closer
+
+    out = np.zeros((res, res, 4), np.uint8)
+    out[..., :3] = np.clip(img * 255, 0, 255).astype(np.uint8)
+    out[..., 3] = np.where(hit, 255, 0)
+    return out
+
+
+def stage_render(a):
+    mesh = trimesh.load(a.mesh, force="mesh")
+    v = np.asarray(mesh.vertices, float)
+    f = np.asarray(mesh.faces, int)
+    up = _up_axis(v)
+    ax, bx = [i for i in range(3) if i != up]
+    vc = getattr(mesh.visual, "vertex_colors", None)
+    col = None
+    if vc is not None and len(vc) == len(v):
+        rgb = np.asarray(vc)[:, :3]
+        # Degenerate colour counts as NO colour: a shape-only reconstructor
+        # still writes a flat vertex_colors array, and taking it at face value
+        # renders a silhouette rather than a shape.
+        if len(np.unique(rgb, axis=0)) > 4:
+            col = rgb.astype(float) / 255.0
+    print(f"{os.path.basename(a.mesh)}: {len(v)} verts, "
+          f"{'coloured' if col is not None else 'normal-shaded'}, "
+          f"up={'xyz'[up]}")
+
+    # The FRONT azimuth is derived, so the eight emitted directions are
+    # labelled against the source view rather than against a guess.
+    front = 0
+    fp = os.path.join(a.views, "front.png") if a.views else None
+    if fp and os.path.isfile(fp):
+        ref = {"front": Image.open(fp).convert("RGBA")}
+        got = _derive_azimuths(v, up, ax, bx, ref, 192, a.sweep)["front"][0]
+        if got is not None:
+            front = got
+            print(f"  front azimuth derived as {front} deg")
+
+    os.makedirs(a.out, exist_ok=True)
+    for i, d in enumerate(DIRECTIONS):
+        deg = (front + i * 45) % 360
+        img = _rasterise(v, f, col, up, ax, bx, deg, a.res)
+        p = os.path.join(a.out, f"dir_{d}.png")
+        Image.fromarray(img, "RGBA").save(p)
+        print(f"  dir_{d:2s} ({deg:3d} deg) covered="
+              f"{100.0 * (img[..., 3] > 0).mean():.1f}%")
+
+
+def stage_sheet(a):
+    b = sheet_mod.SheetBuilder(cell=tuple(int(x) for x in a.cell.split("x")),
+                               frames=1, directions=DIRECTIONS,
+                               n_colors=a.colors)
+    for d in DIRECTIONS:
+        p = os.path.join(a.renders, f"dir_{d}.png")
+        if not os.path.isfile(p):
+            log.warning("missing %s", p)
+            continue
+        b.add("turn", d, 0, Image.open(p))
+    out, atlas = b.save(a.out, allow_missing=True)
+    im = Image.open(a.out).convert("RGBA")
+    h = im.getchannel("A").histogram()
+    print(f"wrote {a.out} {out.width}x{out.height} scale={atlas.get('scale')}")
+    print(f"  transparent={100.0 * h[0] / (im.width * im.height):.1f}% "
+          f"partial_alpha={sum(h[1:255])}px")
+    with open(os.path.splitext(a.out)[0] + ".atlas.json", "w") as fh:
+        json.dump(atlas, fh, indent=2)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="stage", required=True)
+
+    v = sub.add_parser("views", help="job turnaround -> keyed square views")
+    v.add_argument("job")
+    v.add_argument("out")
+    v.add_argument("--frame", choices=("mirrored", "true"), default="true",
+                   help="mirrored = fed to a multiview reconstructor; "
+                        "true = colour sources for the final mesh")
+    v.add_argument("--size", type=int, default=512)
+    v.add_argument("--tolerance", type=int, default=24)
+    v.set_defaults(fn=stage_views)
+
+    c = sub.add_parser("colour", help="project observed views onto a mesh")
+    c.add_argument("mesh")
+    c.add_argument("views")
+    c.add_argument("out")
+    c.add_argument("--res", type=int, default=192)
+    c.add_argument("--sweep", type=int, default=10)
+    c.add_argument("--no-repair", dest="repair", action="store_false",
+                   default=True)
+    c.add_argument("--min-component", type=float, default=0.02)
+    c.set_defaults(fn=stage_colour)
+
+    r = sub.add_parser("render", help="8 orthographic azimuths")
+    r.add_argument("mesh")
+    r.add_argument("out")
+    r.add_argument("--views", default=None,
+                   help="view dir; front.png fixes the azimuth labels")
+    r.add_argument("--res", type=int, default=256)
+    r.add_argument("--sweep", type=int, default=10)
+    r.set_defaults(fn=stage_render)
+
+    s = sub.add_parser("sheet", help="renders -> 48x64 sheet + atlas")
+    s.add_argument("renders")
+    s.add_argument("out")
+    s.add_argument("--cell", default="48x64")
+    s.add_argument("--colors", type=int, default=24)
+    s.set_defaults(fn=stage_sheet)
+
+    a = p.parse_args()
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s %(levelname)s %(message)s")
+    a.fn(a)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

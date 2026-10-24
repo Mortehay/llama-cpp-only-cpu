@@ -18,7 +18,7 @@ CORE_SERVICES := db redis sprite-generator sprite-worker
 DB_PASSWORD ?= password
 DB_URL=postgresql://postgres:$(DB_PASSWORD)@127.0.0.1:5432/postgres
 
-.PHONY: gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts provision test-models-manifest models-warn
+.PHONY: turnaround3d gpu-health lan-check lan-expose test-model-gateway test-text-contract test-transparency-rewrite test-all dev build stop clean logs shell up down recreate rebuild rebuild-clean rebuild-app download sync-models models gpu-check env warm smoke test-flow require-gpu fetch-qwen turnaround pixelate check-sprite smoke-sheet sheet8 audit-refs audit-sheets audit-refs-apply key-checkerboard test-train-prep recover-cells test-split-sheets test-apply-verdicts audit-cells test-audit-mirrors-cutout test-pedestal-guard test-auth-scopes api-key test-audio-paths test-audio test-spec-fields recover-entity-refs test-maps check-artifacts test-isolate-mirrors-tasks register-entity-cutouts test-register-cutouts provision test-models-manifest models-warn compact-wsl compact-wsl-dry
 
 # Create compose/develop/.env from the example if it is missing. Every target
 # below passes --env-file, and compose aborts outright when the file is absent.
@@ -96,6 +96,30 @@ lan-expose:
 	powershell.exe -NoProfile -Command "try { \$$p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -ErrorAction Stop -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File ' + [char]34 + '$$script' + [char]34); exit \$$p.ExitCode } catch { \$$_.Exception.Message; exit 1 }" \
 		|| { echo "lan-expose.ps1 failed, or the UAC prompt was declined."; exit 1; }
 	@$(MAKE) --no-print-directory lan-check
+
+# Return space freed INSIDE the distro to the Windows drive. ext4.vhdx grows as
+# the distro writes and NEVER shrinks on its own, so `docker builder prune` and
+# `make prune-job-cache` only move the number `df` reports -- Windows keeps
+# seeing the file at its high-water mark until this runs. Runbook: compact-wsl.md
+#
+# Deliberately NOT -Wait, unlike lan-expose: the make process running this
+# target lives inside the distro the script shuts down, so waiting here would
+# mean waiting to be killed. The elevated window is a Windows process and
+# outlives it; -Restore has it bring the keepalive, the containers and
+# lan-check back by itself. Watch that window, not this shell.
+compact-wsl:
+	@script=$$(wslpath -w "$(CURDIR)/scripts/compact-wsl-disk.ps1"); \
+	echo "Approve the UAC prompt on the Windows desktop."; \
+	echo "WSL goes DOWN (every container stops) and comes back by itself."; \
+	echo "Progress is in the elevated window; THIS shell gets killed."; \
+	powershell.exe -NoProfile -Command "Start-Process powershell.exe -Verb RunAs -ArgumentList ('-NoProfile -NoExit -ExecutionPolicy Bypass -File ' + [char]34 + '$$script' + [char]34 + ' -Restore')"
+
+# Numbers only: what compaction would return. No UAC, no shutdown, nothing
+# changed. Compare "Allocated" against the used column of `df -h /` -- that gap
+# is the prize, and `df` alone cannot show it. Also the honest check afterwards.
+compact-wsl-dry:
+	@script=$$(wslpath -w "$(CURDIR)/scripts/compact-wsl-disk.ps1"); \
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$$script" -WhatIfOnly
 
 # Load models into VRAM out-of-band. A cold checkpoint takes minutes to fetch
 # and load, which blows past any HTTP client's timeout -- including something2's
@@ -299,6 +323,41 @@ provision:
 # Does every model the CODE references appear in the manifest? Host-only, no
 # containers, no GPU, no network. This is what stops models.toml rotting the
 # way models.txt did - see .ai/decisions/0014.
+# A job's 2D turnaround -> a static 8-direction 48x64 sheet, via a mesh.
+#
+#   make turnaround3d JOB=<job-id>            TripoSR, all CPU
+#   make turnaround3d JOB=<id> CELL=64x64     a bigger cell
+#
+# STATIC ONLY. No action frames: that needs a rig, and the rigging gate failed
+# 0 of 2 with a clean control (.ai/decisions/0016). What this gives that the 2D
+# lane cannot is eight structurally correct directions - a direction here is a
+# camera position, so the front quarters cannot collapse and the west rows are
+# not flipped east rows.
+#
+# Runs entirely off the GPU, so it does NOT contend with a sheet build. Check
+# nothing else is mid-download though: mesh.py fetches TripoSR itself rather
+# than going through `make provision`.
+turnaround3d:
+	@test -n "$(JOB)" || { echo "JOB=<job-id> required"; exit 2; }
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh up -d mesh-worker
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh exec -T mesh-worker python /app/turnaround.py \
+	    views /app/images/_job_$(JOB) /app/images/_job_$(JOB)/t3d/views
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh exec -T mesh-worker python /app/mesh.py \
+	    /app/images/_job_$(JOB)/t3d/views/front.png \
+	    -o /app/images/_job_$(JOB)/t3d/mesh.obj --device cpu
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh exec -T mesh-worker python /app/turnaround.py \
+	    colour /app/images/_job_$(JOB)/t3d/mesh.obj \
+	    /app/images/_job_$(JOB)/t3d/views \
+	    /app/images/_job_$(JOB)/t3d/mesh_col.glb
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh exec -T mesh-worker python /app/turnaround.py \
+	    render /app/images/_job_$(JOB)/t3d/mesh_col.glb \
+	    /app/images/_job_$(JOB)/t3d/renders \
+	    --views /app/images/_job_$(JOB)/t3d/views
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile mesh exec -T mesh-worker python /app/turnaround.py \
+	    sheet /app/images/_job_$(JOB)/t3d/renders \
+	    /app/images/_job_$(JOB)/t3d/sheet.png --cell $(or $(CELL),48x64)
+	@echo "sheet: images/_job_$(JOB)/t3d/sheet.png"
+
 test-models-manifest:
 	@MODELS_DIR=$$(grep -E '^MODELS_DIR=' $(ENV_FILE) 2>/dev/null | cut -d= -f2-); \
 	python3 scripts/check-models-manifest.py \

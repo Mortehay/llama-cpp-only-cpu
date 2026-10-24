@@ -419,9 +419,20 @@ services:
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/mesh_worker:/app
       - ${IMAGES_DIR:-../../images}:/app/images
+      # READ-ONLY, and only for pixelate.py + sheet.py, which turnaround.py
+      # reuses so keying and the 48x64 fit are the project's own code rather
+      # than a second implementation. Both are standalone (numpy + PIL), so
+      # this pulls in no sprite-stack dependencies.
+      - ../../src/sprite_generator:/sprite:ro
     environment:
       - HF_TOKEN=${HF_TOKEN}
       - PYTHONUNBUFFERED=1
+      # /opt/TripoSR FIRST and explicitly: the image sets
+      # PYTHONPATH=/opt/TripoSR:/app for TripoSR's `tsr` package, and a
+      # compose `environment` entry REPLACES it rather than extending
+      # it - dropping /opt/TripoSR broke mesh.py with
+      # ModuleNotFoundError: No module named 'tsr'.
+      - PYTHONPATH=/opt/TripoSR:/app:/sprite
     profiles: ["mesh"]
 
   # Stage 3 of the 3D conveyor: mesh -> rigged mesh. See
