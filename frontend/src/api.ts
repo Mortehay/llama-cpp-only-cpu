@@ -680,7 +680,16 @@ export interface JobProgress {
 }
 
 export interface ActivityItem {
-  source: 'api' | 'job' | 'ui'
+  /**
+   * WHO ASKED. Not "which table owns the artefact", which is what this meant
+   * before `.ai/decisions/0017` — and why `ui` is gone: the browser calls with
+   * an ordinary API key, so its work was filed under `api` and the "This
+   * browser" filter only ever matched pre-migration-018 history. `requested_by`
+   * is the identity that actually separates callers.
+   */
+  source: 'api' | 'internal' | 'unknown'
+  /** WHAT RAN IT: a `jobs` row owns the work (202/poll), or it does not. */
+  lane: 'job' | 'sync'
   id: string
   kind: string
   name: string | null
@@ -721,9 +730,19 @@ export interface ActivityFeed {
   items: ActivityItem[]
   /** Still queued or running, OLDEST FIRST - the order the GPU will reach them. */
   active: ActivityItem[]
-  counts: { source: string; status: string; n: number }[]
-  /** Every model seen in the feed, most used first; ignores the filters. */
-  models: { model: string; n: number }[]
+  counts: { source: string; lane: string; status: string; n: number }[]
+  /**
+   * Every caller seen in the feed, most active first; ignores the filters.
+   * This is the "who asked" filter's options — a key name, because `api_keys`
+   * carries no type column and the address is the docker bridge for everyone.
+   */
+  principals: { name: string; source: string; n: number }[]
+  /**
+   * Every model seen in the feed, most used first; ignores the filters.
+   * `model_kind` splits brains from image checkpoints: they share this column
+   * and must not share one flat list.
+   */
+  models: { model: string; model_kind: 'brain' | 'image'; n: number }[]
 }
 
 export interface NamedEntity {
@@ -841,6 +860,9 @@ export const api = {
    */
   activity: (params: {
     source?: string
+    lane?: string
+    /** An exact key name from `ActivityFeed.principals`, not a substring. */
+    requested_by?: string
     status?: string
     kind?: string
     model?: string
