@@ -50,7 +50,7 @@ from datetime import datetime, timezone
 
 import psycopg2
 import psycopg2.extras
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -58,6 +58,10 @@ from pydantic import BaseModel, Field, field_validator
 # pulling in the Celery/torch import chain that tasks.py brings.
 import actions as action_lib
 import auth
+# The request ledger. Safe at module scope - `generations` pulls in auth,
+# fastapi and psycopg2 and nothing from the Celery/torch chain, which is also
+# why `a1111.py` imports it the same way.
+import generations
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -181,14 +185,21 @@ def _row_to_job(row) -> dict:
 
 
 @router.post("/api/jobs", status_code=202)
-def create_job(spec: JobSpec, authorization: str | None = Header(None)):
+def create_job(spec: JobSpec, request: Request,
+               authorization: str | None = Header(None)):
     """Enqueue a sheet build. Returns immediately with an id.
 
     202 rather than 200 on purpose: nothing has been produced yet, and the
     status code should say so rather than relying on the caller reading the
     body carefully.
+
+    `request` is here only to attribute the row. Until 0017 this route recorded
+    nothing at all, so a sheet submitted over the API reached the Activity tab
+    only through `activity_v`'s unledgered-job arm, labelled "unattributed" -
+    and the browser posts here too (`frontend/src/tabs/SheetGenerator.tsx`), so
+    that one bucket held two askers and could distinguish neither.
     """
-    _require_auth(authorization, "generate")
+    principal = _require_auth(authorization, "generate")
 
     # Validate the spec against the pose library before spending any GPU time.
     #
@@ -217,11 +228,31 @@ def create_job(spec: JobSpec, authorization: str | None = Header(None)):
     job_id = uuid.uuid4()
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO jobs (id, status, spec, progress_msg) "
-            "VALUES (%s, 'queued', %s, %s)",
+            # `kind` was left NULL here while tiles and maps set theirs, so
+            # every sheet relied on the view's COALESCE default. Setting it
+            # means the column answers "what kind of job is this" on its own.
+            "INSERT INTO jobs (id, status, kind, spec, progress_msg) "
+            "VALUES (%s, 'queued', 'sheet', %s, %s)",
             (str(job_id), json.dumps(spec.model_dump()),
              f"queued, {spec.cells()} cells"),
         )
+
+    # AFTER the insert so `job_id` never dangles, BEFORE `.delay()` so the row
+    # exists for the whole time the work is queued - which is the window
+    # someone watching the Activity tab is actually looking at. A `begin` that
+    # fails returns None and the job falls back to the unledgered arm:
+    # degraded, not broken, the same trade every other ledger write makes.
+    # No `model`: a sheet build is not one model. The conveyor runs a concept
+    # checkpoint, then the Qwen editor for the turnaround and the actions, so
+    # any single value here would be a guess. The view leaves it NULL and the
+    # model filter skips the row, which is the honest answer.
+    generations.begin(
+        kind="sheet", route="/api/jobs", prompt=spec.prompt,
+        job_id=str(job_id),
+        params={"actions": spec.actions, "directions": spec.directions,
+                "frames": spec.frames, "cells": spec.cells(),
+                "seed": spec.seed, "style_profile": spec.style_profile},
+        caller=generations.describe_caller(principal, request))
 
     # Imported here, not at module scope: main.py imports this router in the
     # API process, which must not pull in the Celery/torch import chain.
@@ -438,8 +469,20 @@ def get_frame(job_id: str, row: str, name: str,
     return FileResponse(path, media_type="image/png")
 
 
+def _frame_labels(frames: list, show: int = 6) -> str:
+    """`walk/se/2, attack/n/0 (+3 more)` - a redraw's title, not its record.
+
+    Truncated because `REDRAW_MAX_FRAMES` is 64 and this ends up in a table
+    cell. The full list is in the ledger row's `params`, which is what an
+    audit should read.
+    """
+    labels = [f"{f.action}/{f.direction}/{f.frame}" for f in frames[:show]]
+    rest = len(frames) - len(labels)
+    return ", ".join(labels) + (f" (+{rest} more)" if rest > 0 else "")
+
+
 @router.post("/api/jobs/{job_id}/redraw", status_code=202)
-def redraw_frames(job_id: str, spec: RedrawSpec,
+def redraw_frames(job_id: str, spec: RedrawSpec, request: Request,
                   authorization: str | None = Header(None)):
     """Re-render named frames of a finished sheet.
 
@@ -448,7 +491,7 @@ def redraw_frames(job_id: str, spec: RedrawSpec,
     are unchanged and are rewritten in place when the redraw finishes, so a
     caller holding `/api/jobs/{parent}/sheet` keeps working.
     """
-    _require_auth(authorization, "generate")
+    principal = _require_auth(authorization, "generate")
 
     # Parsed before the query, so a malformed id is a 400 rather than a
     # psycopg2 DataError surfacing as a 500.
@@ -494,11 +537,29 @@ def redraw_frames(job_id: str, spec: RedrawSpec,
     }
     with _db() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO jobs (id, status, spec, progress_msg) "
-            "VALUES (%s, 'queued', %s, %s)",
+            # `kind` in the COLUMN, not only in the spec JSON. `activity_v`
+            # reads the column, so while this was spec-only every redraw was
+            # displayed as an ordinary sheet and a 2-frame repair looked like a
+            # 336-cell build.
+            "INSERT INTO jobs (id, status, kind, spec, progress_msg) "
+            "VALUES (%s, 'queued', 'redraw', %s, %s)",
             (str(child), json.dumps(cspec),
              f"queued, redraw of {len(spec.frames)} frame(s)"),
         )
+
+    # A redraw gets its OWN jobs row (the child above), so attributing it does
+    # not touch the parent's row or its status. A `RedrawSpec` carries no
+    # prompt, so the title is synthesized: the one question asked of a redraw
+    # row is WHICH frames, and the view would otherwise title every one of
+    # them "(no prompt)".
+    generations.begin(
+        kind="redraw", route="/api/jobs/{id}/redraw",
+        prompt=f"redraw of {len(spec.frames)} frame(s) in "
+               f"{job_id[:8]}: {_frame_labels(spec.frames)}",
+        job_id=str(child),
+        params={"parent_job": job_id,
+                "frames": [f.model_dump() for f in spec.frames]},
+        caller=generations.describe_caller(principal, request))
 
     from tasks import redraw_frames_job
 

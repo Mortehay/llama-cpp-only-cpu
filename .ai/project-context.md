@@ -540,6 +540,39 @@ verdict, not by accident - see [decisions/0009](decisions/0009-character-trainin
 - The Settings UI compute toggle is now a read-only readout via
   `GET /api/compute-info` (was a dead toggle plus stale hardware copy).
 
+- **A `usePoll` whose condition comes from the data the poll fetches never
+  starts.** `usePoll(fn, ms, active)` creates no interval when `active` is
+  false (`frontend/src/hooks.ts`), so a condition derived from fetched state
+  self-latches: the only thing that could flip it true is the poll that does
+  not exist. Measured by reading the code 2026-10-23, after the owner reported
+  that API-submitted work "is not displayed at the Activity tab" - the rows
+  were all present in the database (3869 on `/sdapi/v1/txt2img`, newest that
+  afternoon); the page had simply stopped asking.
+
+  **Two sites, and only two:**
+
+  | site | condition | effect |
+  |---|---|---|
+  | `tabs/Activity.tsx` | `busy = feed.data.active.length > 0` | open the tab on an idle GPU and it never refreshes; something2 generates from another machine and the browser learns nothing |
+  | `tabs/Training.tsx` | `active = runs.data.items.some(running\|queued)` | same shape, for runs started anywhere but this tab |
+
+  It also latches on the way *down*: polling stops the instant the queue
+  drains and does not restart. Changing a filter, clicking Refresh or
+  switching tabs (which remounts) hides it, which is why it reads as
+  "sometimes stale" rather than as broken.
+
+  **`tabs/Maps.tsx`, `SheetGenerator.tsx`, `Tiles.tsx` and `Commands.tsx` are
+  NOT instances** - they gate on `!!jobId` / `!!taskId` from the submit the
+  user just made, which is local state, not fetched state. Do not "fix" those.
+
+  **The fix pattern is already in the repo**: `tabs/Models.tsx` uses
+  `usePoll(downloads.reload, active ? 3000 : 20000, true)` - always on, the
+  interval varies. Prefer it over always-4000. The "a machine at rest does not
+  need a request every four seconds" comment in `Activity.tsx` argues against
+  the cheap fix, but it is already moot: `<ModelGateway />` is mounted in
+  `App.tsx` outside the tab switch and polls every 3 s unconditionally, so
+  every tab already costs a request per 3 s.
+
 ## Image model selection constraints
 
 Full reasoning in [decisions/0002](decisions/0002-image-model-selection.md). The
