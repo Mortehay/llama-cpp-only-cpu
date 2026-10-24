@@ -147,9 +147,12 @@ check suite - see "Consequences" below.
 Three levers were **not** tried and would have to be, before anyone revisits
 this:
 
-1. **The concept was photoreal.** Generated with no pixel-art trigger, so
+1. ~~**The concept was photoreal.** Generated with no pixel-art trigger, so
    photoreal colour baked into the vertices. A pixel-art concept bakes
-   pixel-art colour. This is the cheap test and it was not run.
+   pixel-art colour. This is the cheap test and it was not run.~~
+   **RUN 2026-10-24, and the premise was false - see "The pixel-art concept
+   test" below.** A pixel-art concept bakes MORE distinct colours, not fewer,
+   and palette was never the defect.
 2. **No toon shader, no outline pass.** The renderer used here is a ~130-line
    z-buffered flat-colour rasteriser written for this spike (no GL, no
    lighting). The production renderer is meant to be `bpy`, where an outline
@@ -170,6 +173,91 @@ direction defect is narrow and specific - and it is exactly what a camera move
 fixes for free. The 3D profiles were *genuine* profiles, with the near arm
 correctly foreshortened to a stub; nothing collapsed toward the front. That
 property is real and is the whole argument for the surviving directions.
+
+## The pixel-art concept test (2026-10-24): palette was never the defect
+
+Lever 1 above, run. It changes the diagnosis rather than the verdict, and it
+contradicts what the taste-gate section implies, so read both.
+
+**Method, and a methodological correction.** The gate was re-run on
+`concept_clean.png` from job `d3083b62` - the production pixel-art concept
+behind the 2D comparison strip. Three advantages over generating a fresh
+T-pose, and the third is the correction:
+
+- it is genuinely pixel art, already keyed and ground-stripped, which is
+  exactly TripoSR's required input;
+- it is **the same character as the 2D strip**, so the comparison becomes one
+  character through two pipelines rather than two characters through two;
+- **it needs no GPU at all.** The T-pose was only ever required by the RIG
+  gate. The taste gate asks whether a pixelated render reads as the character,
+  and pose is irrelevant to that. Conflating the two cost a day of waiting on
+  a card for no reason - the other session's Q6_K sheet held it for hours.
+  **Run the taste gate on an existing core; never queue a generation for it.**
+
+**Result: the premise was wrong.** The pixel-art concept baked **16,561
+distinct RGB** into the vertices, against the photoreal zombie's 11,717 -
+*more*, not fewer. TripoSR interpolates colour across the surface whatever the
+input's palette was, so no concept choice reduces it. And the final cells were
+palette-locked to 24 colours either way, so **palette count was never the
+defect** - the taste-gate section's framing of "muddy" as a colour problem is
+superseded here.
+
+### The defect separates into three causes, only one of which is fatal
+
+| cause | verdict |
+|---|---|
+| palette too large | **not a cause.** Both pipelines end at exactly 24 opaque colours |
+| no lighting | **real, and partly fixable.** Measured luminance range across all 8 views: **1-144 of 255** - the renders used 56% of the range, because TripoSR bakes already-shaded colour and the rasteriser adds no light. A shared stretch over the figure recovered the lit views |
+| the unseen side is invented | **dominant, and not fixable at render time.** Missing information, not missing contrast |
+
+The lift must use **one shared mapping across all eight views**, computed over
+`alpha > 0` only. Per-view normalisation would make the character change
+brightness as it turns - the same class of defect the shared palette and the
+pinned min-scale exist to prevent.
+
+### Quality degrades with angular distance from the input view
+
+With the front identified correctly (see the azimuth note below), the eight
+cells read: front and both front-quarters **usable** - readable face, pale
+hood, red sash, staff; profiles middling; back and back-quarters dark and
+mushy. That is exactly what single-image reconstruction predicts, and it is
+why the invented-back cause dominates.
+
+**So the gap is much smaller than the zombie implied, and the dominant
+remaining cause has a fix that already exists in this repo**: the 2D lane
+produces eight consistent `dir_*.png` turnaround views for free, which is
+precisely the multi-view input that removes invented geometry. Model choice is
+the blocker - no confirmed open multi-view-to-mesh was found that fits 12 GB -
+so that is a research pass, not a download.
+
+**It does not unblock sprites.** Action frames need posing, posing needs a
+rig, and the rig gate is closed. The end-to-end deliverable is still **static
+8-direction objects**, which need no rig and which the `txt2img`+cutout prop
+route cannot produce.
+
+### The azimuth mapping must be DERIVED, not offset - this is the third miss
+
+`preview_render.py` applied `+90` after the zombie's coverage numbers came out
+the wrong way round. On this mesh that offset was **180 degrees wrong**:
+`dir_n` held the face, the staff in the figure's right hand and the talisman
+on its left, while `dir_s` was the hooded back. TripoSR's output orientation
+depends on its input, so **a hardcoded offset is wrong by construction.**
+
+Counting 0005's own "Azimuth mapping: checked, broken, fixed", the zombie
+correction, and this, the project has now got this wrong three times. The
+principled fix is cheap and already half-written: the concept image **is** the
+front view by definition, and `inspect_mesh.silhouette_iou` already scores a
+mesh projection against a source image. Score all eight, call the best match
+`s`, derive the rest.
+
+### Incidentals
+
+- **The thin staff survived**, which was the stated risk for this subject. Of
+  113,652 faces, the 8 dropped stray components (292 faces) were the
+  talisman's chain, not the staff - it renders clearly, gem included, in six
+  of eight views.
+- Warm CPU cost on a 113k-face mesh: load 91.1 s, infer 17.4 s, marching
+  cubes 22.8 s.
 
 ## Off-card: the finding worth keeping regardless
 
@@ -335,11 +423,19 @@ shared with them.
 
 If you extend it, the order that wastes least GPU is:
 
-1. **Pixel-art concept through the render path** - the cheapest unanswered
-   question, and it gates everything else.
-2. **Why one side collapses** in the reconstruction-to-skeleton step. It is
+1. ~~**Pixel-art concept through the render path**~~ - **done 2026-10-24**,
+   see above. Palette was not the defect; lighting and invented geometry are.
+2. **Derive the front azimuth per mesh** rather than offsetting. Cheapest item
+   on this list, and it has now been got wrong three times.
+3. **Multi-view reconstruction from the existing eight `dir_*.png`.** Attacks
+   the dominant remaining render defect using input the 2D lane already
+   produces for free. Needs a model that fits 12 GB; none confirmed.
+4. **bpy toon render with a key light and an outline pass.** Better justified
+   than it was - the 1-144 luminance measurement shows lighting is a real
+   cause, and outlines are most of what makes a sprite read at 48px.
+5. **Why one side collapses** in the reconstruction-to-skeleton step. It is
    consistent across two characters and unexplained.
-3. **AniGen** only after (1) - it generates skeleton and geometry jointly
+6. **AniGen** last - it generates skeleton and geometry jointly
    rather than inferring a skeleton from a reconstruction, which is the one
    mechanism that attacks the measured failure, but it is reported at 18 GB+
    VRAM against a 12 GB card and its licence has not been read.
