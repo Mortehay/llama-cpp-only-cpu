@@ -62,6 +62,19 @@ The 48x64 run reproduced the baseline's pinned `sheet_scale` exactly
 `images/_cellsize/compare.png`: at 48x64 the staff is a brown smear and there
 is no face; at 96x128 both read.
 
+### Palette was ruled out twice, from two directions
+
+Independently of this, [0016](0016-rig-gate-retest-and-off-card-3d.md)'s
+pixel-art concept test concluded *"palette was never the defect"* for the 3D
+lane, on the grounds that both pipelines end at exactly 24 opaque colours.
+The 2D measurement agrees from the other side: palette size made no
+difference to identity at 48x64 across 24, 48 and 96 colours. Two pipelines,
+two methods, same answer - **do not spend a third run on colour count.**
+
+That ADR's other finding, flat lighting from a rasteriser that adds none,
+is specific to rendering views off a TripoSR mesh. It does not transfer
+here: the editor returns already-lit images.
+
 ### No quant touches it
 
 Q3_K_S tripled closeness to the concept at 512 - masked colour distance
