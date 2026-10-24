@@ -422,18 +422,43 @@ fragment of it.
   near-symmetric front view, so the mirror maps it onto itself. The back
   quarters are fine (`nw` is a correct mirror of `ne`). Unfixed - but a
   candidate hint now exists, see below.
-- **A quarter-view hint that WORKS has been measured, and is deliberately not
-  wired in** (`scripts/try-quarter-hints.py`, 2026-10-22). Appending
-  `", halfway between front and profile"` to the front-quarter azimuths moved
-  `se` from a fifth of the way round (0.22 on the front->profile path) to
-  0.45, with framing preserved, and the turn is visible at full size. Two
-  other wordings failed: one merely ZOOMED (figure 1.62x, a close-up the
-  `close_up` check would flag) while scoring the *largest* raw pixel
-  difference of all - which is why **`|s-se|` alone must never be the
-  metric**; read it beside the figure fraction and the path position.
-  Not adopted because it is one subject on one seed, and because `sw` does
-  not become a clean mirror of `se` under it. Validate on two more subjects
-  and two seeds before editing `AZIMUTH_HINTS`.
+- **The quarter-view hint was validated and REJECTED - it overshoots**
+  (`scripts/try-quarter-hints.py`; candidate run 2026-10-22, validation
+  2026-10-24 on 2 subjects x 2 seeds, default Q2_K). Appending
+  `", halfway between front and profile"` to the front-quarter azimuths moves
+  `se` off the front view on **4 of 4** subject/seed pairs - the direction is
+  not in doubt. It lands in the wrong place.
+
+  | subject/seed | `se_frac` control -> hint | `sw` a true mirror? |
+  |---|---|---|
+  | 212d56d7 @1916017834 | 0.526 -> 0.754 | yes -> **no** |
+  | 212d56d7 @4242 | 0.348 -> **0.859** | no -> yes |
+  | 2ff8af36 @1916017834 | 0.272 -> 0.642 | no -> no |
+  | 2ff8af36 @4242 | 0.268 -> 0.682 | no -> yes |
+
+  A three-quarter view is ~0.5 on the front->profile path. The hint lands
+  **0.642-0.859**, so at the top of that range `se` is effectively a PROFILE
+  and reads as a duplicate of `e` - trading "se looks like the front" for
+  "se looks like the side". A hint is unconditional, and the first row shows
+  the cost: that pair was **already a correct three-quarter at 0.526** and
+  the hint pushed it to 0.754, breaking its `sw` mirror in the process.
+  Mirroring is not fixed either: 1 of 4 before, 2 of 4 after, which is noise
+  at this sample size.
+  - **The earlier figures in this note were wrong.** It recorded
+    "0.22 -> 0.45"; the run's own JSON says **0.272 -> 0.642**, and a
+    byte-identical re-run in 2026-10-24 reproduced 38.72 / 0.642 exactly. The
+    pipeline is deterministic here, so a number that does not reproduce is a
+    transcription error, not noise.
+  - **The collapse is NOT universal**, which one subject could never show:
+    control `se_frac` ranges **0.268-0.526** across subject and seed. Some
+    sheets already have a usable front quarter. Any fix has to not damage
+    those, which is precisely what this wording fails.
+  - Next wording to try should aim **weaker**, targeting 0.5 rather than
+    exceeding it. Two earlier wordings failed the other way: one merely
+    ZOOMED (figure 1.62x, a close-up the `close_up` check would flag) while
+    scoring the *largest* raw pixel difference of all - which is why
+    **`|s-se|` alone must never be the metric**; read it beside the figure
+    fraction and the path position.
 - **The camera clause is NOT the cause, and the obvious fixes are all dead.**
   Measured on one known-good left-facing `dir_w` at the action stage's own
   `angles_scale=0.4`, with the real side-family pose, four variants: the
