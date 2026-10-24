@@ -583,7 +583,7 @@ function Lightbox({
       }}
     >
       <div className="panel">
-        <div className="bar">
+        <div className="toolbar">
           <span>
             {nat ? `${nat.w} x ${nat.h}` : 'loading...'}
             {nat && ` · ${Math.round(scale * 100)}%`}
