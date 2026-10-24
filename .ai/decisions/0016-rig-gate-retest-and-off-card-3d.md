@@ -314,8 +314,24 @@ check reported one already running.
 ## Reproducing or extending this
 
 Artefacts are under `images/_rig_gate/`: the T-pose and rest concepts, the
-`.obj` meshes, the `_col.glb` coloured meshes, the `_skel.fbx` skeletons, the
-8-azimuth renders in `render_zombie/`, and both comparison strips.
+`.obj` meshes, the `_col.glb` coloured meshes, the `_skel.fbx` skeletons (all
+three, control included), the 8-azimuth renders in `render_zombie/`, and both
+comparison strips. 21 MB in total, and **verified present on 2026-10-24**,
+after the reclaim below.
+
+**The two container images are NOT.** `mesh-worker` (22.3 GB) and
+`rig-worker` (25.2 GB) were the "two 20-GB-class experiment images" in
+[0018](0018-disk-retention-is-a-policy.md) and were deleted on 2026-10-24 -
+this spike is most of why C: went from 108.7 GB free to 16.3 GB in a day. So
+any re-run starts with **two builds, 484 s and 688 s**, and the ephemeral
+pieces went with the containers exactly as warned above: the
+`qi_skeleton_ar_256_cpu.yaml` task config and the weights symlink both lived
+in image state and no longer exist. The checkpoints survive in `/models`,
+and UniRig re-fetches its own regardless.
+
+Budget ~50 GB of disk before starting, and read 0018's ordering rule first -
+delete dead images BEFORE `builder prune`, or the prune nets out layers still
+shared with them.
 
 If you extend it, the order that wastes least GPU is:
 
