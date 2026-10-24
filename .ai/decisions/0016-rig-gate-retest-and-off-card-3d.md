@@ -301,7 +301,94 @@ Known weakness: silhouette IoU is front/back ambiguous for a robed figure. The
 separation check catches a gross error but not a clean swap - the giveaway is
 a face on the back of the head, so LOOK rather than trust the number.
 
-### Where this leaves the lane
+### What the first quadruped exposed, and most of it is the 2D lane
+
+A wolf was the first non-humanoid through this lane (2026-10-25). Everything it
+hit is worth more than the sprite was.
+
+### `concept.judge` refuses anything wider than tall
+
+A clean, isolated, border-clear wolf concept was refused by `POST /api/jobs`:
+
+> `concept does not look like an isolated character: not taller than wide
+> (aspect 0.91) (coverage 39%, border 0%, aspect 0.91)`
+
+So **a quadruped cannot enter the 2D conveyor at all** without
+`concept_check=false`. The message names the bypass but not the reason, and
+the reason is that the gate encodes "a character is taller than wide". That is
+true of the humanoids the conveyor was built on and false of most animals.
+
+It also explains something that read as a data accident: scanning twelve jobs
+for sources that pass the 3D lane's input gate returned **twelve humanoids**.
+Not coincidence - creatures are refused upstream. The prop route
+(`txt2img` + cutout) exists because props cannot go through `POST /api/jobs`;
+a wolf falls in the same gap, too animal for the character gate and too
+animate for the prop route.
+
+### A quadruped's turnaround collapses to two viewpoints
+
+Measured by matching each view's silhouette against the mesh: the wolf's five
+colour views resolved to **two distinct angles** - front and left both at 260
+degrees, back and q1 both at 80, q2 at 230 grouping with 260. Eight directions
+requested, two delivered.
+
+Colour coverage was still 94%, which is why nobody would notice: two opposite
+profiles cover most of a laterally symmetric animal. The OUTCOME was fine and
+the INPUT was impoverished. This is adjacent to the documented front-quarter
+collapse (`|s-se|` 12.8) but worse, and nothing measured it before.
+
+### The vignette was the concept's, not the editor's
+
+Job `f841ec70`'s turnaround renders the wolf inside a cream disc with a dark
+rim - the "wolf medal". A fresh concept generated with `plain white
+background` and `cutout: true` produced a **clean turnaround with no
+vignette**, so this is not systemic editor behaviour. Worth knowing because
+the opposite conclusion would have made every turnaround suspect.
+
+The input gate still earns its place: that concept existed, shipped a
+medallion to every consumer of its views, and BiRefNet could not rescue it
+(cleared the disc on 3 of 5 views, kept it on 2, making the spread worse).
+
+### A quadruped needs a raised camera and a landscape cell
+
+Both measured, both now flags rather than assumptions:
+
+| | wolf | mage |
+|---|---|---|
+| cell utilisation at 48x64 | 64% (96% of width, 67% of height) | 89% |
+| at 64x48 | 73% | n/a |
+
+And at a dead-level camera a quadruped seen along its own length shows head,
+chest and two front legs stacked vertically - it reads as a figure standing
+upright. The mesh is correct; the camera is wrong for the subject. Every
+reference sheet this project was built against uses a raised three-quarter
+camera.
+
+## The rule this lane keeps re-learning: do not measure against the contaminated region
+
+Four separate times in one session, a check was written to compare a thing
+against something the defect had already spoiled, and each time it silently
+measured the wrong quantity:
+
+| check | wrong reference | correct reference |
+|---|---|---|
+| mesh fitness (0004) | the grey-composited `*_input.png`, 100% opaque | the keyed source |
+| cell fit | the FITTED sprite's aspect - 46x43, square only because 46 was all the width there was | width-fill against height-fill |
+| plinth detection | the bottom band's own median - if the plinth fills the band, the median IS the plinth | the shins, the region just above |
+| plinth axis | `argmax(ptp)`, which for a quadruped is nose-to-tail | the derived up axis |
+
+`strip_ground_patch` learned it first and `sheet_qc` exists in its current form
+because of it - "the fitted cell cannot answer the question". It is the single
+most repeated mistake in this project's history. **Before writing a check, ask
+what the defect being hunted would do to the reference.**
+
+A related one, same session: the azimuths were searched as three free
+parameters for a problem with ONE. The views come from a single turnaround, so
+their relative angles are fixed and only the global offset and handedness are
+unknown. Free search let them land in arrangements that cannot physically
+exist. **Count the free parameters before searching.**
+
+## Where this leaves the lane
 
 Against the 2D production cells the gap is now a difference of degree, not of
 kind: the 2D strip is still crisper with more contrast and a more readable
