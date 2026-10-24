@@ -30,11 +30,16 @@ export default function Training() {
   const [started, setStarted] = useState<string | null>(null)
   const [fullRetrain, setFullRetrain] = useState(false)
 
+  // Always on, two speeds. Gating the interval on `active` self-latches: the
+  // flag comes from the data the poll fetches, so with no interval running
+  // nothing can ever raise it, and a run started from anywhere but this tab
+  // (or before it was opened) never appeared. Same bug, and same fix, as
+  // Activity.tsx - see the tripwire in .ai/project-context.md.
   const active = runs.data?.items.some((r) => r.status === 'running' || r.status === 'queued')
   usePoll(() => {
     runs.reload()
     ready.reload()
-  }, 5000, !!active)
+  }, active ? 5000 : 30000, true)
 
   async function start() {
     setBusy(true)

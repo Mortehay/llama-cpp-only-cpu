@@ -28,7 +28,7 @@ here.** `.ai/project-context.md` remains the authority on current state.
 |---|---|
 | Current state, hardware, environment, known-broken | `.ai/project-context.md` |
 | A word means three things — "core", "task", "map"; also the four kinds of "model" on disk and the four answers to "what models does this have" | `.ai/domain.md` |
-| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0016) |
+| Why a hard-to-reverse choice was made | `.ai/decisions/` (0001–0017) |
 | Model choice, LoRA rules, trigger words | `.ai/decisions/0002` |
 | The something2 integration contract | `.ai/specs/something2-provider/contract.md` |
 | World specs (the one synchronous surface) | `.ai/specs/worlds/contract.md` |
