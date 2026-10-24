@@ -216,8 +216,60 @@ def _gate_views(clears: dict, a) -> None:
 # --- geometry helpers ---------------------------------------------------
 
 def _up_axis(v):
-    """The tallest extent. Same rule inspect_mesh uses; never hardcoded."""
+    """Fallback only: the tallest extent. Prefer `_derive_pose`.
+
+    True for a standing biped and FALSE for anything longer than it is tall -
+    a quadruped, a prop lying down, or a reconstruction that came out as a
+    disc. `_derive_pose` searches instead of guessing, and is what the stages
+    use when views are available; this remains for the no-views case.
+    """
     return int(np.argmax(np.ptp(v, axis=0)))
+
+
+def _derive_pose(v, views, res, sweep):
+    """Search (up axis, azimuth) jointly against the source views.
+
+    WHY THIS REPLACES A HEURISTIC
+    Up was `argmax(ptp)` - the tallest extent. That is a guess, correct for a
+    standing humanoid and wrong for a quadruped (a wolf is longer than it is
+    tall) or for a reconstruction that came out as a plate. It cost a session
+    to learn that orientation guesses fail silently and look like bad models.
+
+    The source views are upright by construction and they are the ground
+    truth for where the cameras were, so BOTH unknowns come from the same
+    match. 3 axes x 36 azimuths is 108 silhouettes - cheap, and it makes the
+    quadruped case correct by construction rather than by luck.
+
+    Returns (up, {view: (azimuth, iou)}).
+    """
+    refs = {n: _fit_mask(np.asarray(im)[..., 3] > 8, res)
+            for n, im in views.items()}
+    cand = list(range(0, 360, sweep))
+    best_up, best_score, best_assign = None, -1.0, {}
+    for up in range(3):
+        a, b = [i for i in range(3) if i != up]
+        sil = {d: _silhouette(v, up, a, b, d, res) for d in cand}
+        assign, total = {}, 0.0
+        for n, ref in refs.items():
+            hi, hid = -1.0, None
+            for d in cand:
+                s = sil[d]
+                if s is None or ref is None:
+                    continue
+                u = np.logical_or(s, ref).sum()
+                if u and (iou := np.logical_and(s, ref).sum() / u) > hi:
+                    hi, hid = iou, d
+            assign[n] = (hid, hi)
+            total += max(hi, 0.0)
+        score = total / max(len(refs), 1)
+        print(f"  up={'xyz'[up]}: mean IoU {score:.3f}")
+        if score > best_score:
+            best_up, best_score, best_assign = up, score, assign
+    print(f"  up axis derived as {'xyz'[best_up]} (mean IoU {best_score:.3f})")
+    for n, (d, iou) in best_assign.items():
+        print(f"  {n:5s} -> azimuth {d:3d} deg (IoU {iou:.3f})")
+    _gate_separation(best_assign)
+    return best_up, best_assign
 
 
 def _project(v, up, a, b, deg):
@@ -260,23 +312,8 @@ def _silhouette(v, up, a, b, deg, res):
     return _fit_mask(ndimage.binary_fill_holes(m), res)
 
 
-def _derive_azimuths(v, up, a, b, views, res, sweep):
-    """{view name: (azimuth, iou)} by matching silhouettes to the sources."""
-    cand = list(range(0, 360, sweep))
-    sil = {d: _silhouette(v, up, a, b, d, res) for d in cand}
-    out = {}
-    for name, im in views.items():
-        ref = _fit_mask(np.asarray(im)[..., 3] > 8, res)
-        best, bestd = -1.0, None
-        for d in cand:
-            s = sil[d]
-            if s is None or ref is None:
-                continue
-            u = np.logical_or(s, ref).sum()
-            if u and (iou := np.logical_and(s, ref).sum() / u) > best:
-                best, bestd = iou, d
-        out[name] = (bestd, best)
-        print(f"  {name:5s} -> azimuth {bestd:3d} deg (IoU {best:.3f})")
+def _gate_separation(out: dict) -> None:
+    """Front and back must resolve to roughly opposite azimuths."""
     if "front" in out and "back" in out and None not in (out["front"][0],
                                                          out["back"][0]):
         gap = abs(out["front"][0] - out["back"][0]) % 360
@@ -300,7 +337,6 @@ def _derive_azimuths(v, up, a, b, views, res, sweep):
                 f"rather than a figure - which happens when an enclosed "
                 f"backdrop survives keying. Check the view stage's "
                 f"transparency numbers, and see ADR 0004 core 82.")
-    return out
 
 
 # --- colour -------------------------------------------------------------
@@ -322,9 +358,7 @@ def stage_colour(a):
             print(f"  dropped {len(parts) - len(keep)} stray component(s), "
                   f"{before - len(mesh.faces)} faces")
     v = np.asarray(mesh.vertices, float)
-    up = _up_axis(v)
-    ax, bx = [i for i in range(3) if i != up]
-    print(f"{os.path.basename(a.mesh)}: {len(v)} verts, up={'xyz'[up]}")
+    print(f"{os.path.basename(a.mesh)}: {len(v)} verts")
 
     views = {}
     for n in ("front", "left", "back", "q1", "q2"):
@@ -333,7 +367,8 @@ def stage_colour(a):
             views[n] = Image.open(p).convert("RGBA")
     if not views:
         raise SystemExit(f"no views in {a.views}")
-    assign = _derive_azimuths(v, up, ax, bx, views, a.res, a.sweep)
+    up, assign = _derive_pose(v, views, a.res, a.sweep)
+    ax, bx = [i for i in range(3) if i != up]
 
     vn = np.asarray(mesh.vertex_normals, float)
     acc = np.zeros((len(v), 3))
@@ -446,8 +481,6 @@ def stage_render(a):
     mesh = trimesh.load(a.mesh, force="mesh")
     v = np.asarray(mesh.vertices, float)
     f = np.asarray(mesh.faces, int)
-    up = _up_axis(v)
-    ax, bx = [i for i in range(3) if i != up]
     vc = getattr(mesh.visual, "vertex_colors", None)
     col = None
     if vc is not None and len(vc) == len(v):
@@ -458,19 +491,28 @@ def stage_render(a):
         if len(np.unique(rgb, axis=0)) > 4:
             col = rgb.astype(float) / 255.0
     print(f"{os.path.basename(a.mesh)}: {len(v)} verts, "
-          f"{'coloured' if col is not None else 'normal-shaded'}, "
-          f"up={'xyz'[up]}")
+          f"{'coloured' if col is not None else 'normal-shaded'}")
 
     # The FRONT azimuth is derived, so the eight emitted directions are
     # labelled against the source view rather than against a guess.
+    # Both unknowns from the same match when views are available. Without
+    # them, fall back to the tallest-extent guess and say so - a caller that
+    # renders without views is asking for an unverified orientation.
     front = 0
-    fp = os.path.join(a.views, "front.png") if a.views else None
-    if fp and os.path.isfile(fp):
-        ref = {"front": Image.open(fp).convert("RGBA")}
-        got = _derive_azimuths(v, up, ax, bx, ref, 192, a.sweep)["front"][0]
-        if got is not None:
-            front = got
-            print(f"  front azimuth derived as {front} deg")
+    views = {}
+    for n in ("front", "left", "back"):
+        fp = os.path.join(a.views, f"{n}.png") if a.views else None
+        if fp and os.path.isfile(fp):
+            views[n] = Image.open(fp).convert("RGBA")
+    if views:
+        up, assign = _derive_pose(v, views, 192, a.sweep)
+        if assign.get("front", (None,))[0] is not None:
+            front = assign["front"][0]
+    else:
+        up = _up_axis(v)
+        print(f"  no views given - up GUESSED as {'xyz'[up]} from the tallest "
+              f"extent, azimuth 0. Pass --views to derive both.")
+    ax, bx = [i for i in range(3) if i != up]
 
     os.makedirs(a.out, exist_ok=True)
     for i, d in enumerate(DIRECTIONS):
