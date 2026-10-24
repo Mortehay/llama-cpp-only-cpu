@@ -531,42 +531,56 @@ dest = "image-gguf/transformers"
 bytes = 16852417120
 used_by = ["qwen_edit.GGUF_FILE via QWEN_EDIT_GGUF_FILE (opt-in, needs QWEN_GROUP_OFFLOAD=1)"]
 why = """
-The editor quant that finally WINS, and the first one that does not pay for a
-gain with a regression somewhere else. 15.70 GiB - more than the card has - so
-it exists only because `QWEN_GROUP_OFFLOAD=1` streams the transformer from host
-RAM. Without that flag it cannot load at all.
+An editor quant measured through a FULL sheet and deliberately NOT adopted.
+15.70 GiB - more than the card has - so it exists only because
+`QWEN_GROUP_OFFLOAD=1` streams the transformer from host RAM. Without that
+flag it cannot load at all.
 
-Gated on a 48-cell subset rather than a whole sheet (`scripts/quant-ab.py`),
-against the Q2_K baseline 2ff8af36 - same concept, same seed 1916017834, same
-(action, direction, frame) cells, first attempts on both sides:
+A 48-cell subset gate (`scripts/quant-ab.py`) said it won, and a full 7-action
+sheet against the Q2_K baseline 2ff8af36 - same concept, same seed, 210 cells
+- says the picture is narrower than that. **Post-redraw, which is what ships:**
 
-  flagged              28  ->  12
-  close_up             14  ->   1
-  border                9  ->   0
-  identity             15  ->   5
-  identity median  0.02025 ->  0.0184
-  identity max      0.2165 ->  0.0705
-  facing                9  ->   8      unchanged - the point
-  backdrop              2  ->   2
+                  Q2_K   Q6_K
+  flagged           27     31      WORSE on the headline
+  identity          22     10      the one durable win
+  facing             8     21      see below
+  close_up           3      3      equal - the subset gap closed
+  border             1      0
+  backdrop           1      1
+  sheet_scale  0.089844  0.092184  +2.6% linear. Not visible.
+  build time      3h07     6h51    2.2x
 
-**`close_up` 14 -> 1** is the symptom the owner reported as "at attack option
-it looks like the llm increased the image, but it does not fit the border box
-and was cut". **`facing` is flat**, which is what separates this from Q3_K_S:
-that quant improved identity too and then went 21 -> 48 on facing, which is
-why it was rejected. Read both stanzas before touching the default.
+**The subset overstated it twice, and both ways are worth knowing.**
+First-attempt `close_up` was 26 -> 4, but the redraw loop takes Q2_K to 3 as
+well, so that advantage is a SPEED saving, not a quality one - a gate that
+compares first attempts cannot see an advantage the redraw loop also reaches.
+And subset `facing` read flat (9 -> 8) where the sheet reads 8 -> 21.
 
-Cost: 48 cells in 55 min, 68.8 s/cell all-in, against ~30.1 s/cell for Q2_K
-resident. But it flags 25% of cells where Q2_K flags 58%, so there is less
-than half as much to redraw - and redraw rounds were a large share of the
-3h07 baseline. The sheet-level cost is therefore NOT the 2.2x the per-cell
-figure suggests; measure it rather than quoting that ratio.
+**Most of that facing jump is the CHECK waking up, not the sprites getting
+worse.** `facing` only fires when the cell's lean AND its turnaround
+reference both exceed LEAN_MIN; a weak reference leaves it dormant and the
+cell passes whichever way it faces. Q6_K sharpens the references (median
+|view_lean| 0.1816 -> 0.2026), so cells Q2_K never examined start being
+judged. Pairing the sheets cell by cell on first attempts: of 210, **141 were
+active in both (17 -> 25 fails), 24 were dormant under Q2_K and active under
+Q6_K (9 of them fail), 12 went the other way (4 had failed)**. So the real
+regression is about +8, not +13.
 
-VRAM is no longer the binding constraint on this lane: 10.7 GiB free after
-placement, 10.9 GiB at the end of the pass.
+**Why it is not the default anyway: it does not make sprites bigger.**
+`close_up` 26 -> 4 on first attempts was expected to raise the pinned
+sheet-wide scale, because that scale is the MINIMUM fit over every cell. It
+moved 2.6%. The three bloated cells that survive still bind it. The owner's
+actual complaint - "nothing similar with template image" - is bounded by the
+48x64 cell, not by the quant (`.ai/decisions/0019`), and no quant has ever
+moved it: Q3_K_S tripled closeness at 512 and changed 48x64 by 0.1322 ->
+0.1196.
 
-NOT VALIDATED AT SHEET LEVEL. A subset cannot set the sheet-wide scale, which
-is the MINIMUM fit over every cell - one bloated cell still shrinks all 336.
-Only a full build answers the final sprite size.
+**When to revisit:** if the cell grows to 96x128, the identity win (22 -> 10)
+becomes more visible than it is at 48x64, so re-evaluate this quant AFTER
+that change rather than before it.
+
+VRAM is not the constraint on this lane: 10.7 GiB free after placement,
+10.9 GiB at the end of the pass. Wall clock is.
 """
 skipping = """
 Nothing breaks: the default is still Q2_K from the cache repo. You lose the

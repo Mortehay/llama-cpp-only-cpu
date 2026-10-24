@@ -34,6 +34,20 @@ The sheet-wide scale is the MINIMUM fit over ALL cells, so a subset cannot
 predict the final sprite size - and `identity` is a colour histogram and is
 spatially blind (sheet-quality contract 7). A win here earns a full sheet;
 it is not itself the adoption decision.
+
+**IT COMPARES FIRST ATTEMPTS, AND THE REDRAW LOOP CAN ERASE A FIRST-ATTEMPT
+WIN.** Measured on Q6_K, 2026-10-24: this gate reported `close_up` 14 -> 1,
+and the full sheet's first attempts agreed (26 -> 4) - but after three redraw
+rounds BOTH quants finished at 3, because a re-roll on a new seed fixes a
+close-up whoever rendered it. That advantage was a SPEED saving, not a
+quality one. Comparing first attempts is still the right choice (scoring a
+redrawn cell against a first attempt measures the redraw), but read a win
+here as "fewer redraws needed" until a full sheet says otherwise.
+
+The same run showed it can under-read a regression too: subset `facing` was
+9 -> 8, the sheet was 8 -> 21. Much of that is the `facing` check waking up
+on cells it had been dormant for - see the Q6_K stanza in `models.toml` -
+but the subset gave no hint either way.
 """
 
 import argparse

@@ -496,7 +496,36 @@ fragment of it.
   for 13 GB". Every offload mode passed only because the transformer was not
   fully resident at that moment.
 
-**The editor quant — Q3_K_S exists, fits, and is NOT the default**
+**The editor quant — three have been measured and Q2_K is still the default**
+- **Q6_K ran a full sheet and is NOT adopted** (2026-10-24, needs
+  `QWEN_GROUP_OFFLOAD=1`; it is 15.70 GiB). Against the Q2_K baseline
+  `2ff8af36`, same concept and seed, 210 cells, **post-redraw**: flagged
+  27 → **31**, identity 22 → **10**, facing 8 → **21**, close_up 3 → 3,
+  border 1 → 0, build 3h07 → **6h51**, `sheet_scale` 0.089844 → **0.092184**.
+  - **It does not make sprites bigger**, which was the reason to want it.
+    First-attempt `close_up` 26 → 4 was expected to lift the pinned
+    sheet-wide scale; it moved **2.6% linear**, because that scale is the
+    MINIMUM over every cell and the 3 surviving bloated cells still bind it.
+  - **A 48-cell gate overstated it in both directions.** `close_up` read
+    14 → 1, but the redraw loop takes Q2_K to 3 as well — so that was a
+    speed saving, not a quality gain. And subset `facing` read flat (9 → 8)
+    against the sheet's 8 → 21. Full reasoning in the `models.toml` stanza
+    and `scripts/quant-ab.py`.
+  - **Identity halving (22 → 10) is the one durable win** and survives the
+    redraws. Worth revisiting **after** a cell-size change (`0019`), because
+    at 96x128 that gain is visible where at 48x64 it is not.
+- **"facing got worse" may mean the CHECK woke up.** It fires only when the
+  cell's lean AND its turnaround reference both exceed `LEAN_MIN` (0.04); a
+  weak reference leaves it **dormant** and the cell passes whichever way it
+  faces. A sharper quant strengthens references (median |view_lean| 0.1816 →
+  0.2026) and starts judging cells that were never judged. Pairing the two
+  sheets on first attempts: 141 cells active in both (17 → 25 fails), **24
+  dormant under Q2_K became active under Q6_K** (9 fail), 12 went the other
+  way (4 had failed). So the real regression is ~+8, not +13. **57 of 210
+  baseline cells had a dormant facing check** — "facing: 0" has never meant
+  "every cell faces correctly".
+
+**Q3_K_S exists, fits, and is NOT the default either**
 - The OOM on record (~24 MiB short, mid-denoise) is **Q3_K_M's**, a larger
   file. **Q3_K_S fits**: 806 MiB headroom through a full 7-action sheet. Do
   not read the Q3_K_M measurement as ruling out every Q3.
