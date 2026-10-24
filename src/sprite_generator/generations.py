@@ -363,7 +363,12 @@ def _iso(v) -> str | None:
 
 def _activity_row(r: dict) -> dict:
     return {
+        # WHO ASKED: api | internal | unknown. Not "which table owns the
+        # artefact", which is what it meant before 0017 - and is why there is
+        # no longer a `ui` value. See migration 022.
         "source": r["source"],
+        # WHAT RAN IT: job (a `jobs` row owns the work, 202/poll) | sync.
+        "lane": r["lane"],
         "id": r["id"],
         "kind": r["kind"],
         "name": r["name"],
@@ -393,6 +398,12 @@ def _activity_row(r: dict) -> dict:
 
 
 AUDIO_KINDS = ("music", "ambience", "sfx")
+
+# The kinds whose `model` is a BRAIN rather than an image checkpoint. One kind
+# today, named rather than inlined because the two rosters are kept separate
+# everywhere else in this service (the Models tab has three tables on purpose)
+# and a second text kind would otherwise be filed as an image model silently.
+BRAIN_KINDS = ("text",)
 _AUDIO_FIELDS = ("style", "seed", "bpm", "time_signature", "duration_s",
                  "sample_rate", "loop_start", "loop_end", "seam_rms_jump_db",
                  "author")
@@ -483,12 +494,22 @@ def _attach_progress(cur, rows: list[dict]) -> None:
 # call is already on the worker by the time the row exists.
 ACTIVE = ("queued", "running")
 
+# The two axes `activity_v` reports, named here so the filter validation and
+# the view cannot disagree. `source` is WHO ASKED and `lane` is WHAT RAN IT;
+# before 0017 one column tried to be both and was neither. The old `ui` value
+# is gone: this browser authenticates with an ordinary API key, so "which
+# browser" is not a question this service can answer - `requested_by` is.
+SOURCES = ("api", "internal", "unknown")
+LANES = ("job", "sync")
+
 
 @router.get("/api/activity")
-def list_activity(source: str | None = Query(None, description="api | job | ui"),
+def list_activity(source: str | None = Query(None, description="api | internal | unknown"),
+                  lane: str | None = Query(None, description="job | sync"),
+                  requested_by: str | None = Query(None, description="exact API key name"),
                   status: str | None = Query(None),
                   kind: str | None = Query(None),
-                  model: str | None = Query(None, description="exact image model string"),
+                  model: str | None = Query(None, description="exact model string"),
                   q: str | None = Query(None, description="substring of prompt"),
                   limit: int = Query(60, ge=1, le=500),
                   offset: int = Query(0, ge=0),
@@ -508,12 +529,25 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
 
     where, params = [], []
     if source:
-        if source not in ("api", "job", "ui"):
+        if source not in SOURCES:
             raise HTTPException(status_code=400,
                                 detail=f"unknown source {source!r}; expected "
-                                       f"api, job or ui")
+                                       f"one of {', '.join(SOURCES)}. `ui` was "
+                                       f"removed in 0017 - the browser calls "
+                                       f"with an API key like any other "
+                                       f"consumer, so filter by requested_by")
         where.append("source = %s")
         params.append(source)
+    if lane:
+        if lane not in LANES:
+            raise HTTPException(status_code=400,
+                                detail=f"unknown lane {lane!r}; expected "
+                                       f"one of {', '.join(LANES)}")
+        where.append("lane = %s")
+        params.append(lane)
+    if requested_by:
+        where.append("requested_by = %s")
+        params.append(requested_by)
     if status:
         where.append("status = %s")
         params.append(status)
@@ -551,16 +585,40 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
             _attach_audio(cur, items + active)
             _attach_progress(cur, items + active)
 
-            cur.execute("SELECT source, status, count(*) AS n FROM activity_v "
-                        "GROUP BY source, status ORDER BY source, status")
+            cur.execute("SELECT source, lane, status, count(*) AS n "
+                        "FROM activity_v GROUP BY source, lane, status "
+                        "ORDER BY source, lane, status")
             counts = [dict(r) for r in cur.fetchall()]
+
+            # WHO ASKED, as filter options. This replaces the old three-value
+            # source dropdown: the key name is the finest identity this service
+            # has (`describe_caller` explains why the address is not one), and
+            # a fixed enum cannot answer "which of my consumers" - something2
+            # alone holds three keys.
+            cur.execute("SELECT requested_by AS name, source, count(*) AS n "
+                        "FROM activity_v WHERE requested_by IS NOT NULL "
+                        "GROUP BY requested_by, source ORDER BY n DESC, name")
+            principals = [dict(r) for r in cur.fetchall()]
 
             # The model filter's options. Unfiltered, like `counts`: options
             # narrowed by the current filter could not be used to leave it.
-            # Job rows carry no model in the view, so they never appear here.
-            cur.execute("SELECT model, count(*) AS n FROM activity_v "
-                        "WHERE model IS NOT NULL "
-                        "GROUP BY model ORDER BY n DESC, model")
+            # Sheet rows carry no model in the view, so they never appear here.
+            #
+            # `model_kind` SPLITS BRAINS FROM IMAGE CHECKPOINTS. They share one
+            # column and must not share one flat list: `qwen3.6-35b-a3b` is the
+            # single largest value in it (2060 rows) while the column it lands
+            # in is documented as "the image model that drew it - not a
+            # language model". Derived from `kind` here rather than from
+            # `models_status.IMAGE_KINDS`, which omits `edit`, `prop`, `sheet`
+            # and `map_props` - all of which this view produces - and which the
+            # Models tab's own queries depend on.
+            cur.execute("SELECT model, "
+                        "       CASE WHEN kind = ANY(%s) THEN 'brain' "
+                        "            ELSE 'image' END AS model_kind, "
+                        "       count(*) AS n "
+                        "FROM activity_v WHERE model IS NOT NULL "
+                        "GROUP BY model, model_kind ORDER BY n DESC, model",
+                        (list(BRAIN_KINDS),))
             models = [dict(r) for r in cur.fetchall()]
     except psycopg2.Error as e:
         logger.exception("activity listing failed")
@@ -568,7 +626,7 @@ def list_activity(source: str | None = Query(None, description="api | job | ui")
 
     return {"total": total, "limit": limit, "offset": offset,
             "items": items, "active": active, "counts": counts,
-            "models": models}
+            "principals": principals, "models": models}
 
 
 @router.get("/api/entities")

@@ -312,6 +312,39 @@ Owners call it "the actions tab"; translate, do not rename. `actions.py` and
 `frontend/src/tabs/Activity.tsx` explains the choice. It reads the
 `generations` ledger through `activity_v`.
 
+## "Source" on the Activity tab - who asked, not what ran it
+
+Fourth in the series after "core", "task" and "map" - the three this file's own
+notes already count as lost arguments - and the one that has produced three
+defects rather than one wrong change.
+
+**Source** is the **identity of the caller**: `api` (an API key), `internal`
+(work this machine asked itself for - benches, `internal:worlds`,
+`internal:regions`, `internal:audio_styles`), `unknown` (rows that predate
+attribution and can never acquire it).
+
+**Lane** is a different axis and the one most people mean when they say
+"source": whether a `jobs` row owns the work. `job` when `job_id IS NOT NULL`,
+else `sync`. This is the **Job** sense from the table above - a `jobs` row plus
+its 202/poll contract - so do not invent a third word for it.
+
+**What `source` meant before [decisions/0017](decisions/0017-activity-source-is-who-asked.md),
+and still means in any `activity_v` older than it:** which arm of the UNION the
+row came from, i.e. **which table owns the artefact**. That is not a property of
+the caller, which is why `ui` could not mean "this browser" - the browser holds
+an API key, writes a ledger row, and therefore matched the `api` arm. The `ui`
+arm matched only `sprite_images` rows with no ledger row, which since migration
+018 means pre-018 history: 264 rows, newest 2026-09-04, a count that can never
+grow.
+
+**Requested by** is the API key *name*, free text an operator typed when minting
+it. It is the only identity that separates callers on this network - the address
+cannot, because every external request arrives as the docker bridge gateway
+(`generations.describe_caller` records why). So "who asked" is answerable at key
+granularity and no finer, and `api_keys` carries no type column: nothing
+structurally distinguishes the browser's key from a consumer's.
+
+
 ## "Finding" is already taken - use *claim* for the cross-agent log
 
 Reserved before the cross-agent log is built, because this repo has lost this
