@@ -859,3 +859,93 @@ brain. Do not delete the directory wholesale.
 ref = "image-gguf/qwen-image-2.1/qwen_image_2.1_vae_bf16.safetensors"
 why = "0.68 GB, the VAE half of the same sd.cpp bench. Safe to delete."
 
+[[model]]
+name = "hunyuan3d-2mv-dit"
+kind = "hf-cache"
+tier = "optional"
+repo = "tencent/Hunyuan3D-2mv"
+allow = ["hunyuan3d-dit-v2-mv/config.yaml",
+         "hunyuan3d-dit-v2-mv/model.fp16.safetensors"]
+approx_gb = 4.93
+used_by = ["the 3D multiview lane - see decisions/0016"]
+why = """
+Multiview-conditioned shape generation, 1.1B, finetuned from Hunyuan3D-2. The
+reason it is here rather than TripoSR: 0016 measured that single-image
+reconstruction INVENTS the unseen side, that this is the dominant remaining
+render defect, and that it is missing information rather than missing
+contrast - so no render-side fix reaches it. This model takes front/left/back,
+which the turnaround already produces.
+
+Shape only: 6 GB VRAM against the card's 12. The TEXTURE half is deliberately
+not fetched - it lives in the 74.89 GB tencent/Hunyuan3D-2 repo and we colour
+the mesh by projecting our OWN observed views onto it instead, which uses real
+observations rather than hallucinated vertex colour.
+"""
+notes = """
+allow-listed hard. The repo is 29.58 GB because it ships three 1.1B variants
+(standard, guidance-distilled `-fast`, step-distilled `-turbo`) and BOTH a
+.ckpt and a .safetensors for each. This takes one variant, safetensors only:
+4.93 GB of 29.58.
+
+LICENCE: Tencent Hunyuan 3D 2.0 Community License, which does NOT apply in the
+EU, UK or South Korea (the model card sets extra_gated_eu_disallowed). That is
+a territorial restriction, not the non-commercial kind - read it before
+shipping anything built with this.
+"""
+skipping = """
+The multiview 3D lane cannot run. Nothing else uses it: the 2D sprite
+conveyor, the brain, audio and maps are all unaffected.
+"""
+
+[[model]]
+name = "hunyuan3d-shape-vae"
+kind = "hf-cache"
+tier = "optional"
+repo = "tencent/Hunyuan3D-2"
+allow = ["hunyuan3d-vae-v2-0/config.yaml",
+         "hunyuan3d-vae-v2-0/model.fp16.safetensors"]
+approx_gb = 0.43
+used_by = ["the 3D multiview lane - see decisions/0016"]
+why = """
+The shape VAE the mv DiT decodes through. It is NOT in the Hunyuan3D-2mv repo,
+only in the 74.89 GB base repo, so a DiT fetched without this is a model that
+loads and cannot produce geometry.
+"""
+notes = """
+430 MB out of 74.89 GB - the allow-list is doing nearly all the work here.
+Sibling variants exist and are NOT wanted: `-turbo` (407 MB, step-distilled)
+and `-withencoder` (655 MB, only needed to ENCODE an existing mesh, which this
+lane never does).
+"""
+skipping = """
+Same as hunyuan3d-2mv-dit - the two are useless apart.
+"""
+
+[[model]]
+name = "triposr"
+kind = "hf-cache"
+tier = "optional"
+repo = "stabilityai/TripoSR"
+allow = ["config.yaml", "model.ckpt"]
+approx_gb = 1.68
+used_by = ["mesh_worker/mesh.py MODEL_REPO"]
+why = """
+Single-image to mesh, MIT, and the smallest model that gets a SILHOUETTE right
+- which is all that survives at 48px, so 0004 chose it over TRELLIS and
+Hunyuan3D deliberately rather than for lack of ambition.
+
+It is NOT referenced from src/sprite_generator or scripts, which is why the
+manifest test never demanded this stanza: its scanner walks those two trees
+only, and mesh.py lives in src/mesh_worker. Declared anyway, because "on disk
+but undeclared" is exactly the state models.txt used to leave things in.
+"""
+notes = """
+allow-listed to the two files TSR.from_pretrained reads. mesh.py fetches them
+itself with cache_dir=/models rather than going through `make provision`, so
+this entry documents and audits it rather than being its only fetch route.
+"""
+skipping = """
+No image-to-3D. The 3D lane is retired per decisions/0016 - the rigging gate
+failed 0 of 2 with a clean control - so nothing on the live sprite path
+notices.
+"""
