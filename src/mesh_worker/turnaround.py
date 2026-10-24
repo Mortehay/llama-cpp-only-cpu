@@ -245,40 +245,93 @@ def _derive_pose(v, views, res, sweep):
     refs = {n: _fit_mask(np.asarray(im)[..., 3] > 8, res)
             for n, im in views.items()}
     cand = list(range(0, 360, sweep))
-    best_up, best_score, best_assign = None, -1.0, {}
+
+    # THE VIEWS ARE NOT INDEPENDENT. They come from one turnaround, so their
+    # RELATIVE angles are known - front, left and back are 0, 90 and 180 apart,
+    # and the quarters sit at 45 and 135. Only the global offset and the
+    # handedness are unknown.
+    #
+    # Searching each view's azimuth freely let them land in geometrically
+    # impossible arrangements: on the wolf, front 0 and back 260 - 100 degrees
+    # apart - because a quadruped's front and back silhouettes are both narrow
+    # and the matcher cannot tell them apart. Three free parameters invited an
+    # answer that cannot exist. One free parameter cannot produce it.
+    OFFSETS = {"front": 0, "left": 90, "back": 180, "q1": 45, "q2": 135}
+    best = (None, None, None, -1.0)          # up, offset, hand, score
     for up in range(3):
         a, b = [i for i in range(3) if i != up]
         sil = {d: _silhouette(v, up, a, b, d, res) for d in cand}
-        assign, total = {}, 0.0
-        for n, ref in refs.items():
-            hi, hid = -1.0, None
-            for d in cand:
-                s = sil[d]
-                if s is None or ref is None:
-                    continue
-                u = np.logical_or(s, ref).sum()
-                if u and (iou := np.logical_and(s, ref).sum() / u) > hi:
-                    hi, hid = iou, d
-            assign[n] = (hid, hi)
-            total += max(hi, 0.0)
-        score = total / max(len(refs), 1)
-        print(f"  up={'xyz'[up]}: mean IoU {score:.3f}")
-        if score > best_score:
-            best_up, best_score, best_assign = up, score, assign
-    print(f"  up axis derived as {'xyz'[best_up]} (mean IoU {best_score:.3f})")
-    for n, (d, iou) in best_assign.items():
+        for hand in (1, -1):
+            for off in cand:
+                total, n_used = 0.0, 0
+                for n, ref in refs.items():
+                    if ref is None or n not in OFFSETS:
+                        continue
+                    d = (off + hand * OFFSETS[n]) % 360
+                    d = min(cand, key=lambda c: min(abs(c - d),
+                                                    360 - abs(c - d)))
+                    s = sil[d]
+                    if s is None:
+                        continue
+                    u = np.logical_or(s, ref).sum()
+                    if u:
+                        total += np.logical_and(s, ref).sum() / u
+                        n_used += 1
+                if n_used and (score := total / n_used) > best[3]:
+                    best = (up, off, hand, score)
+    best_up, off, hand, best_score = best
+    if best_up is None:
+        raise SystemExit("could not match any view against the mesh")
+    best_assign = {}
+    for n, ref in refs.items():
+        if n not in OFFSETS:
+            continue
+        d = (off + hand * OFFSETS[n]) % 360
+        d = min(cand, key=lambda c: min(abs(c - d), 360 - abs(c - d)))
+        a, b = [i for i in range(3) if i != best_up]
+        s = _silhouette(v, best_up, a, b, d, res)
+        iou = 0.0
+        if s is not None and ref is not None:
+            u = np.logical_or(s, ref).sum()
+            iou = float(np.logical_and(s, ref).sum() / u) if u else 0.0
+        best_assign[n] = (d, iou)
+    print(f"  up axis derived as {'xyz'[best_up]}, offset {off} deg, "
+          f"handedness {'+' if hand > 0 else '-'} (mean IoU {best_score:.3f})")
+    for n, (d, iou) in sorted(best_assign.items()):
         print(f"  {n:5s} -> azimuth {d:3d} deg (IoU {iou:.3f})")
     _report_distinct(best_assign)
     _gate_separation(best_assign)
     return best_up, best_assign
 
 
-def _project(v, up, a, b, deg):
+def _project(v, up, a, b, deg, elev=0.0):
+    """Orthographic projection: azimuth about `up`, then camera elevation.
+
+    ELEVATION EXISTS BECAUSE OF THE WOLF. At 0 degrees - a dead-level camera -
+    a quadruped seen along its own length shows no body at all: head, chest and
+    two front legs stacked vertically, which reads as a figure standing upright.
+    The mesh is correct; the camera is wrong for the subject. From above, a
+    wolf facing the camera still shows its back, which is why every reference
+    sheet this project was built against (Diablo, Fallout, Age of Empires) uses
+    a raised three-quarter camera.
+
+    Default stays 0 because the 2D lane's sheets are eye-level by deliberate
+    choice (0005, "Final character, eye-level"), and a humanoid reads fine
+    there - the mage fills 89% of its cell at elevation 0.
+    """
     t = np.radians(deg)
     c, s = np.cos(t), np.sin(t)
-    return (v[:, a] * c - v[:, b] * s,      # screen x
-            v[:, up],                        # screen up
-            v[:, a] * s + v[:, b] * c)       # depth
+    x = v[:, a] * c - v[:, b] * s
+    y = v[:, up]
+    d = v[:, a] * s + v[:, b] * c
+    if elev:
+        e = np.radians(elev)
+        ce, se = np.cos(e), np.sin(e)
+        # Tilt the scene back about the screen-x axis: the camera rises, the
+        # ground plane opens out, and what was hidden behind the subject comes
+        # into view above it.
+        y, d = y * ce + d * se, -y * se + d * ce
+    return x, y, d
 
 
 def _fit_mask(m, res):
@@ -385,6 +438,72 @@ def _gate_separation(out: dict) -> None:
 
 # --- colour -------------------------------------------------------------
 
+def _cut_pedestal(mesh, up: int, band: float, ratio: float):
+    """Drop a reconstructed ground plate fused to the subject's feet.
+
+    Hunyuan3D-2mv reconstructs the ground the subject stands on - a flat slab
+    under the wolf, visible as a grey plinth in every cell. Component removal
+    cannot help: it is FUSED, so it is one component with the animal.
+
+    This is the 3D analogue of pixelate.strip_ground_patch's width rule, which
+    works in 2D for the same shape of defect. A plinth is much wider than the
+    legs standing on it, so the horizontal cross-section jumps sharply at the
+    top of the slab. Cut there.
+
+    `cut_below.py` is NOT this: it zeroes alpha below a row read off a width
+    profile BY HAND, and its own docstring says hand-picking does not
+    generalise and is not meant to.
+    """
+    v = np.asarray(mesh.vertices, float)
+    lo, hi = float(v[:, up].min()), float(v[:, up].max())
+    height = hi - lo
+    if height <= 0:
+        return mesh, 0.0
+    # Measure the footprint in horizontal slices through the bottom `band`.
+    edges = np.linspace(lo, lo + band * height, 13)
+    ax, bx = [i for i in range(3) if i != up]
+    areas = []
+    for i in range(len(edges) - 1):
+        m = (v[:, up] >= edges[i]) & (v[:, up] < edges[i + 1])
+        if m.sum() < 8:
+            areas.append(0.0)
+            continue
+        areas.append(float(np.ptp(v[m, ax]) * np.ptp(v[m, bx])))
+    areas = np.asarray(areas)
+    # THE REFERENCE IS THE SHINS, NOT THE BAND. Measuring the band against its
+    # own median cannot work: if the plinth fills most of the band then the
+    # median IS the plinth and nothing exceeds it. CLAUDE.md records the same
+    # correction for strip_ground_patch - "that compared the patch against the
+    # body median, so a wide stance looked like ground; the shin reference
+    # moves with the legs".
+    ref_edges = np.linspace(lo + band * height, lo + 2.2 * band * height, 9)
+    refs = []
+    for i in range(len(ref_edges) - 1):
+        m = (v[:, up] >= ref_edges[i]) & (v[:, up] < ref_edges[i + 1])
+        if m.sum() >= 8:
+            refs.append(float(np.ptp(v[m, ax]) * np.ptp(v[m, bx])))
+    ref = float(np.median(refs)) if refs else 0.0
+    if ref <= 0:
+        return mesh, 0.0
+    # The slab is the lowest run whose footprint exceeds `ratio` x the median
+    # of the band. Cut at the top of that run, not at its bottom, or the
+    # plinth's upper surface survives as a disc under the feet.
+    fat = [i for i, x in enumerate(areas) if x > ratio * ref]
+    if not fat or fat[0] != 0:
+        return mesh, 0.0           # nothing fat at the very bottom: no plinth
+    top = 0
+    for i in fat:
+        if i == top:
+            top = i + 1
+    cut = edges[top]
+    keep = v[:, up] >= cut
+    fmask = keep[np.asarray(mesh.faces)].all(axis=1)
+    if not fmask.any():
+        return mesh, 0.0
+    out = mesh.submesh([np.where(fmask)[0]], append=True)
+    return out, 100.0 * (cut - lo) / height
+
+
 def stage_colour(a):
     mesh = trimesh.load(a.mesh, force="mesh")
     if a.repair:
@@ -412,6 +531,30 @@ def stage_colour(a):
     if not views:
         raise SystemExit(f"no views in {a.views}")
     up, assign = _derive_pose(v, views, a.res, a.sweep)
+
+    # Cut the plinth AFTER the pose is known, then derive again.
+    #
+    # The order was the other way round and it silently did nothing: it used
+    # the `_up_axis` heuristic, which for a quadruped returns nose-to-tail -
+    # measured on this wolf, up=x with a footprint profile of tiny/wide/tiny,
+    # the shape of an animal measured along its length. "Below" then meant
+    # "behind the nose" and no plinth could be found.
+    #
+    # Cutting first was meant to stop the plinth distorting the silhouettes
+    # the azimuth match uses. That is a real concern, so the pose is derived
+    # TWICE: once to learn which way is up, and again on the cut mesh so the
+    # azimuths are matched against the shape that will actually be rendered.
+    # A few seconds against a 160s job.
+    if a.cut_pedestal:
+        pre = len(mesh.faces)
+        mesh, frac = _cut_pedestal(mesh, up, a.pedestal_band,
+                                   a.pedestal_ratio)
+        if frac > 0:
+            print(f"  cut a pedestal: bottom {frac:.1f}% of the height, "
+                  f"{pre - len(mesh.faces)} faces - re-deriving the pose")
+            v = np.asarray(mesh.vertices, float)
+            up, assign = _derive_pose(v, views, a.res, a.sweep)
+
     ax, bx = [i for i in range(3) if i != up]
 
     vn = np.asarray(mesh.vertex_normals, float)
@@ -458,11 +601,14 @@ def stage_colour(a):
 
 # --- render -------------------------------------------------------------
 
-def _rasterise(v, f, col, up, ax, bx, deg, res):
-    x, y, d = _project(v, up, ax, bx, deg)
+def _rasterise(v, f, col, up, ax, bx, deg, res, elev=0.0):
+    x, y, d = _project(v, up, ax, bx, deg, elev)
     span = max(np.ptp(v[:, 0]), np.ptp(v[:, 1]), np.ptp(v[:, 2]))
     if span <= 0:
         raise SystemExit("degenerate mesh")
+    # One span for every azimuth AND every elevation, so the subject keeps a
+    # constant size as it turns. Taken from the 3D extent rather than the
+    # projected one for exactly that reason.
     pad = 0.06
     px = (((x - (x.max() + x.min()) / 2) / span * (1 - pad) + 0.5) * (res - 1))
     py = ((0.5 - (y - (y.max() + y.min()) / 2) / span * (1 - pad)) * (res - 1))
@@ -535,7 +681,8 @@ def stage_render(a):
         if len(np.unique(rgb, axis=0)) > 4:
             col = rgb.astype(float) / 255.0
     print(f"{os.path.basename(a.mesh)}: {len(v)} verts, "
-          f"{'coloured' if col is not None else 'normal-shaded'}")
+          f"{'coloured' if col is not None else 'normal-shaded'}, "
+          f"elevation {a.elevation:g} deg")
 
     # The FRONT azimuth is derived, so the eight emitted directions are
     # labelled against the source view rather than against a guess.
@@ -561,7 +708,7 @@ def stage_render(a):
     os.makedirs(a.out, exist_ok=True)
     for i, d in enumerate(DIRECTIONS):
         deg = (front + i * 45) % 360
-        img = _rasterise(v, f, col, up, ax, bx, deg, a.res)
+        img = _rasterise(v, f, col, up, ax, bx, deg, a.res, a.elevation)
         p = os.path.join(a.out, f"dir_{d}.png")
         Image.fromarray(img, "RGBA").save(p)
         print(f"  dir_{d:2s} ({deg:3d} deg) covered="
@@ -668,6 +815,17 @@ def main():
     c.add_argument("--no-repair", dest="repair", action="store_false",
                    default=True)
     c.add_argument("--min-component", type=float, default=0.02)
+    c.add_argument("--no-cut-pedestal", dest="cut_pedestal",
+                   action="store_false", default=True,
+                   help="keep a reconstructed ground slab. It is FUSED to the "
+                        "feet, so component removal cannot drop it, and it "
+                        "renders as a grey plinth under every cell")
+    c.add_argument("--pedestal-band", type=float, default=0.22,
+                   help="fraction of the height searched for a plinth")
+    c.add_argument("--pedestal-ratio", type=float, default=1.4,
+                   help="how much wider than the band's median footprint a "
+                        "slice must be to count as plinth. Mirrors "
+                        "strip_ground_patch's width rule, which uses 1.8")
     c.set_defaults(fn=stage_colour)
 
     r = sub.add_parser("render", help="8 orthographic azimuths")
@@ -677,6 +835,13 @@ def main():
                    help="view dir; front.png fixes the azimuth labels")
     r.add_argument("--res", type=int, default=256)
     r.add_argument("--sweep", type=int, default=10)
+    r.add_argument("--elevation", type=float, default=0.0,
+                   help="camera degrees above horizontal. 0 is eye-level, "
+                        "which the 2D lane uses and a humanoid reads fine at. "
+                        "A QUADRUPED NEEDS ELEVATION: seen along its own "
+                        "length at 0 it shows head, chest and front legs "
+                        "stacked vertically and reads as standing upright. "
+                        "30-45 is the range the reference sheets use")
     r.set_defaults(fn=stage_render)
 
     s = sub.add_parser("sheet", help="renders -> 48x64 sheet + atlas")
