@@ -516,6 +516,31 @@ fragment of it.
   plainly more recognisable. It catches drift, which is what it was built
   for; it cannot see "the shape became mush". A passing `identity` is not
   evidence a sprite is usable at its cell size — `.ai/specs/sheet-quality/`
+- **"The sprite looks nothing like the concept" is a CELL-SIZE problem, and
+  it is the INTERIOR that is lost, not the outline**
+  (`scripts/cell-size-cost.py`, all 210 cells of `2ff8af36`, 2026-10-24, CPU
+  only - it reads the alpha already baked into `cut_*.png`, so it is safe to
+  run while a build holds the card).
+
+  | cell | silhouette IoU | interior detail vs 512 | sprite px |
+  |---|---|---|---|
+  | **48x64** | 0.6121 | **0.1665** | 1499 |
+  | 64x86 | 0.6035 | 0.2346 | 2745 |
+  | 96x128 | 0.6025 | 0.3582 | 6216 |
+  | 128x170 | 0.6028 | 0.4566 | 10960 |
+
+  At the production cell **~17% of interior detail survives**; 96x128 more
+  than doubles it (+115%). **Silhouette IoU is FLAT across every size**, so
+  resolution buys nothing for the outline and a silhouette metric cannot see
+  this - which is why the first version of that script, built expecting the
+  outline to be the casualty, found nothing. No quant touches it either:
+  Q3_K_S tripled closeness at 512 (0.0336 -> 0.0108) and moved 48x64 by
+  0.1322 -> 0.1196.
+  - Those figures fit each sprite **alone**. Production pins the sheet-wide
+    MINIMUM fit (0.089844 on that sheet), which is smaller still, so real
+    cells sit **below** the table. Cell size is a something2 contract
+    question - their atlas consumer and in-game scale both change with it -
+    so raise it rather than tuning the generator against it.
   §7.
 
 **Sheet cells are checked per frame now — and the checks measure the RAW render**
