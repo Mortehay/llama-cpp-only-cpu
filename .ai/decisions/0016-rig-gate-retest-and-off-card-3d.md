@@ -364,6 +364,41 @@ upright. The mesh is correct; the camera is wrong for the subject. Every
 reference sheet this project was built against uses a raised three-quarter
 camera.
 
+### The plinth is Hunyuan3D-2mv's, not the quadruped's
+
+The ground slab was first seen under the wolf and looked like something about
+animals. It is not. Validated 2026-10-25 across both body plans and both
+reconstructors:
+
+| subject | body plan | reconstructor | plinth |
+|---|---|---|---|
+| wolf | quadruped | Hunyuan3D-2mv | **yes** - bottom 1.8% of height, 113,102 of 477,840 faces |
+| mage | biped | Hunyuan3D-2mv | **yes** - bottom 1.8% of height, 60,607 of 460,790 faces |
+| mage | biped | TripoSR | no |
+| archer, wide stance + longbow | biped | TripoSR | no - **feet intact** |
+
+So **the multiview model reconstructs the ground its subject stands on**, at
+the same 1.8% of height on both, and TripoSR does not. `--cut-pedestal`
+compensates for a specific model's behaviour rather than for a subject type.
+
+The fourth row is the one that matters most: a wide-stance biped carrying a
+longbow is exactly the false positive `strip_ground_patch`'s old rule produced
+("a wide stance looked like ground") and the reason `cut_below.py` exists. It
+is untouched. A gate that occasionally amputates feet would be worse than no
+gate at all, because the sheet still passes every numeric check afterwards.
+
+`--pedestal-ratio 1.4` therefore rests on two positives and two negatives
+rather than the single measurement it was first set from. The measured ratio on
+the wolf was 1.51 (footprint 2.489 against 1.65 for the body above it), and 1.3
+and 1.4 behave identically, so there is margin on both sides. Still only two
+reconstructors and two body plans - a bird, or anything with a wide low mass
+that is genuinely part of the subject, remains untested.
+
+Cutting the slab also raised colour coverage 89.1% -> 95.9% on the wolf,
+because most of the median-filled vertices WERE the slab. The grey mound and
+the plinth were one defect, not two, which is why changing the median-fill
+colour would have been the wrong fix.
+
 ## The rule this lane keeps re-learning: do not measure against the contaminated region
 
 Four separate times in one session, a check was written to compare a thing

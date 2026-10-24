@@ -823,9 +823,10 @@ def main():
     c.add_argument("--pedestal-band", type=float, default=0.22,
                    help="fraction of the height searched for a plinth")
     c.add_argument("--pedestal-ratio", type=float, default=1.4,
-                   help="how much wider than the band's median footprint a "
-                        "slice must be to count as plinth. Mirrors "
-                        "strip_ground_patch's width rule, which uses 1.8")
+                   help="how much wider than the SHINS a bottom slice must be "
+                        "to count as plinth. 1.4 is validated on two "
+                        "positives and two negatives across both body plans "
+                        "and both reconstructors - see decisions/0016")
     c.set_defaults(fn=stage_colour)
 
     r = sub.add_parser("render", help="8 orthographic azimuths")
