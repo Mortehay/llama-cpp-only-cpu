@@ -208,12 +208,118 @@ superseded here.
 |---|---|
 | palette too large | **not a cause.** Both pipelines end at exactly 24 opaque colours |
 | no lighting | **real, and partly fixable.** Measured luminance range across all 8 views: **1-144 of 255** - the renders used 56% of the range, because TripoSR bakes already-shaded colour and the rasteriser adds no light. A shared stretch over the figure recovered the lit views |
-| the unseen side is invented | **dominant, and not fixable at render time.** Missing information, not missing contrast |
+| the unseen side is invented | ~~**dominant, and not fixable at render time.** Missing information, not missing contrast~~ **FIXED 2026-10-24 - see "Colour projection" below. The claim was half right: the invented COLOUR was the defect, the invented geometry was not, and projecting the observed views supplies the colour.** |
 
 The lift must use **one shared mapping across all eight views**, computed over
 `alpha > 0` only. Per-view normalisation would make the character change
 brightness as it turns - the same class of defect the shared palette and the
 pinned min-scale exist to prevent.
+
+## Colour projection: the actual fix (2026-10-24, later the same day)
+
+**Projecting the OBSERVED turnaround views onto the mesh turns both
+reconstructors from unusable to usable at 48x64.** It needs no new model, no
+GPU and no download, and it is the single change that closed most of the gap
+to the 2D lane.
+
+The defect was never the palette and never, mostly, the geometry. It was that
+vertex colour for surfaces the reconstructor could not see is EXTRAPOLATED.
+The 2D lane already emits a turnaround, so those surfaces are in fact
+observed - just not by the reconstructor.
+
+| | before (baked vertex colour) | after (projected from 3 views) |
+|---|---|---|
+| TripoSR | muddy, unusable at 48px | **legible and clean, no artefacts** |
+| Hunyuan3D-2mv | n/a - shape-only model | legible, stray slab in 3 of 8 cells |
+
+Coverage: TripoSR 52,512 of 56,804 verts sampled from views (**92%**),
+Hunyuan 197,504 of 223,636 (**88%**). The denser mesh scores WORSE because
+more folds and recesses are unreachable by three cameras - more geometry means
+more unobserved geometry. Unsampled vertices take the mesh median, never white,
+which would read as a hole. Both sheets: 24 opaque colours, 0 partial-alpha.
+
+### Two corrections to claims made EARLIER IN THIS DOCUMENT and in the session
+
+1. **"TripoSR's back was mush" is wrong.** Rendered through an identical
+   normal-shaded path, its back carries hood, shoulder cape, robe folds, the
+   staff and the talisman. The back GEOMETRY was always adequate; the back
+   COLOUR was not. The cause table above is corrected accordingly.
+2. **"Multiview solved the dominant defect" is wrong.** Projection colouring
+   did. Both claims attributed an improvement to a newly added component
+   instead of isolating the variable; the controlled comparison is what caught
+   it, and it was only possible because projection is reconstructor-agnostic.
+
+### Hunyuan3D-2mv: it runs, and it did not clearly earn its cost
+
+| | TripoSR | Hunyuan3D-2mv |
+|---|---|---|
+| weights | 1.68 GB, MIT | 5.36 GB, Tencent licence with EU/UK/KR exclusion |
+| runtime | ~45 s, CPU, no card | 67 s load + 105 s reconstruct, on the 12 GB card |
+| output | 113,652 faces, watertight after repair | 447,420 faces, **raw and not watertight** |
+| coloured result | clean | stray slab visible in 3 of 8 cells |
+
+The strays are the direct cause of its worse showing: Hunyuan's output has had
+no `repair_for_rigging` pass, and that function exists precisely to drop
+sub-threshold components. A fair rematch has to clean it first. But the margin
+to beat is small, because once both are coloured the same way the denser
+geometry is not visibly better at 48x64 - which is 0004's original argument
+for choosing the smallest model that gets the silhouette right, arriving again
+from the other direction.
+
+Setup, for whoever repeats it: `hy3dgen` in a venv inside mesh_worker
+(`--system-site-packages`, so torch is shared and TripoSR keeps its pinned
+transformers 4.35 in system site-packages). **Pin transformers to the
+checkpoint's era** - unpinned installs a version whose DINOv2 attention
+refactor renames `query/key/value` to `q_proj/k_proj/v_proj`, and every
+projection weight in a 2025 checkpoint then reads as missing. 4.49.0 works.
+This stack now carries three transformers versions on purpose: 4.35.0 system,
+4.49.0 in the hy3d venv, 4.51.3 in rig_worker. The venv lives in the
+CONTAINER, not the image, so it dies on `--force-recreate`.
+
+### Derive the azimuth; do not assume it. This finally works.
+
+The fix proposed earlier in this document is implemented and measured: sweep
+candidate azimuths, rasterise a silhouette at each, and assign every observed
+view the angle whose silhouette best matches it by IoU. The source views ARE
+the ground truth for where the cameras were.
+
+| mesh | up axis | front | left | back | front/back |
+|---|---|---|---|---|---|
+| Hunyuan3D-2mv | **y** | 0 deg (IoU 0.831) | 270 (0.821) | 180 (0.806) | 180 OK |
+| TripoSR | **z** | 270 deg (IoU 0.810) | 20 (0.730) | 100 (0.800) | 170 OK |
+
+**The two meshes disagree on BOTH the up axis and the azimuth origin.** That
+is why every hardcoded offset failed: there is no single convention to
+hardcode. Four orientation bugs were hit in one session before this went in -
+a `+90` calibrated on one mesh, a 180 on another, Z-up assumed for a Y-up
+mesh, and inverted winding after a mirror - and each looked like "the model
+produced something bad" rather than "the camera was pointed wrong". Detect up
+from the tallest extent (what `inspect_mesh` does), derive azimuth by IoU, and
+shade two-sided so a flipped winding cannot read as a black mesh.
+
+Known weakness: silhouette IoU is front/back ambiguous for a robed figure. The
+separation check catches a gross error but not a clean swap - the giveaway is
+a face on the back of the head, so LOOK rather than trust the number.
+
+### Where this leaves the lane
+
+Against the 2D production cells the gap is now a difference of degree, not of
+kind: the 2D strip is still crisper with more contrast and a more readable
+face, but these are recognisable coloured sprites with **eight structurally
+correct directions**, which the 2D lane cannot produce (`se`/`sw` collapse,
+west rows mirrored with handedness swapped).
+
+It still does not unblock sprites. Rigging is closed, so there are no action
+frames, and the deliverable remains **static 8-direction turnarounds**.
+
+Cheapest next steps, in order:
+
+1. `repair_for_rigging` on the Hunyuan mesh, for a fair rematch.
+2. Add `dir_se`/`dir_ne` as extra COLOUR sources. They are rendered and
+   genuinely independent, and colour projection does not care about the
+   front-quarter collapse that would poison a reconstructor.
+3. `bpy` toon render with a key light and an outline pass, for the remaining
+   contrast gap.
 
 ### Quality degrades with angular distance from the input view
 
