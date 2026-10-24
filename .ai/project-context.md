@@ -691,6 +691,47 @@ showed a **40.93 GB build cache with 31.79 GB reclaimable** — larger than ever
 model deletion combined. `docker builder prune` is the first thing to try; the
 cost is that the next no-cache rebuild re-pulls the torch wheel (15-25 min).
 
+**"Docker usage" means `/var/lib/containerd` + `/var/lib/docker`, summed.**
+This box uses the **containerd image store**, so images and build cache live
+under `containerd` while `/var/lib/docker` holds little but volumes. Reading
+`/var/lib/docker` alone makes Docker look negligible and is how the deferred
+"move the models" decision in `compact-wsl.md` came to claim weights were the
+dominant consumer. Measured 2026-10-23 evening: **containerd 151 GB + docker
+22 GB = 173 GB**, against **149 GB** for all of `/home` (models ~126, job cache
+4.3, repo). Docker wins, and it is the part that *churns*.
+
+**Use `wsl -d Ubuntu -u root` for these measurements, not `sudo`.** `sudo` in
+this distro requires a password (`sudo -n true` -> *"interactive authentication
+is required"*), and a `sudo` command run with no tty **hangs indefinitely**
+rather than failing — a `du` over `/var/lib` that never returns is usually this,
+not a slow disk.
+
+**A transient build peak becomes permanent allocation.** The VHDX never shrinks,
+so a throwaway experiment costs its full size until someone runs a ~1 hour
+compaction. Measured 2026-10-23: hours after a compaction took the file to
+252.6 GB (C: 108.7 GB free), the 0016 rig-gate retest put it at **342.8 GB**
+(C: **16.3 GB** free) — `mesh-worker` 22.3 GB and `rig-worker` 25.2 GB, plus
+build cache regrowing ~20 GB -> 81.22 GB. `/home` did not grow. **And
+compaction could not fix it**: ext4 reported 325 GB used in a 342.8 GB file,
+~18 GB of slack. Retention policy, not reclamation — `decisions/0018`.
+
+**Do not delete `ghcr.io/ggml-org/llama.cpp:full-cuda` to save 10.3 GB.** Its
+image ID is `sha256:85e30d01b550…`, the exact digest pinned at
+`compose/develop/sprite_generator/Dockerfile.cuda:15`. It reads as a stale
+third-party base image and is a live dependency; deleting the tag forces a
+10.3 GB re-pull at the 1-9 MiB/s this link has measured. By contrast
+`nvidia/cuda:12.8.1-devel-ubuntu24.04` (14.6 GB, 19 months old) **is** a true
+orphan — nothing builds from 12.8.1; `mesh_worker` and `rig_worker` use
+`13.0.3-devel-ubuntu22.04`, which is itself not present as a tag.
+
+**A second project shares this disk.** `aod-gpubox`
+(`C:\Users\linuser\Projects\auto-orbit-data-external-ai`) runs `aod_gateway`,
+`aod_dashboard`, `aod_db` and `aod_ollama` out of the same dockerd, holding
+~32 GB — `aod_ollama_models` alone is 22.65 GB (`gemma3:12b`, `qwen3:14b`,
+`qwen3:8b`). Disk accounting for this repo must subtract it rather than treat
+it as sprite-stack cost. If it is ever torn down, `compose down` **without**
+`-v`: only `aod_pg_data` (172 MB) is irreplaceable.
+
 **Moving weights to `/mnt/d` is not a fix.** That is DrvFs/9p, and the storage
 benchmarks in the README apply in full: 35x small-file penalty, no page cache.
 An HF snapshot is hundreds of files. If a different physical drive is genuinely

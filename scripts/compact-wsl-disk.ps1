@@ -36,10 +36,19 @@
 .EXAMPLE
   # Report the numbers without changing anything:
   powershell -ExecutionPolicy Bypass -File .\scripts\compact-wsl-disk.ps1 -WhatIfOnly
+
+.EXAMPLE
+  # Compact AND bring the stack back without a second manual pass:
+  powershell -ExecutionPolicy Bypass -File .\scripts\compact-wsl-disk.ps1 -Restore
+
+  # From inside WSL, which is what `make compact-wsl` does for you:
+  #   make compact-wsl        (elevated, -Restore, detached)
+  #   make compact-wsl-dry    (numbers only, no UAC, changes nothing)
 #>
 param(
     [string] $Distro = "Ubuntu",
-    [switch] $WhatIfOnly
+    [switch] $WhatIfOnly,
+    [switch] $Restore
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,10 +132,56 @@ Open Win+X -> "Windows PowerShell (Admin)", then:
     return
 }
 
+$keepalive = Join-Path $PSScriptRoot "wsl-keepalive.ps1"
+
 Write-Output ""
+Write-Output "Stopping the keepalive (it would restart the distro immediately)..."
+# Measured 2026-10-23: `wsl --shutdown` on its own is NOT enough. The keepalive
+# holds a hidden `wsl.exe ... sleep infinity`, which reattaches within seconds;
+# the distro came back Running 3s after a shutdown and every container with it.
+# diskpart would then be attaching a live disk. Stop it through its own
+# interface, then prove the file is actually free before touching it.
+if (Test-Path -LiteralPath $keepalive) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $keepalive -Stop 2>&1 |
+        ForEach-Object { Write-Output "  $_" }
+}
+
 Write-Output "Shutting down WSL (this stops every container)..."
 wsl.exe --shutdown | Out-Null
-Start-Sleep -Seconds 10
+Start-Sleep -Seconds 5
+
+# An exclusive handle is the only proof the VM let go. Without this check a
+# compact can run against a disk that is back in use and report success having
+# reclaimed nothing -- which looks identical to "there was nothing to reclaim".
+$released = $false
+foreach ($attempt in 1..20) {
+    try {
+        $fs = [System.IO.File]::Open($vhdx, 'Open', 'ReadWrite', 'None')
+        $fs.Close()
+        $released = $true
+        break
+    } catch {
+        Start-Sleep -Seconds 3
+    }
+}
+if (-not $released) {
+    Write-Error @"
+The VHDX is still locked after 60s, so NOTHING was compacted.
+Something keeps reattaching the distro. Find it with:
+  Get-Process wsl
+Close those clients -- a WSL terminal, an IDE attached to the distro, another
+session running commands -- and run this again.
+"@
+    # The keepalive was stopped above. Put it back before giving up, or the
+    # distro tears down minutes later and every container exits 255 with clean
+    # logs -- a failure that reads like an OOM and is not one.
+    if (Test-Path -LiteralPath $keepalive) {
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $keepalive 2>&1 |
+            ForEach-Object { Write-Output "  $_" }
+    }
+    return
+}
+Write-Output "VHDX released."
 
 # diskpart reads a script file; it will not take these on stdin reliably.
 $dpPath = Get-AsciiSafePath -Path $vhdx
@@ -200,8 +255,54 @@ Write-Output ""
 Write-Output "Allocated  : $sizeBefore GB -> $sizeAfter GB"
 Write-Output "$drive free    : $freeBefore GB -> $freeAfter GB"
 Write-Output ("Reclaimed  : {0} GB" -f [math]::Round($sizeBefore - $sizeAfter, 1))
+if (-not $Restore) {
+    Write-Output ""
+    Write-Output "WSL is down. Bring the stack back up:"
+    Write-Output "  1. powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1"
+    Write-Output "  2. wsl:  make up"
+    Write-Output "  3. wsl:  make lan-check   (only run lan-expose if that FAILS)"
+    return
+}
+
+# -Restore puts the stack back in the same elevated window, so the operator is
+# not left with a dead box. Docker's systemd unit is enabled, but restart
+# policies are NOT reliable here (measured 2026-10-23: after a sweep, only an
+# unrelated stack came back), so `make up` is what actually settles it, and it
+# runs the migrations.
+#
+# DO NOT put `2>&1` on these native calls, and do not restore "Stop" above this
+# line. Measured 2026-10-24: `$ErrorActionPreference = "Stop"` (line ~54) plus
+# `2>&1` on a NATIVE command makes PowerShell 5.1 wrap every stderr line in a
+# NativeCommandError and TERMINATE on the first one. docker compose writes all
+# of its progress to stderr, so the restore died on compose's first line
+# ("Container sprite_worker Creating"), left a half-created container whose
+# name stayed reserved until dockerd restarted, and never reached lan-check.
+# The fix is both halves: merge stderr INSIDE bash so PowerShell only ever sees
+# stdout, and drop to "Continue" for the rest of the run.
+$ErrorActionPreference = "Continue"
+
 Write-Output ""
-Write-Output "WSL is down. Bring the stack back up:"
-Write-Output "  1. powershell -ExecutionPolicy Bypass -File .\scripts\wsl-keepalive.ps1"
-Write-Output "  2. wsl:  sudo service docker start  &&  make up"
-Write-Output "  3. ELEVATED powershell: .\scripts\lan-expose.ps1   (WSL IP changed)"
+Write-Output "Restarting the keepalive..."
+if (Test-Path -LiteralPath $keepalive) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $keepalive |
+        ForEach-Object { Write-Output "  $_" }
+}
+
+$repoWin = Split-Path $PSScriptRoot -Parent
+$repoWsl = (& wsl.exe -d $Distro -e wslpath -a "$repoWin") -replace "`r|`n", ""
+
+Write-Output ""
+Write-Output "Bringing containers up ($repoWsl)..."
+Write-Output "  (a cold build after a cache prune takes 15-25 min; not a hang)"
+& wsl.exe -d $Distro -e bash -lc "cd '$repoWsl' && make up 2>&1" |
+    ForEach-Object { Write-Output "  $_" }
+
+# The forwards target the distro IP, which usually survives a restart -- checked
+# 2026-10-23, unchanged and all five still answering. So CHECK (no UAC) rather
+# than re-running lan-expose blind.
+Write-Output ""
+Write-Output "Checking LAN forwards..."
+& wsl.exe -d $Distro -e bash -lc "cd '$repoWsl' && make lan-check 2>&1" |
+    ForEach-Object { Write-Output "  $_" }
+Write-Output ""
+Write-Output "If lan-check printed STALE above, run from WSL:  make lan-expose"
