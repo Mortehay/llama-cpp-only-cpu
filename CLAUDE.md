@@ -684,8 +684,29 @@ fragment of it.
   image per distinct (direction, pose) and copies it, so the old walk list
   naming "both feet flat..." at frames 2 AND 5 froze a third of the cycle.
   Rules in `action_prompts.json` `_readme.sheet_frames.back_is_not_front`.
-  `idle`/`sway` have only a `side` family and were left alone; `idle n` is
-  still frozen (0.35, six duplicate pairs).
+  **`idle` was fixed the same way on 2026-10-24**; `sway` still has only a
+  `side` family and is untouched.
+  - It was broken in BOTH ways at once, and worse than "the `n` row is
+    frozen". Its one `side` list named `"standing still, arms at sides"` at
+    frames **0 AND 2** - byte-identical strings, so one image was rendered
+    and copied - and with no `back` family, `n`/`ne`/`nw` drove a
+    back-facing camera from side-view pose text. Six entries, **five
+    distinct**.
+  - Rewritten `side` (a breath cycle plus weight moving between the feet)
+    and added `back` (shoulder blades, the back arching and rounding, heels
+    and hips - nothing that needs the chest or hands to be visible).
+    Verified by rendering at the baseline's concept and seed, scored the way
+    `row_motion` does: **`idle n` 0.93 -> 14.68 mean step, 4 duplicate pairs
+    -> 0**; `idle e` 2.29 -> 19.59. 0 of 12 cells flagged.
+  - **Those figures are on 512px `cut_*.png`, NOT on fitted 48x64 cells**,
+    so they are comparable to each other and to nothing else. The family
+    averages above (side 19.08, front 14.84, back 12.20) and the atlas's
+    own `motion` are measured on FITTED cells. Do not read "idle e 19.59"
+    as idle moving more than a walk - that mistake was made and caught.
+  - **No head turns in any idle pose, deliberately.** `sheet_qc.facing`
+    reads head lean against the direction's turnaround reference, so a pose
+    that moves the head per frame trips the facing check for a cosmetic
+    gain - and facing is already the noisiest check on these sheets.
 - **`/api/action-catalog` now reports what a redraw actually does**
   (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
   consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
