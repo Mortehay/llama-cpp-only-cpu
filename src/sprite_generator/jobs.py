@@ -447,7 +447,17 @@ def create_turnaround3d(spec: Turnaround3DSpec, request: Request,
     celery_app.send_task("mesh3d.turnaround",
                          args=[str(job_id), spec.source_job, spec.cell],
                          queue="mesh3d")
-    return {"job_id": str(job_id), "status": "queued"}
+    return {
+        "job_id": str(job_id),
+        "status": "queued",
+        "cells": 8,
+        # Measured end to end through this route, twice: 160s and 162s. Five
+        # stages, and the TripoSR load is ~60s of it, so a warm second call is
+        # faster - but a client should budget the cold figure.
+        "estimated_seconds": 170,
+        "poll": f"/api/jobs/{job_id}",
+        "sheet_url": f"/api/jobs/{job_id}/sheet",
+    }
 
 
 @router.get("/api/jobs/{job_id}/sheet")

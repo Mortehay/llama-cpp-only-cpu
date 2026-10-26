@@ -23,6 +23,50 @@ There are therefore TWO surfaces, for two different jobs:
 makes that synchronous, which is why the façade cannot serve it whatever the
 timeout is set to.
 
+## A third surface: static 8-direction turnarounds
+
+    POST /api/turnaround3d  -> 202 {"job_id", "status", "cells": 8,
+                                    "estimated_seconds", "poll", "sheet_url"}
+
+Then poll and fetch with the **same** routes as a sheet - `GET /api/jobs/{id}`,
+`/sheet`, `/atlas`. It writes `sheet_path` and `atlas_path` on the jobs row, so
+there is no separate read side to learn.
+
+```json
+{"source_job": "<a finished job id>", "cell": "48x64"}
+```
+
+**What it is for.** Eight structurally correct directions of a STATIC subject,
+built by reconstructing a mesh from a finished job's turnaround and rendering
+it from eight cameras. A direction here is a camera position, so the two
+defects the 2D lane has cannot occur: the front quarters cannot collapse onto
+the front view (`|s-se|` 12.8, still open) and the west rows are not flipped
+east rows with the handedness swapped.
+
+**What it is NOT.** No action frames. Those need a rigged mesh and that gate
+failed 0 of 2 with a clean synthetic control - see `decisions/0016`. For
+anything with actions, use the job API above.
+
+**It does not use the GPU.** The work runs on its own `mesh3d` queue in
+mesh-worker rather than in the solo sprite-worker, so a turnaround proceeds in
+parallel with whatever is on the card instead of blocking it. ~170 s measured
+end to end through this route (160 s and 162 s on two runs), of which ~60 s is
+a cold TripoSR load.
+
+**Two source requirements**, both answered up front rather than three minutes
+in:
+- the source job must have a turnaround (`dir_s`, `dir_e`, `dir_n`) -> 409
+- its views must key cleanly. A vignette, disc or frame whose rim reaches the
+  image border survives the corner flood fill and gets reconstructed as
+  GEOMETRY - one job produced eight views of a medal with a wolf on it.
+  Refused, with the measured reason.
+
+**`cell` accepts a landscape cell and a wide subject wants one.** Measured: a
+quadruped fills 64% of a 48x64 cell (96% of the width, 67% of the height)
+against a humanoid's 89%; `"cell": "64x48"` takes it to 73%. The response does
+not transpose it for you - cell size is part of what the consumer expects. See
+also `decisions/0019` on cell size and recognisability.
+
 ## Job API
 
     POST   /api/jobs                 -> 202 {"job_id", "status":"queued",
