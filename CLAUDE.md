@@ -684,8 +684,9 @@ fragment of it.
   image per distinct (direction, pose) and copies it, so the old walk list
   naming "both feet flat..." at frames 2 AND 5 froze a third of the cycle.
   Rules in `action_prompts.json` `_readme.sheet_frames.back_is_not_front`.
-  **`idle` was fixed the same way on 2026-10-24**; `sway` still has only a
-  `side` family and is untouched.
+  **`idle` was fixed the same way on 2026-10-24**; `sway` got a `back`
+  family on 2026-10-26 and **keeps its original `side` list, on the
+  measurement** - see the sway entry at the end of this block.
   - It was broken in BOTH ways at once, and worse than "the `n` row is
     frozen". Its one `side` list named `"standing still, arms at sides"` at
     frames **0 AND 2** - byte-identical strings, so one image was rendered
@@ -707,6 +708,24 @@ fragment of it.
     reads head lean against the direction's turnaround reference, so a pose
     that moves the head per frame trips the facing check for a cosmetic
     gain - and facing is already the noisiest check on these sheets.
+- **`sway` looked like the same bug and was NOT** (2026-10-26). Its `side`
+  list also had a byte-identical pair - frames 1 and 3, both `"upright,
+  settling back through centre"` - so it read as idle's twin. It is not:
+  - **`duplicates` counts CONSECUTIVE pairs only**, and 1 and 3 are not
+    adjacent, so identical non-adjacent frames never register. Both baseline
+    sway rows reported 0 duplicates while genuinely containing two copies of
+    one image. Do not treat `duplicates: 0` as "no repeated frames".
+  - Baseline `sway n` already moved at **10.88** - near the back-family
+    average of 12.20 - against `idle n`'s 0.93. The row was not frozen, so
+    the string comparison predicted a defect that was not there.
+  - Adding `back` helped: **`sway n` 10.88 -> 17.58**. Rewriting `side` HURT:
+    **`sway e` 16.84 -> 14.01**, so the original list was restored and only
+    `back` was kept. A sway is a pendulum and its centre frames SHOULD look
+    alike; that duplicate is defensible where a walk cycle's is not.
+  - The lesson is the general one: **a pose list that looks wrong is a
+    hypothesis, not a defect.** Render and measure before rewriting, and
+    measure the families separately - `n` exercises `back`, `e` exercises
+    `side`, so one run scores both independently.
 - **`/api/action-catalog` now reports what a redraw actually does**
   (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
   consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
