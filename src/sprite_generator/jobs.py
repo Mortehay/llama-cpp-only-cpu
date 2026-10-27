@@ -538,14 +538,53 @@ def list_frames(job_id: str, authorization: str | None = Header(None)):
         names = sorted((f for f in os.listdir(d) if f.endswith(".png")),
                        key=lambda f: int(os.path.splitext(f)[0] or 0))
         rows[row] = [f"/api/jobs/{job_id}/frames/{row}/{f}" for f in names]
+    # `rows` keeps its exact shape - a list of URLs - because consumers index
+    # it. The stages are advertised separately so they are discoverable
+    # without changing what anyone already parses.
     return {"job_id": job_id, "rows": rows,
-            "count": sum(len(v) for v in rows.values())}
+            "count": sum(len(v) for v in rows.values()),
+            "stages": {
+                "fitted": "the cell as it appears in the sheet (default)",
+                "cut": "512px RGBA, after the cutout and BEFORE the fit",
+                "raw": "512px RGB, straight off the denoise, backdrop intact",
+            },
+            "stage_query": f"/api/jobs/{job_id}/frames/<row>/<n>.png?stage=raw"}
+
+
+# The three things a cell exists as on disk, smallest last.
+#
+# Only `fitted` was ever reachable, and that is the one image that cannot
+# answer "why does this sprite look wrong": it is 48x64 or 96x128 and the
+# damage is already done. Every diagnosis this repo has made about framing -
+# close-ups, backdrop, the cell-size measurements in 0019 - was made by
+# reading `cut_*.png` or `cell_*.png` off the work directory by hand, because
+# the API does not serve them.
+#
+# `raw` still has the backdrop, which is the point: it is the only way to see
+# what the model actually produced before BiRefNet decided what was figure.
+STAGES = {
+    "fitted": None,          # frames/<row>/<n>.png - the cell in the sheet
+    "cut": "cut_%s_%s.png",  # 512 RGBA, after the cutout, BEFORE the fit
+    "raw": "cell_%s_%s.png",  # 512 RGB, straight off the denoise
+}
 
 
 @router.get("/api/jobs/{job_id}/frames/{row}/{name}")
 def get_frame(job_id: str, row: str, name: str,
+              stage: str = "fitted",
               authorization: str | None = Header(None)):
-    """One finished cell as its own PNG."""
+    """One cell as its own PNG, at the stage asked for.
+
+    `stage` defaults to `fitted`, so every existing caller gets exactly the
+    bytes it got before. `cut` and `raw` are the 512px images the cell was
+    made from - what the frame looked like before it was shrunk into a sprite.
+
+    A MIRRORED row has no 512px image of its own: `w`/`nw`/`sw` are flips of
+    `e`/`ne`/`se` (MIRROR_WEST), so a pre-fit stage is served from the source
+    direction and the response says so in `X-Mirrored-From`. Returning a 404
+    there would read as "the frame is missing" when it is "this row was never
+    rendered".
+    """
     _require_auth(authorization)
     # Both components are joined into a filesystem path, so they are checked
     # rather than trusted. `..` in either would otherwise read any file the
@@ -555,10 +594,48 @@ def get_frame(job_id: str, row: str, name: str,
             raise HTTPException(status_code=400, detail="bad frame path")
     if not name.endswith(".png"):
         raise HTTPException(status_code=400, detail="frames are .png")
-    path = os.path.join(_work_dir(job_id), "frames", row, name)
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail="no such frame")
-    return FileResponse(path, media_type="image/png")
+    if stage not in STAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown stage {stage!r}; use one of {sorted(STAGES)}")
+
+    work = _work_dir(job_id)
+    if stage == "fitted":
+        path = os.path.join(work, "frames", row, name)
+        if not os.path.isfile(path):
+            raise HTTPException(status_code=404, detail="no such frame")
+        return FileResponse(path, media_type="image/png")
+
+    # `row` is "<action>_<direction>"; the 512px files are flat and carry the
+    # frame index, so the name is rebuilt rather than reused.
+    action, _, direction = row.rpartition("_")
+    if not action:
+        raise HTTPException(status_code=400, detail="bad row")
+    index = os.path.splitext(name)[0]
+    if not index.isdigit():
+        raise HTTPException(status_code=400,
+                            detail="frame name must be <n>.png for a pre-fit "
+                                   "stage")
+
+    mirrored_from = None
+    src_dir = direction
+    candidate = os.path.join(work, STAGES[stage] % (f"{action}_{src_dir}",
+                                                   index))
+    if not os.path.isfile(candidate):
+        from qwen_edit import MIRRORED_AZIMUTHS
+        alt = MIRRORED_AZIMUTHS.get(direction)
+        if alt:
+            src_dir = alt
+            mirrored_from = f"{action}_{alt}"
+            candidate = os.path.join(
+                work, STAGES[stage] % (f"{action}_{src_dir}", index))
+    if not os.path.isfile(candidate):
+        raise HTTPException(
+            status_code=404,
+            detail=f"no {stage} image for {row}/{name}; a sheet built before "
+                   f"the frame store, or a pruned work directory")
+    headers = {"X-Mirrored-From": mirrored_from} if mirrored_from else None
+    return FileResponse(candidate, media_type="image/png", headers=headers)
 
 
 def _frame_labels(frames: list, show: int = 6) -> str:
