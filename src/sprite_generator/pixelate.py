@@ -420,6 +420,23 @@ def pixelate(img: Image.Image,
         return Image.new("RGBA", (cell_w, cell_h), (0, 0, 0, 0))
     small = small.crop(box)
 
+    # A PINNED scale carries no guarantee that the sprite fits. `scale is
+    # None` computes a fit and always does; a pinned one was chosen for a
+    # different set of cells - the sheet's first compose - and a redraw or a
+    # cell-size change reuses it. `Image.paste` clips to the destination on a
+    # negative offset, so the overflow would crop the sprite silently and the
+    # result reads as "the model rendered a close-up" rather than as a fit
+    # that could not fit. Say so instead; the uniform scale is deliberate
+    # (sheet-quality 1.2) and must not be quietly abandoned per cell.
+    if small.width > cell_w or small.height > cell_h - 2 * margin:
+        logger.warning(
+            "sprite %dx%d exceeds the %dx%d cell at the pinned scale "
+            "%.6f and WILL be cropped by %dpx wide / %dpx tall - recompose "
+            "with --refit, or the sheet keeps a scale chosen for other cells",
+            small.width, small.height, cell_w, cell_h, scale,
+            max(0, small.width - cell_w),
+            max(0, small.height - (cell_h - 2 * margin)))
+
     # Centre horizontally, anchor to the bottom vertically. See module docstring.
     cell = Image.new("RGBA", (cell_w, cell_h), (0, 0, 0, 0))
     cell.paste(small,

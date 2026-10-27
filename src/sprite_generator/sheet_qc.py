@@ -145,6 +145,8 @@ import os
 import numpy as np
 from PIL import Image
 
+import framing
+
 logger = logging.getLogger(__name__)
 
 
@@ -191,7 +193,8 @@ CONTINUITY_MAX = _f("QC_CONTINUITY_MAX", 0.060)
 
 ALPHA = 128
 
-CHECKS = ("close_up", "backdrop", "border", "facing", "identity", "continuity")
+CHECKS = ("close_up", "backdrop", "border", "facing", "identity",
+          "continuity", "framing")
 
 
 # --- masks --------------------------------------------------------------
@@ -397,6 +400,15 @@ def measure(img: Image.Image, view: Reference | None = None,
                                if view.figure_frac else None)
         out["identity"] = chi2(colour_hist(img, fig), view.hist)
         out["view_lean"] = view.lean
+
+    # Semantic, and the only metric here that is not a measurement of the
+    # mask. `figure_ratio` cannot see a moderate close-up - it is
+    # non-monotonic in it (1.1) - and neither can any other geometry, because
+    # the LoRA frames a torso and a whole body to the same 512px box.
+    # None unless FRAMING_CHECK is on and the weights are present.
+    feet = framing.feet_in_frame(img)
+    if feet is not None:
+        out["feet_in_frame"] = round(feet, 4)
     return out
 
 
@@ -427,6 +439,14 @@ def failures(m: dict, neighbours: list | None = None) -> list:
         vals = [v for v in neighbours if v is not None and v == v]
         if vals and min(vals) > CONTINUITY_MAX:
             bad.append("continuity")
+
+    # `framing` is the only check that can see a moderate close-up, and it is
+    # absent unless FRAMING_CHECK is on and the weights are present. A missing
+    # metric must not fail a cell - that is the difference between "judged and
+    # passed" and "never judged", the same distinction `facing` draws when its
+    # reference is too weak to read.
+    if framing.is_close_up(m.get("feet_in_frame")):
+        bad.append("framing")
     return bad
 
 
@@ -451,4 +471,14 @@ def score(m: dict) -> float:
     ident = m.get("identity")
     if ident is not None and ident == ident:
         s += ident / IDENT_MAX
+
+    # Framing has to be in the sum, not only in `failures`. A redraw keeps the
+    # best-SCORING attempt, so a term that is missing here lets a round
+    # replace a correctly framed cell with a close-up that happens to score
+    # better on colour - and the failure list would then flag the cell the
+    # loop just chose. Scaled so that a confident close-up outweighs a single
+    # borderline check: this is the defect the owner actually reports.
+    feet = m.get("feet_in_frame")
+    if feet is not None and feet == feet:
+        s += 2.0 * max(0.0, framing.FRAMING_MIN - feet) / framing.FRAMING_MIN
     return s

@@ -261,10 +261,22 @@ repo = "openai/clip-vit-large-patch14"
 # and flax_model.msgpack at 1.59 GB each - for ~5 MB of tokenizer. The SD1.5
 # checkpoint ships its own text_encoder; only the tokenizer is wanted here,
 # which is also all that is on disk on the host this was written from.
-ignore = ["*.h5", "*.msgpack", "*.bin", "*.safetensors"]
-approx_gb = 0.005
-used_by = ["SD1.5 pipelines (PublicPrompts/All-In-One-Pixel-Model) via diffusers"]
-why = "Tokenizer for the SD1.5 lane. Small, and its absence surfaces as an opaque tokenizer error."
+#
+# `model.safetensors` is NO LONGER ignored - see below. The other three
+# frameworks' copies still are.
+ignore = ["*.h5", "*.msgpack", "*.bin"]
+approx_gb = 1.72
+used_by = [
+  "SD1.5 pipelines (PublicPrompts/All-In-One-Pixel-Model) via diffusers",
+  "framing.py",
+]
+why = """
+Two consumers that want different parts of one repo. The SD1.5 lane needs the
+tokenizer; `framing.py` needs the VISION tower, to answer whether a cell's
+feet are in frame - the one sprite defect no measurement of the alpha mask
+can see, because the angles LoRA frames a torso and a whole body to the same
+512px box.
+"""
 notes = """
 Subtractive `ignore`, not `allow`, on purpose: a wrong allow-list silently
 drops a needed config, whereas this can only drop weights that are known to be
@@ -272,8 +284,19 @@ unused. Selection verified with `make provision audit=1 files=1
 only=clip-vit-large`; re-run that after changing it.
 
 LOAD-TESTED 2026-10-13: with only the tokenizer/config files present and
-HF_HUB_OFFLINE=1, CLIPTokenizer.from_pretrained loads and tokenises. 6.38 GB
-of weights in four frameworks really are unused here.
+HF_HUB_OFFLINE=1, CLIPTokenizer.from_pretrained loads and tokenises. That is
+still true, and is why the SD1.5 lane never noticed the weights were absent.
+
+WEIGHTS ADDED 2026-10-27, and the 2026-10-13 note above is now only half
+right. "Weights in four frameworks, none of them used" held until
+`framing.py` existed; `model.safetensors` (1.71 GB) is now read on the sheet
+path. `*.bin` stays ignored because it is the same weights as a pickle and
+transformers prefers the safetensors; `*.h5` and `*.msgpack` are TF and Flax
+and nothing here is either. So this went 0.005 -> 1.72 GB, not 6.38.
+
+The vision tower runs on the CPU and is parked in host RAM, like BiRefNet and
+for the same reason: it is loaded inside the denoise subprocess, which holds
+the transformer on a card with no spare VRAM. Measured 1.18 s/cell.
 """
 
 [[model]]
