@@ -57,6 +57,30 @@ reference separates cleanly instead:
     clean cells (idle, walk, both sheets)       1.07 - 1.09 x
     8d9d164d attack s f2 / f4 (chest close-up)  1.85 / 1.98 x
 
+**That gap holds for EXTREME close-ups only, and `figure_ratio` is
+non-monotonic in the defect** (measured 2026-10-26 on job `06122e74`, 34
+cells hand-labelled off the bottom band at 3.4x):
+
+    complete cells                              0.900 - 1.176 x
+    cropped-torso cells                         0.980 - 1.726 x
+
+`cast_e_3` is a plain torso crop and scores **0.980** - below most complete
+cells. The reason is arithmetic, not tuning: a crop gains torso pixels and
+LOSES the legs, and a full body with spread arms carries more opaque area
+than a torso does. So area can move either way, and **no threshold on
+`figure_ratio` can separate these.** Sweeping it over the labelled set caps
+at 4 of 10 caught (best `FIGURE_RATIO_MAX` 1.18, 82.4%). On the live sheet
+exactly **1 of 126 cells** fired while 10 were cropped by eye.
+
+Do not read "close_up: 1" as "one cell is badly framed". The check catches
+chest-only crops, which is what it was calibrated on, and is blind to a
+thigh-up one. Detecting the moderate case needs a semantic signal - whether
+the feet are in frame - which no measurement of the alpha mask provides,
+because a complete figure and a cropped one both fill the 512 canvas edge to
+edge (1.1, first paragraph). Six geometric detectors were tried and all
+failed; notes in the session record rather than here, pending a calibration
+that transfers between subjects.
+
 ### 1.2 One scale already, and that is the problem
 
 `sheet.SheetBuilder.build` has always computed a single scale for the sheet.
@@ -310,8 +334,31 @@ scale (otherwise `Image.paste` clips the sprite), and that case sets
 ## 4. API additions — all additive
 
     GET  /api/jobs/{id}/frames                 the per-frame PNG index
-    GET  /api/jobs/{id}/frames/{row}/{n}.png   one finished cell
+    GET  /api/jobs/{id}/frames/{row}/{n}.png   one cell, ?stage=fitted|cut|raw
     POST /api/jobs/{id}/redraw                 202, a child job id
+
+`stage` defaults to `fitted`, so a caller that never passes it gets exactly
+the bytes it got before. The other two are the 512px images the cell was made
+from — `cut` after the cutout and before the fit, `raw` straight off the
+denoise with the backdrop still in it.
+
+They are exposed because **the fitted cell is the one image that cannot
+explain why a sprite looks wrong**: it is 48x64 or 96x128 and the loss has
+already happened. Every framing finding on record — the close-up survey, the
+cell-size measurements in [0019](../../decisions/0019-cell-size-bounds-recognisability.md),
+the backdrop set-difference — was made by reading `cut_*.png` and
+`cell_*.png` out of the work directory by hand, because nothing served them.
+`raw` keeps the backdrop on purpose: it is the only way to see what the model
+produced before BiRefNet decided what counted as figure.
+
+A **mirrored** row has no 512px image of its own (`w`/`nw`/`sw` are flips of
+`e`/`ne`/`se`), so a pre-fit request is answered from the source direction
+with `X-Mirrored-From: <action>_<direction>`. A 404 there would read as "the
+frame is missing" when the truth is "this row was never rendered".
+
+Both stages depend on the work directory surviving, and `make
+prune-job-cache` keeps them — it drops only `embeds_*.pt` and the per-attempt
+`att*_*.png`. A blunter cleanup sweep would take this endpoint with it.
 
 `POST /api/jobs` body, job status fields, the `/sheet` PNG layout and the
 existing `/atlas` fields are unchanged. The atlas gains `quality` (one entry

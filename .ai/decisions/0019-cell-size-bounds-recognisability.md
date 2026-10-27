@@ -1,8 +1,11 @@
 # 0019 - Sprite recognisability is bounded by the cell, not by the model
 
-Date: 2026-10-24
-Status: Proposed. Needs a something2 decision; nothing here changes the
-generator.
+Date: 2026-10-24 (production run added 2026-10-26)
+Status: **Accepted for the generator side.** A full 96x128 sheet was built
+through `POST /api/jobs` on 2026-10-26 and the predicted gain held to within
+2.5 points - see "Built in production", below. The cell VALUE is still a
+something2 contract decision, and nothing here changes the generator's
+default, which stays 48x64.
 
 **Result: at the production 48x64 cell, ~17% of a sprite's interior detail
 survives the fit. 96x128 more than doubles it (0.1665 -> 0.3582), costs no
@@ -61,6 +64,45 @@ The 48x64 run reproduced the baseline's pinned `sheet_scale` exactly
 +315% pixel area the table predicts. Side by side in
 `images/_cellsize/compare.png`: at 48x64 the staff is a brown smear and there
 is no face; at 96x128 both read.
+
+### Built in production, and the prediction held (2026-10-26)
+
+The recompose above reuses one build's `cut_*.png`. This is the other test: a
+sheet generated from scratch through `POST /api/jobs` with `{"cell":
+"96x128"}`, job `06122e74`, same concept and seed as the 48x64 baseline
+`2ff8af36`. **No code change was needed** - `JobSpec.cell` is already on
+`/openapi.json` and flows to compose's `--cell`.
+
+The two builds are not a clean A/B on their own: the baseline predates three
+pose-text commits, so 51 of 126 paired cells have a different 512 render.
+They separate exactly, though, because the cell size touches ONLY the fit at
+compose - the three turnaround panels are byte-identical across the two
+builds. So the figures below are the **75 cells whose 512 render is
+byte-identical**, where the cell is the sole difference.
+
+| delivered cell | 48x64 | 96x128 | change |
+|---|---|---|---|
+| sprite px | 878 | 3639 | **+314.5%** |
+| interior detail | 0.1682 | 0.3659 | **+117.5%** |
+| silhouette IoU | 0.4883 | 0.5019 | +2.8% |
+| `sheet_scale` | 0.089844 | 0.183594 | x2.04 |
+
+Against the table's predicted +115% detail and +315% pixels. IoU flat, as
+predicted. **Final flagged cells 4 -> 4**, every check equal or better, so
+the larger cell costs no quality. Build 1h35 for 126 rendered cells.
+
+Two things this exposed that the table could not:
+
+- **The DELIVERED cell is not the table's cell.** The table fits each sprite
+  alone; production pins the sheet-wide MINIMUM. Measured at 48x64 that is
+  878 px against the table's 1499, and IoU 0.4888 against 0.6121 - the min
+  rule costs ~41% of the sprite's pixels and most of the silhouette margin.
+  It costs a near-constant factor at BOTH cell sizes, which is why the
+  ratios above survive intact while the absolute numbers do not.
+- **`interior detail` is a PER-PIXEL mean, so it cannot fall when a sprite
+  shrinks.** `grad_energy` divides by the opaque pair count. A sprite with
+  45% fewer pixels scored an identical 0.1665. Read the px column for
+  magnitude; the detail column is "structure per pixel", not "structure".
 
 ### Palette was ruled out twice, from two directions
 

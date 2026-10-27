@@ -383,6 +383,37 @@ fragment of it.
   backdrop into the game. `_edit_qwen` matches the source's alpha by default;
   the result reports `transparent`, and a caller that needs it should gate on
   that number rather than assume.
+- **Its framing guard shares the sheet path's blind spot, and is INERT on an
+  opaque source.** `_edit_qwen` retries on a fresh seed when
+  `_opaque_share(result) / _opaque_share(source)` leaves
+  `[1/1.6, 1.6]` — the same opaque-AREA ratio as `sheet_qc.figure_ratio`,
+  and area is **non-monotonic** in a crop: a zoom that cuts the legs gains
+  torso and loses limbs, so it can land inside the band. The 1.6 tolerance
+  was calibrated on recompositions at 2.2, 3.1 and 4.7 against good edits at
+  0.99 — a wide-gap calibration, exactly like `figure_ratio`'s 1.07-1.09 vs
+  1.85-1.98, and it fails the same way on the moderate case. See
+  `.ai/specs/sheet-quality/contract.md` §1.1.
+  - Worse, `src_share = _opaque_share(source_path) if transparent else None`
+    and the loop then returns on `not src_share`, so **an edit of an RGB
+    source gets no framing check at all** and `EDIT_ATTEMPTS` never fires.
+    That is most prop and concept edits.
+  - Do not "fix" this by tightening `EDIT_FRAMING_TOLERANCE`; a tighter band
+    on a non-monotonic metric rejects good edits without catching the
+    crops. Detecting a moderate reframe needs a semantic signal. The
+    bottom-band CLIP probe trialled for sheets does transfer - swept over 68
+    hand-labelled cells across two characters it catches 12/13 cropped with
+    0/55 false positives at a fixed cut near 0.49 - but it is **not clean**:
+    one cropped cell scores 0.722 ABOVE a complete one at 0.487, so no
+    threshold separates them and the operating point sits on that boundary.
+    **Per-sheet calibration does not help** - the turnaround references
+    score 0.9931 and 0.9932 on the two subjects, so there is no offset to
+    correct, and subtracting or dividing by them changes nothing (all three
+    variants scored 98.5%). Measure on the edit path before assuming the
+    numbers carry: they were taken on sheet cells, not on edit output.
+  - `/api/edit` was **disabled** when this was written (`EDIT_ENABLED` unset
+    in both containers, so 503), so none of the above has been exercised
+    against live edits — it is read off the code and the sheet-path
+    measurements, not from edit output.
 
 **Turnaround rows — the west rows are answered by mirroring; the front quarters are not**
 - **`left side` returns the same facing as `right side`.** Measured on two
@@ -549,6 +580,14 @@ fragment of it.
   way (4 had failed). So the real regression is ~+8, not +13. **57 of 210
   baseline cells had a dormant facing check** — "facing: 0" has never meant
   "every cell faces correctly".
+- **Read `attempts[best]`, not `attempts[0]`, when the metric must describe
+  the image on disk.** `scores.json` keeps every attempt; the redraw rounds
+  replace the picture and move `best`, so `attempts[0]` describes a frame
+  that no longer exists. Reading the wrong one **reversed a conclusion** on
+  2026-10-26: a `FIGURE_RATIO_MAX` sweep scored 10 of 10 off `attempts[0]`
+  and 4 of 10 off `attempts[best]`, which is the difference between "lower
+  the threshold" and "this metric cannot do it". `attempts[0]` is the right
+  read only for "what did the model produce unaided".
 
 **Q3_K_S exists, fits, and is NOT the default either**
 - The OOM on record (~24 MiB short, mid-denoise) is **Q3_K_M's**, a larger
@@ -611,6 +650,24 @@ fragment of it.
   `config.json` after the first compose so a redraw cannot resize the whole
   sheet; when a redrawn cell genuinely needs a smaller scale the sheet refits
   and the atlas says `refit: true`. Do not "fix" the min-scale rule.
+  - **The pinned path has NO fit guard, and `Image.paste` crops silently.**
+    `pixelate.pixelate` pastes at `((cell_w - small.width) // 2, ...)`; a
+    negative offset clips to the destination instead of failing. The
+    `scale is None` branch computes a fit and always fits, the PINNED branch
+    does not. Latent, not currently firing - measured 0 of 168 clipped on
+    `06122e74`, max bbox 0.979 of cell width - but a redraw or a cell-size
+    change reuses the pinned scale, so this crops rather than downsizes the
+    day it does fire. Check for opaque pixels on a cell's outermost row or
+    column before believing a sheet is clean.
+  - **A cell that looks cropped usually is NOT clipped by the cell box.**
+    The fit normalises the BOUNDING BOX, not the character. Every render is
+    edge to edge, so every box is ~512px and all 28 rows measured 88-94px
+    tall (worst row varies 7%) - while the character inside varies hugely,
+    because a torso close-up and a full body get the same box. "The figure
+    is bigger in that frame and its legs are gone" is a close-up in the
+    RENDER, not a crop at compose, and no scaling repairs it: the legs are
+    not in the pixels. Keep the words apart - **close-up** for the render
+    defect, **clipped** for a paste that exceeded the cell.
 - **The sheet path keys with BiRefNet now, not the corner flood fill.** That
   was the last place still using it, and it structurally cannot clear a glow,
   a scene or a painted transparency checkerboard — measured 9-39% of frame
