@@ -358,12 +358,19 @@ EXTRA_PROMPT = os.environ.get("QWEN_EXTRA_PROMPT", "")
 
 def angle_prompt(azimuth: str,
                  elevation: str = ISO_ELEVATION,
-                 distance: str = "medium") -> str:
+                 distance: str = ISO_DISTANCE) -> str:
     """Build the LoRA's trigger string: `<sks> <azimuth> <elevation> <distance>`.
 
     Raises on an unknown key rather than falling through to a paraphrase. A
     silently wrong camera angle is the exact class of bug ADR 0003 spent a week
     on ("move up right" contained "move up"), and it is cheap to make loud.
+
+    `distance` defaults to ISO_DISTANCE, not to a hardcoded "medium". It was
+    hardcoded, and the turnaround path already read ISO_DISTANCE - so setting
+    QWEN_ISO_DISTANCE widened the turnaround REFERENCES while every action
+    cell stayed at a medium shot, which desynchronises the cells from the
+    views they are scored against. Both ends now read one knob. The default
+    is still "medium", so this changes nothing until the knob is turned.
     """
     for key, table, what in ((azimuth, AZIMUTHS, "azimuth"),
                              (elevation, ELEVATIONS, "elevation"),
