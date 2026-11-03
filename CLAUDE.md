@@ -672,6 +672,30 @@ fragment of it.
     back line (interpretation, not measured), and at 48 px wide that
     survives quantisation as a hard column. The lever is **cell size**
     (`0019`, and `cell` is already in the submit body), not another check.
+  - **A bigger cell removes it, measured by re-fitting rather than
+    re-rendering** (`scripts/cell-size-slice.py`, all three jobs, CPU only -
+    the defect is made by the FIT, so re-fitting the same `cut_*.png` at
+    other cell sizes isolates it exactly and costs no GPU). Counting
+    measurements that would trip something2's proposed 0.31 threshold:
+
+    | cell | a22ed1ed | f11a661e | 67e00bd5 | figure px | clipped |
+    |---|---|---|---|---|---|
+    | **48x64** | 4/20 | **13/24** | 12/48 | 894-1366 | 0 |
+    | 64x86 | 2/20 | 7/24 | 8/48 | 1641-2477 | 0 |
+    | **96x128** | **0/20** | 1/24 | **0/48** | 3759-5709 | 0 |
+    | 128x170 | 0/20 | 0/24 | 0/48 | 6785-10236 | 0 |
+
+    96x128 takes it to 0, 1 and 0; 128x170 to zero everywhere, with max run
+    <= 0.245. The figure also gains ~4.2x the pixels.
+  - **The silent-crop hazard does NOT fire at these sizes** - checked, not
+    assumed, because a cell-size change is the trigger that note names.
+    0 of 10, 0 of 12 and 0 of 24 cells have opaque pixels on an outermost
+    row or column at any size tested. The column stays in the script so the
+    next person switching cell size gets the answer for their subject.
+  - The re-fit is production-faithful, not an approximation: the script
+    recomputes the sheet-wide MINIMUM fit the way `sheet.SheetBuilder` does,
+    and its 48x64 scale reproduces the atlas's recorded `scale` exactly
+    (0.116751 on `a22ed1ed`).
 - **"The sprite looks nothing like the concept" is a CELL-SIZE problem, and
   it is the INTERIOR that is lost, not the outline**
   (`scripts/cell-size-cost.py`, all 210 cells of `2ff8af36`, 2026-10-24, CPU
