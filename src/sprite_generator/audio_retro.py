@@ -89,6 +89,33 @@ PRESETS: dict[str, dict] = {
                  "attack": (0.005, 0.01), "sustain": (0.2, 0.3),
                  "decay": (0.4, 0.6), "punch": 0.3, "lowpass": 1.0,
                  "highpass": 0.0, "crush_bits": 7},
+    # An attack: a low gritty roar. A saw growl with fast vibrato, swept down
+    # and punched at the front so it reads as a lunge rather than a hum.
+    # `vib_depth` and `vib_rate` must travel together - synth() reads the rate
+    # unguarded once a depth is present.
+    "attack": {"wave": ["saw", "square"], "duty": (0.4, 0.6),
+               "freq": (240, 380), "slide": (-1.6, -0.9),
+               "vib_depth": (0.05, 0.10), "vib_rate": (18.0, 28.0),
+               "attack": (0.005, 0.015), "sustain": (0.10, 0.18),
+               "decay": (0.14, 0.22), "punch": (0.4, 0.6),
+               "lowpass": (0.5, 0.8), "highpass": 0.0, "crush_bits": 5},
+    # A bow release: the classic sfxr "laser" shape, a bright tone dropping
+    # fast. 8-bit has no string timbre, so the drop is what sells it.
+    "shoot": {"wave": ["square", "saw"], "duty": (0.3, 0.5),
+              "freq": (1200, 1900), "slide": (-5.0, -3.0), "attack": 0.0,
+              "sustain": (0.03, 0.06), "decay": (0.08, 0.14),
+              "punch": (0.3, 0.5), "lowpass": 1.0, "highpass": 0.0,
+              "crush_bits": 6},
+    # A creature idling: a slow low pulse. No slide and no punch - this is the
+    # one cue meant to be repeated, so it must not have a gesture's shape.
+    # Still a one-shot on disk: master_one_shot fades the last 25 ms, so a
+    # caller looping it hears a dip, not a seamless bed.
+    "idle": {"wave": ["square", "saw"], "duty": (0.45, 0.55),
+             "freq": (120, 200), "slide": 0.0,
+             "vib_depth": (0.06, 0.12), "vib_rate": (3.0, 5.5),
+             "attack": (0.08, 0.14), "sustain": (0.5, 0.8),
+             "decay": (0.5, 0.8), "punch": 0.0, "lowpass": (0.3, 0.55),
+             "highpass": 0.0, "crush_bits": 5},
     # No "footstep": an 8-bit footstep is a weak blip. The cue has no retro
     # recipe, so asking for one is refused by resolve_engine (ticket 17).
 }

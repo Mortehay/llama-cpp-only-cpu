@@ -353,8 +353,15 @@ def stage_turnaround_encode(a):
                    # every later stage - including a redraw days later - reads
                    # the engine off the work directory instead of re-deriving
                    # it from a job row that may no longer exist.
-                   "engine": a.engine}, f, indent=2)
-    log.info("encoded %d direction prompt(s)", len(cells))
+                   "engine": a.engine,
+                   # Per-job sampling, recorded beside the engine and for the
+                   # same reason: a redraw must re-render at the settings the
+                   # sheet was built with, not at whatever the box's env says
+                   # weeks later. None means "the engine's default".
+                   "steps": a.steps, "cfg": a.cfg}, f, indent=2)
+    log.info("encoded %d direction prompt(s)%s", len(cells),
+             f" (steps={a.steps}, cfg={a.cfg})"
+             if (a.steps or a.cfg) else "")
 
 
 def stage_turnaround_denoise(a):
@@ -425,6 +432,8 @@ def _hq_turnaround(a, cfg):
     import qwen_edit
 
     dirs = cfg.get("turnaround_directions") or cfg["directions"]
+    _steps, _cfgs = _sampling(cfg, "comfyui-hq")
+    log.info("hq turnaround: %d step(s) at CFG %.1f", _steps, _cfgs)
     concept_path = cfg["concept"]
     flipped_path = None
     out = {}
@@ -440,7 +449,7 @@ def _hq_turnaround(a, cfg):
         t0 = time.time()
         png = comfy_client.render(
             src, prompt, negative=engines.HQ_NEGATIVE, seed=cfg["seed"],
-            steps=engines.HQ_STEPS, cfg=engines.HQ_CFG,
+            steps=_steps, cfg=_cfgs,
             size=cfg.get("size", 512))
         out[d] = Image.open(png).convert("RGBA")
         log.info("denoised %d/%d  %s  (%.1fs)", len(out), len(dirs), d,
@@ -449,6 +458,30 @@ def _hq_turnaround(a, cfg):
     # Exactly once, here, same as the diffusers lane - everything downstream
     # sees a normal turnaround and needs to know nothing about mirroring.
     return qwen_edit.unmirror_views(out)
+
+
+def _sampling(cfg, engine=None):
+    """(steps, cfg_scale) for this work directory, per engine default.
+
+    ONE resolver for both lanes, so a job that asks for 6 steps at CFG 4 gets
+    the same sampling whichever renderer draws it - otherwise comparing the
+    two lanes measures their defaults rather than their renderers, which is
+    the mistake that produced a bogus 1.9x speed claim earlier.
+
+    A `None` in config.json means "the engine's configured default", which is
+    what every caller sent before these fields existed.
+    """
+    import engines
+    import qwen_edit
+
+    eng = engine or cfg.get("engine", "diffusers")
+    if eng == "comfyui-hq":
+        d_steps, d_cfg = engines.HQ_STEPS, engines.HQ_CFG
+    else:
+        d_steps, d_cfg = qwen_edit.LIGHTNING_STEPS, qwen_edit.CFG_SCALE
+    steps = cfg.get("steps") or d_steps
+    scale = cfg.get("cfg") or d_cfg
+    return int(steps), float(scale)
 
 
 def _hq_render_cells(a, cfg, cells):
@@ -471,6 +504,8 @@ def _hq_render_cells(a, cfg, cells):
     import comfy_client
     import engines
 
+    _steps, _cfgs = _sampling(cfg, "comfyui-hq")
+    log.info("hq cells: %d step(s) at CFG %.1f", _steps, _cfgs)
     out = {}
     tmp = os.path.join(a.work, "_hq_src")
     os.makedirs(tmp, exist_ok=True)
@@ -483,7 +518,7 @@ def _hq_render_cells(a, cfg, cells):
         t0 = time.time()
         png = comfy_client.render(
             src, c["prompt"], negative=engines.HQ_NEGATIVE, seed=cfg["seed"],
-            steps=engines.HQ_STEPS, cfg=engines.HQ_CFG,
+            steps=_steps, cfg=_cfgs,
             size=cfg.get("size", 512), lora_scale=a.angles_scale)
         out[c["key"]] = Image.open(png).convert("RGBA")
         log.info("denoised %d/%d  %s  (%.1fs)", i, len(cells), c["key"],
@@ -1239,6 +1274,11 @@ def main():
                     choices=["diffusers", "comfyui-hq"],
                     help="which renderer draws this sheet; recorded in "
                          "config.json and read by every later stage")
+    te.add_argument("--steps", type=int, default=None,
+                    help="sampling steps; omit for the engine's default")
+    te.add_argument("--cfg", type=float, default=None,
+                    help="true CFG scale; >1.0 enables the negative prompt "
+                         "and DOUBLES the cost per step")
     te.add_argument("--no-clean-concept", dest="clean_concept",
                     action="store_false", default=True,
                     help="skip keying and ground-stripping the concept. The "

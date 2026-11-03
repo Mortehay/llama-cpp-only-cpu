@@ -363,12 +363,42 @@ CUES: list[dict[str, Any]] = [
      "recipes": {"realistic": {"template":
          "activating {entity}, a warm magical chime rising and fading, "
          + _SFX_SUFFIX}}},
+    # something2 asked for these three (2026-11-01): 721 sound slots in the
+    # game are waiting on them. All three take the ENTITY as the thing making
+    # the sound - 348 creatures for `attack`/`idle`, 25 ranged items plus the
+    # "ranged" attack type for `shoot`. That is what separates `attack` from
+    # `slash` (a blade swung through air) and from `hit` (a blow landing,
+    # heard on the target).
+    {"value": "attack", "label": "Attack - a creature lunges",
+     "default_engine": "realistic", "duration_s": 1.0,
+     "entity_default": "a creature",
+     "recipes": {"realistic": {"template":
+         "{entity} lunging into an attack, a short aggressive snarl and a "
+         "rush of movement, " + _SFX_SUFFIX}}},
+    # The one cue a caller is expected to LOOP. The sfx lane masters one-shots
+    # (25 ms tail fade, lead trimmed, no loop tags), so this is "loops
+    # reasonably", not seam-free - the pitch-matched alternative is the
+    # `ambience` kind, which does crossfade. Hence the even, unchanging
+    # wording: a texture to repeat, not a gesture with a shape.
+    {"value": "idle", "label": "Idle - a creature nearby",
+     "default_engine": "realistic", "duration_s": 2.0,
+     "entity_default": "a creature",
+     "recipes": {"realistic": {"template":
+         "{entity} resting nearby, steady slow breathing and a faint low "
+         "growl, even and unchanging throughout, " + _SFX_SUFFIX}}},
+    {"value": "shoot", "label": "Shoot - a ranged weapon fires",
+     "default_engine": "realistic", "duration_s": 0.6,
+     "entity_default": "a wooden bow",
+     "recipes": {"realistic": {"template":
+         "firing {entity}, a taut string release and the sharp snap of a "
+         "projectile leaving, " + _SFX_SUFFIX}}},
 ]
 
 # The cues `audio_retro.PRESETS` can render. Named here rather than imported
 # so this module stays dependency-free; smoke-audio asserts the two agree.
 RETRO_CUES = ("slash", "hit", "pickup", "spell", "ui_click",
-              "miss", "chest_open", "death", "waypoint")
+              "miss", "chest_open", "death", "waypoint",
+              "attack", "shoot", "idle")
 for _c in CUES:
     if _c["value"] in RETRO_CUES:
         _c["recipes"]["retro"] = {"preset": _c["value"]}

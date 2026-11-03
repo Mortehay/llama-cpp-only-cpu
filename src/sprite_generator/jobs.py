@@ -195,6 +195,53 @@ class JobSpec(BaseModel):
     # lane not working, and the whole point of the field is to be able to tell.
     engine: str = "diffusers"
 
+    # Per-job sampling, so a caller can trade wall clock for quality WITHOUT
+    # an operator editing env vars and restarting containers. None means "use
+    # the engine's configured default", which is what every existing caller
+    # sends and is why today's behaviour is untouched.
+    #
+    # These two are the whole quality/time dial on this box, and the costs are
+    # measured rather than guessed (Q6_K + group offload, 210-cell sheet):
+    #
+    #   4 steps, cfg 1.0   ~30 s/cell    3h07   today's default (Q2_K)
+    #   6 steps, cfg 1.0   ~88 s/cell    ~5.1 h  no negative prompt possible
+    #   4 steps, cfg 4.0  ~117 s/cell    ~6.8 h
+    #   6 steps, cfg 4.0  ~175 s/cell   ~10.2 h
+    #
+    # CFG ABOVE 1.0 DOUBLES THE WORK PER STEP, because classifier-free
+    # guidance runs a second, negative pass - that is not overhead, it IS the
+    # negative prompt. At cfg <= 1.0 a negative prompt is inert, so the
+    # "no negative" variants above are simply cfg 1.0.
+    steps: int | None = None
+    cfg: float | None = None
+
+    @field_validator("steps")
+    @classmethod
+    def _sane_steps(cls, v):
+        """Bounded because the cost is linear and the caller pays it in hours.
+
+        1-60: below 1 renders nothing, and 60 steps on a 210-cell sheet is
+        over four days on this card. Refusing here beats discovering it from
+        a progress bar.
+        """
+        if v is not None and not (1 <= v <= 60):
+            raise ValueError(
+                f"steps={v} is outside 1-60. On this box a 210-cell sheet "
+                f"costs roughly {v} x 29 s/cell at cfg 1, so 60 steps is "
+                f"already days of GPU.")
+        return v
+
+    @field_validator("cfg")
+    @classmethod
+    def _sane_cfg(cls, v):
+        """1.0-15.0. Above 1.0 doubles the per-step cost."""
+        if v is not None and not (1.0 <= v <= 15.0):
+            raise ValueError(
+                f"cfg={v} is outside 1.0-15.0. 1.0 disables classifier-free "
+                f"guidance (and with it any negative prompt); above ~8 the "
+                f"image usually burns.")
+        return v
+
     @field_validator("engine")
     @classmethod
     def _known_engine(cls, v):

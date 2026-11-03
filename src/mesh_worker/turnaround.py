@@ -436,6 +436,82 @@ def _gate_separation(out: dict) -> None:
                 f"transparency numbers, and see ADR 0004 core 82.")
 
 
+def _handedness(assign: dict) -> int | None:
+    """Which way the turnaround goes round, +1 or -1, or None if unreadable.
+
+    `_derive_pose` SEARCHES handedness but returns only azimuths, so the
+    render loop never saw it and stepped +45 unconditionally. On a mesh whose
+    match came out left-handed that walks the turnaround backwards and swaps
+    `e` with `w`. Recovered here from the azimuths themselves: `left` sits at
+    `front + hand * 90`, so the gap is 90 one way and 270 the other.
+    """
+    f = assign.get("front", (None,))[0]
+    lt = assign.get("left", (None,))[0]
+    if f is None or lt is None:
+        return None
+    return 1 if (lt - f) % 360 < 180 else -1
+
+
+POSE_SUFFIX = ".pose.json"
+
+
+def _pose_path(mesh_path: str) -> str:
+    return os.path.splitext(mesh_path)[0] + POSE_SUFFIX
+
+
+def _save_pose(mesh_path: str, up: int, assign: dict) -> None:
+    """Record the pose the COLOUR was projected under, beside the mesh.
+
+    WHY THIS EXISTS - measured 2026-10-27 on a bat (job 179fe371).
+    The pose used to be derived twice, independently: once here against five
+    views, and again in `stage_render` against three (`front`, `left`,
+    `back`). Those are different problems. Dropping the quarters removes the
+    only asymmetric evidence, and for a subject whose front and back
+    silhouettes are alike the objective goes flat - the bat scored mean IoU
+    0.773 for the right answer and 0.784 for a wrong one, so a 1.1% margin
+    decided a 150-degree rotation AND a handedness flip.
+
+    The result was a sheet whose colour had been painted under front=120 and
+    whose cameras were placed under front=270: row 0 "s" showed the bat's
+    back. `_gate_separation` cannot catch it, because front and back are 180
+    apart in the flipped solution too.
+
+    The absolute offset does not matter - it is just where this mesh's front
+    happens to point. What matters is that the renderer uses the SAME one the
+    colour was projected under. So it is written down rather than guessed
+    again.
+    """
+    hand = _handedness(assign)
+    try:
+        with open(_pose_path(mesh_path), "w") as fh:
+            json.dump({"up": up,
+                       "front": assign.get("front", (None,))[0],
+                       "hand": hand,
+                       "azimuths": {n: d for n, (d, _i) in assign.items()}},
+                      fh, indent=1)
+    except OSError as e:
+        # Advisory: a mesh that cannot carry its pose still renders, it just
+        # falls back to deriving one. Do not lose a 160s job over this.
+        print(f"  could not write the pose sidecar ({e}); the render stage "
+              f"will re-derive and may disagree")
+
+
+def _load_pose(mesh_path: str):
+    """The pose recorded beside the mesh, or None."""
+    p = _pose_path(mesh_path)
+    if not os.path.isfile(p):
+        return None
+    try:
+        with open(p) as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as e:
+        print(f"  pose sidecar unreadable ({e}) - re-deriving")
+        return None
+    if d.get("up") is None or d.get("front") is None:
+        return None
+    return d
+
+
 # --- colour -------------------------------------------------------------
 
 def _cut_pedestal(mesh, up: int, band: float, ratio: float):
@@ -596,6 +672,10 @@ def stage_colour(a):
           f"{int((~hit).sum())} median-filled")
     mesh.visual = trimesh.visual.ColorVisuals(mesh=mesh, vertex_colors=col)
     mesh.export(a.out)
+    # The colour above was projected under THIS pose. Record it so the render
+    # stage places its cameras the same way instead of solving the problem
+    # again from fewer views - see _save_pose.
+    _save_pose(a.out, up, assign)
     print(f"wrote {a.out} ({len(np.unique(col[:, :3], axis=0))} distinct RGB)")
 
 
@@ -690,24 +770,44 @@ def stage_render(a):
     # them, fall back to the tallest-extent guess and say so - a caller that
     # renders without views is asking for an unverified orientation.
     front = 0
+    hand = 1
+
+    # Prefer the pose the colour stage wrote down. Re-deriving here used to be
+    # the default and it is strictly worse: it solves the same problem against
+    # less evidence, and when it lands on a different optimum the cameras
+    # disagree with the paint. See _save_pose for the bat that proved it.
+    pose = _load_pose(a.mesh)
     views = {}
-    for n in ("front", "left", "back"):
-        fp = os.path.join(a.views, f"{n}.png") if a.views else None
-        if fp and os.path.isfile(fp):
-            views[n] = Image.open(fp).convert("RGBA")
-    if views:
-        up, assign = _derive_pose(v, views, 192, a.sweep)
-        if assign.get("front", (None,))[0] is not None:
-            front = assign["front"][0]
+    if pose is not None:
+        up, front = pose["up"], pose["front"]
+        hand = pose.get("hand") or 1
+        print(f"  pose reused from the colour stage: up {'xyz'[up]}, front "
+              f"{front} deg, handedness {'+' if hand > 0 else '-'}")
     else:
-        up = _up_axis(v)
-        print(f"  no views given - up GUESSED as {'xyz'[up]} from the tallest "
-              f"extent, azimuth 0. Pass --views to derive both.")
+        # Fallback, for a mesh rendered without a colour stage. Take ALL five
+        # views, not three: the quarters are the asymmetric evidence, and
+        # without them a front/back-symmetric subject picks its orientation on
+        # a margin indistinguishable from noise.
+        for n in ("front", "left", "back", "q1", "q2"):
+            fp = os.path.join(a.views, f"{n}.png") if a.views else None
+            if fp and os.path.isfile(fp):
+                views[n] = Image.open(fp).convert("RGBA")
+        if views:
+            up, assign = _derive_pose(v, views, 192, a.sweep)
+            if assign.get("front", (None,))[0] is not None:
+                front = assign["front"][0]
+            hand = _handedness(assign) or 1
+        else:
+            up = _up_axis(v)
+            print(f"  no views given - up GUESSED as {'xyz'[up]} from the "
+                  f"tallest extent, azimuth 0. Pass --views to derive both.")
     ax, bx = [i for i in range(3) if i != up]
 
     os.makedirs(a.out, exist_ok=True)
     for i, d in enumerate(DIRECTIONS):
-        deg = (front + i * 45) % 360
+        # `hand` was searched during the match and then thrown away here,
+        # which walked a left-handed match backwards and swapped `e` with `w`.
+        deg = (front + hand * i * 45) % 360
         img = _rasterise(v, f, col, up, ax, bx, deg, a.res, a.elevation)
         p = os.path.join(a.out, f"dir_{d}.png")
         Image.fromarray(img, "RGBA").save(p)

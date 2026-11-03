@@ -82,8 +82,9 @@ tells callers apart.
   `village`. Ambience: `forest` (default), `cave`, `village_day`, `night`,
   `rain`. All in a smooth medieval house style.
 - Cues (sfx): `slash`, `hit`, `pickup`, `spell`, `ui_click`, `miss`,
-  `chest_open`, `death`, `waypoint` (realistic and retro), `footstep`
-  (realistic only).
+  `chest_open`, `death`, `waypoint`, `attack`, `idle`, `shoot` (realistic and
+  retro), `footstep` (realistic only). The last three were added 2026-11-01
+  at something2's request, for 721 waiting sound slots.
 - Batches: the generator keeps Stable Audio resident between consecutive
   ambience/sfx jobs (measured 2026-09-28: a warm cue 8.5 s vs 41 s cold), so
   the art console's one-request-per-item queue does not pay a load per item. Engine precedence: request `engine` >
@@ -94,7 +95,10 @@ tells callers apart.
 
 | something2 moment / event | cue | note |
 |---|---|---|
-| `attack` (melee) | `slash` | entity = the weapon or creature |
+| `attack` (melee, weapon) | `slash` | entity = the weapon |
+| `attack` (melee, creature) | `attack` | added 2026-11-01; entity = the creature (348 of them). Its own lunge/roar, NOT the blade - `slash` is the weapon and `hit` is heard on the target. Semantics confirmed by something2 2026-11-01: their creature `attack` slot is the creature's own sound |
+| a creature nearby, ambient | `idle` | added 2026-11-01; entity = the creature. A one-shot, played 4-10 s apart and never back to back - confirmed by them, see the note below |
+| `attack` (ranged) / ranged skill | `shoot` | added 2026-11-01; entity = the weapon ("a yew longbow"), 25 items |
 | `attack` (caster/skill) | `spell` | entity = the spell ("an ice spell") |
 | `impact` | `hit` | entity = the thing hit |
 | `miss` | `miss` | a light whoosh; added 2026-09-28 |
@@ -104,6 +108,27 @@ tells callers apart.
 | `waypointActivated` | `waypoint` | added 2026-09-28 |
 | UI clicks (client-only) | `ui_click` | |
 | footsteps (client-only, movement) | `footstep` | realistic only |
+
+**`idle` is a one-shot, and the sfx lane does not loop-master** - which turned
+out not to matter; read the ANSWERED paragraph below before acting on this
+one. Every cue
+goes through `master_one_shot`: the lead silence is trimmed and the last
+**25 ms is faded to zero**, and cues carry **no loop tags** on purpose (a
+LOOPSTART tag would loop forever in an engine that honours it). So repeating
+an `idle` clip gives an audible amplitude dip at the join, not a click and not
+a seamless bed. The prompt asks for an even, unchanging texture to make that
+dip as cheap as possible, and the retro preset has no slide and no punch for
+the same reason.
+
+**ANSWERED 2026-11-01 by something2, and the answer is "it costs nothing".**
+They play creature "nearby" sounds as **one-shots 4-10 s apart, never
+repeated back to back**, so the join is never heard and the dip above is
+inaudible in the game. They refreshed the provider, saw all three cues, and
+**explicitly declined the `ambience` variant.** So `idle` is correctly an sfx
+one-shot. Do NOT build the crossfaded version, and do NOT tune this cue
+toward seamlessness - the consumer has said it is not wanted. The mechanism
+above is kept because it explains why this lane could not have delivered a
+bed, not because anything is outstanding.
 
 Contexts -> music style (a starting default; the admin may override per set):
 `explore` -> `medieval_fantasy`, `combat` -> `battle`, `village` -> `village`,

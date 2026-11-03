@@ -283,9 +283,38 @@ variant after a ~3-4 s load; a 3-cue / 8-variant pack in 79 s; onset 0-5 ms
 on every variant; 2.85 GB peak. Two findings made that possible - see 0010
 "sfx".
 
+**Thirteen cues as of 2026-11-01.** `attack`, `idle` and `shoot` were added
+that day at something2's request - 721 game sound slots were waiting on them.
+All three name the ENTITY as the thing making the sound, which is what keeps
+them distinct from the cues they sit beside: `attack` is a creature's own
+lunge or roar (348 creatures) where `slash` is a blade through air and `hit`
+is the blow heard on the target; `shoot` is a ranged release (25 items plus
+the "ranged" attack type); `idle` is a creature's ambient presence.
+Both engines render all three. Verified end to end 2026-11-01 through
+`POST /api/audio/sfx-pack`, 3 cues x 2 variants: retro **0.6 s**, realistic
+**79.3 s**, 0 failed, onset 0.0-5.0 ms on every variant.
+
+**`idle` cannot be made seamless on this lane - and does not need to be; read
+the ANSWERED paragraph below before acting on this one.** `master_one_shot` trims the lead and fades the last 25 ms to zero,
+and no cue carries loop tags. Repeating one is therefore an audible amplitude
+dip, not a click and not a bed. The realistic prompt asks for an "even and
+unchanging" texture and the retro preset drops slide and punch, which makes
+the dip cheap - it does not remove it.
+
+**ANSWERED the same day, and the answer retires the concern.** something2
+plays creature "nearby" sounds as **one-shots 4-10 s apart, never repeated
+back to back**, so nothing in the game ever hears the join; they confirmed all
+three cues visible after a provider refresh and **declined the `ambience`
+variant outright**. `idle` is therefore correctly an sfx one-shot, and the
+seamless version is not owed. Do not build it, do not add loop tags to sfx,
+and do not tune this cue toward seamlessness - the only consumer has said it
+is not wanted. The mechanism is recorded above because it explains the lane's
+limit, not because anything is outstanding.
+
 **Retro (ticket 17).** Procedural 8-bit, rendered in the API process - never
 queued on the worker, so it answers while a GPU job runs. Cues: slash, hit,
-pickup, spell, ui_click; **footstep has no retro recipe** and is refused
+pickup, spell, ui_click, miss, chest_open, death, waypoint, attack, shoot,
+idle (12 presets); **footstep has no retro recipe** and is refused
 (422, "it offers realistic"). Without a `seed` the seed is derived from
 `<cue>/<entity>`, so a name always yields the same sound; variants use
 `seed..seed+n-1`, each recorded in `info.variants`. Measured: 218 ms for a
