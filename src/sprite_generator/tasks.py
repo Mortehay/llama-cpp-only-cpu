@@ -30,7 +30,7 @@ import requests
 from collections import namedtuple
 from celery import Celery, Task, chord, group
 from celery.signals import (worker_ready, task_prerun, task_postrun,
-                            before_task_publish)
+                            task_revoked, before_task_publish)
 
 import model_gateway
 import cutout
@@ -3277,6 +3277,16 @@ def generate_spritesheet_task(self, parent_id: int, actions: list, llm_name: str
     return {"status": "success", "url": f"/images/{filename}", "duration_ms": duration_ms}
 
 
+def _cancel_probe(task_id: str, job_id: str):
+    """A callable the stage runner polls between cells.
+
+    Both sources, because neither alone is enough: the Redis flag has a 600 s
+    TTL and a single stage runs for up to 100 minutes, while the row survives
+    the TTL, a worker restart and a Celery redelivery under a new task id.
+    """
+    return lambda: is_cancelled(task_id) or _job_cancelled(job_id)
+
+
 def _job_cancelled(job_id: str) -> bool:
     """Has this job's ROW been cancelled?
 
@@ -3291,7 +3301,9 @@ def _job_cancelled(job_id: str) -> bool:
             cur.execute("SELECT status FROM jobs WHERE id = %s", (job_id,))
             row = cur.fetchone()
         conn.close()
-        return bool(row) and row[0] == "cancelled"
+        # `cancelling` too: that is what DELETE writes now, and it stays that
+        # way until THIS code confirms the stop by writing `cancelled`.
+        return bool(row) and row[0] in ("cancelled", "cancelling")
     except Exception as e:
         logger.warning("could not read cancel state for job %s: %s", job_id, e)
         return False
@@ -3343,6 +3355,7 @@ from job_runner import (
     fail_stranded_jobs as _fail_stranded_jobs,
     fail_stranded_training_runs as _fail_stranded_training_runs,
     CELL_RE as _CELL_RE,
+    CANCELLED_RC as _CANCELLED_RC,
 )
 
 
@@ -3489,7 +3502,7 @@ def build_sheet_job(self, job_id: str):
         # task id - none of which the flag does.
         if is_cancelled(self.request.id) or _job_cancelled(job_id):
             _job_update(job_id, status="cancelled", finished_at=_now(),
-                        progress_msg=f"cancelled during {stage}")
+                        progress_msg=f"cancelled before {stage}")
             logger.info("job %s: cancelled before %s", job_id, stage)
             return {"status": "cancelled"}
 
@@ -3499,7 +3512,17 @@ def build_sheet_job(self, job_id: str):
         logger.info("job %s: %s", job_id, " ".join(cmd))
 
         # Interpolate this stage between the previous mark and its own.
-        rc, tail = _run_stage(cmd, job_id, pct_done, pct, env=stage_env)
+        rc, tail = _run_stage(cmd, job_id, pct_done, pct, env=stage_env,
+                              cancelled=_cancel_probe(self.request.id, job_id))
+        if rc == _CANCELLED_RC:
+            # The stage stopped mid-way on a cancel. This is where `cancelling`
+            # becomes `cancelled`: the task has actually left the conveyor and
+            # the card is free, which is the only moment a caller can trust.
+            _job_update(job_id, status="cancelled", stage=stage,
+                        finished_at=_now(),
+                        progress_msg=f"cancelled during {stage}")
+            logger.info("job %s: cancelled during %s", job_id, stage)
+            return {"status": "cancelled"}
         if rc != 0:
             logger.error("job %s failed in %s:\n%s", job_id, stage, tail)
             _job_update(job_id, status="failed", stage=stage,
@@ -3590,7 +3613,14 @@ def redraw_frames_job(self, job_id: str):
         _job_update(job_id, stage=stage, progress_msg=f"running {stage}")
         cmd = base + [stage] + args + common
         logger.info("redraw job %s: %s", job_id, " ".join(cmd))
-        rc, tail = _run_stage(cmd, job_id, pct_done, pct)
+        rc, tail = _run_stage(cmd, job_id, pct_done, pct,
+                              cancelled=_cancel_probe(self.request.id, job_id))
+        if rc == _CANCELLED_RC:
+            _job_update(job_id, status="cancelled", stage=stage,
+                        finished_at=_now(),
+                        progress_msg=f"cancelled during {stage}")
+            logger.info("redraw job %s: cancelled during %s", job_id, stage)
+            return {"status": "cancelled"}
         if rc != 0:
             logger.error("redraw job %s failed in %s:\n%s", job_id, stage, tail)
             _job_update(job_id, status="failed", stage=stage,
@@ -5118,6 +5148,11 @@ def _fail_stranded_tasks(**_):
 # task started, and what it looks like the instant it finishes.
 
 @worker_ready.connect
+def _reap_pending_on_boot(**_):
+    _reap_pending_ghosts()
+
+
+@worker_ready.connect
 def _snapshot_on_boot(**_):
     _cache_device_snapshot(_read_device_info())
 
@@ -5167,6 +5202,50 @@ def _gateway_finished(task_id=None, task=None, state=None, **_):
     active = model_gateway.get_active()
     if active:
         model_gateway.touch(active.get("model"))
+
+
+@task_revoked.connect
+def _gateway_revoked(request=None, **_):
+    """Drop a REVOKED task from the pending list.
+
+    `task_postrun` is the only thing that unregisters, and a task revoked
+    before it starts never runs a body, so postrun never fires: the worker
+    logs "Discarding revoked task" and the gateway counts that task as queued
+    for its model FOREVER. One such entry refuses every switch away from that
+    model, so `/api/text` answered 503 "1 job(s) queued for the active model"
+    with nothing actually queued (found 2026-11-02, left by a timed-out
+    txt2img whose caller revoked it).
+    """
+    try:
+        tid = getattr(request, "id", None)
+        if tid:
+            model_gateway.unregister(tid)
+            logger.info("gateway: dropped revoked task %s from pending", tid)
+    except Exception as e:
+        logger.warning("gateway: could not drop a revoked task: %s", e)
+
+
+def _reap_pending_ghosts() -> int:
+    """Drop pending entries whose Celery state is terminal.
+
+    The signal above covers revocations this worker sees. This covers the rest
+    - a worker killed mid-task, a result that expired, a revoke delivered
+    while nothing was listening - and it runs at boot, where solo-pool means
+    nothing can legitimately be running yet.
+    """
+    dropped = 0
+    try:
+        for tid in model_gateway.get_pending():
+            if celery_app.AsyncResult(tid).state in ("SUCCESS", "FAILURE",
+                                                     "REVOKED"):
+                model_gateway.unregister(tid)
+                dropped += 1
+    except Exception as e:
+        logger.warning("gateway: pending sweep failed: %s", e)
+    if dropped:
+        logger.warning("gateway: dropped %d pending entr(ies) whose task had "
+                       "already finished", dropped)
+    return dropped
 
 
 def _note_deferred(task, args, kwargs, reason: str) -> None:

@@ -73,6 +73,13 @@ IMAGES_DIR = "/app/images"
 # Terminal states. A client that sees one of these can stop polling.
 TERMINAL = {"done", "failed", "cancelled"}
 
+# `cancelling` is deliberately NOT terminal: it means "asked to stop, and the
+# task has not confirmed it yet". something2 polls status and needs to tell
+# those apart - a job that reads `cancelled` while its stage is still drawing
+# told them the GPU was free when it was not (SOMET-694). The task itself
+# writes `cancelled` once it has actually left the conveyor.
+CANCELLING = "cancelling"
+
 # The cap on one redraw request, named once so the validator and the
 # capability block the UI reads cannot disagree about it.
 REDRAW_MAX_FRAMES = 64
@@ -752,6 +759,25 @@ def redraw_frames(job_id: str, spec: RedrawSpec, request: Request,
     }
 
 
+def _task_is_live(task_id: str | None) -> bool:
+    """Is this Celery task still capable of running? The signal something2
+    asked for: `updated_at` advancing is a symptom, this is the state.
+
+    PENDING counts as live - for Celery that means "queued or unknown", and a
+    job waiting its turn must still be cancellable. Only the terminal states
+    mean the task can no longer touch the card.
+    """
+    if not task_id:
+        return False
+    try:
+        from tasks import celery_app
+        return celery_app.AsyncResult(task_id).state not in (
+            "SUCCESS", "FAILURE", "REVOKED")
+    except Exception as e:
+        logger.warning("could not read celery state for %s: %s", task_id, e)
+        return False
+
+
 @router.delete("/api/jobs/{job_id}")
 def cancel_job(job_id: str, authorization: str | None = Header(None)):
     """Ask a job to stop.
@@ -769,18 +795,42 @@ def cancel_job(job_id: str, authorization: str | None = Header(None)):
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="no such job")
-        if row["status"] in TERMINAL:
+
+        # A TERMINAL row is only the end of the story if the task really has
+        # stopped. It said "already finished; nothing to cancel" while the
+        # stage was still drawing - the row was terminal because the FIRST
+        # cancel wrote `cancelled` and `finished_at` up front, then the stage
+        # ran to completion because the conveyor only looked between stages.
+        # Measured on job 3061288d: cancelled 18:12, still at cell 176/205 at
+        # 19:34, and a second DELETE refused to do anything about it.
+        # So: terminal AND no live task -> nothing to do; otherwise re-issue.
+        live = _task_is_live(row["celery_task_id"])
+        if row["status"] in TERMINAL and not live:
             return {"job_id": job_id, "status": row["status"],
                     "note": "already finished; nothing to cancel"}
-        cur.execute("UPDATE jobs SET status = 'cancelled', "
-                    "progress_msg = 'cancelled by request', finished_at = now() "
-                    "WHERE id = %s", (job_id,))
+        cur.execute("UPDATE jobs SET status = %s, "
+                    "progress_msg = 'cancelling by request', "
+                    "finished_at = NULL WHERE id = %s", (CANCELLING, job_id))
 
     if row["celery_task_id"]:
-        from tasks import set_cancel_flag
+        from tasks import celery_app, set_cancel_flag
+        # The flag stops a RUNNING task cooperatively, between cells.
         set_cancel_flag(row["celery_task_id"])
+        # The revoke stops one that has not started yet - without it a queued
+        # sheet was cancelled on the row and then ran anyway when its turn
+        # came. NOT `terminate=True`: this worker is --pool=solo, so
+        # terminating the running task signals the only worker process. The
+        # flag is how a running task is stopped; this is for the queue.
+        try:
+            celery_app.control.revoke(row["celery_task_id"])
+        except Exception as e:
+            logger.warning("job %s: could not revoke %s: %s", job_id,
+                           row["celery_task_id"], e)
 
-    return {"job_id": job_id, "status": "cancelled"}
+    return {"job_id": job_id, "status": CANCELLING,
+            "note": ("asked the task to stop; poll GET /api/jobs/{id} until "
+                     "status is 'cancelled'"),
+            "was_running": bool(live)}
 
 
 def _sheet_engine() -> dict:

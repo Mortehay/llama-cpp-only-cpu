@@ -34,6 +34,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from datetime import datetime, timezone
 
 import psycopg2
@@ -111,10 +112,33 @@ def load_style_profile(name):
     return dict(row)
 
 
-def run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
+# Returned instead of a process exit code when a stage was stopped by a
+# cancel. Distinct from any real returncode so the caller cannot mistake a
+# cancellation for a stage failure and report it as an error.
+CANCELLED_RC = -999
+
+# How often to ask the database whether this job has been cancelled. Cells
+# take ~51 s, so this is effectively once per cell; the throttle exists so a
+# stage that prints many cell lines in a burst cannot turn the check into a
+# query flood.
+CANCEL_POLL_S = 5.0
+
+
+def run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None,
+              cancelled=None, cancel_poll_s=None):
     """Run one build stage, streaming its output to update job progress.
 
-    Returns (returncode, tail_of_output).
+    Returns (returncode, tail_of_output), or (CANCELLED_RC, tail) if the job
+    was cancelled while the stage was running.
+
+    WHY THE CANCEL CHECK LIVES HERE. The conveyor used to look for a cancel
+    only BETWEEN stages, and the stages are enormous: `actions-denoise`
+    measured 1 h 43 m on a 7-action sheet. So a cancel landed, the row went
+    terminal, and the stage drew every remaining cell anyway - job 3061288d
+    was cancelled at 18:12 and was still at cell 176/205 at 19:34, with the
+    next job queued behind it. This loop already reads the stage's output per
+    cell for the progress bar, so it is the one place that is awake often
+    enough to act, in every stage, without build-sheet.py needing a database.
 
     Streaming rather than `subprocess.run(capture_output=True)`, which was the
     first version: the denoise stage runs for the better part of an hour and the
@@ -135,6 +159,9 @@ def run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
                             env=env)
     recent = []
     last_written = -1
+    poll_s = CANCEL_POLL_S if cancel_poll_s is None else cancel_poll_s
+    last_checked = time.monotonic()
+    stopped = False
     for line in proc.stdout:
         line = line.rstrip()
         if not line:
@@ -151,6 +178,18 @@ def run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
         done, total = int(m.group(1)), int(m.group(2))
         if total <= 0:
             continue
+
+        # Between cells is exactly where a cancel can be honoured without
+        # leaving half a cell on disk: the stage has just finished one and has
+        # not started the next.
+        if cancelled and time.monotonic() - last_checked >= poll_s:
+            last_checked = time.monotonic()
+            if cancelled():
+                logger.info("job %s: cancel seen at cell %d/%d - stopping the "
+                            "stage", job_id, done, total)
+                job_update(job_id, progress_msg=f"cancelling at cell {done}/{total}")
+                stopped = True
+                break
         pct = pct_from + int((pct_to - pct_from) * done / total)
         # Only write when the number actually moves - one UPDATE per cell is
         # fine, one per output line is not.
@@ -158,6 +197,22 @@ def run_stage(cmd, job_id, pct_from, pct_to, tail_lines=6, env=None):
             job_update(job_id, progress_pct=pct,
                        progress_msg=f"cell {done}/{total}")
             last_written = pct
+
+    if stopped:
+        # SIGTERM, then SIGKILL. The stage holds the card, so letting it run on
+        # while this returns would defeat the whole point - the next job would
+        # queue behind a build nobody wants.
+        try:
+            proc.terminate()
+            proc.wait(timeout=20)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=10)
+            except Exception as e:
+                logger.error("job %s: could not stop the stage process: %s",
+                             job_id, e)
+        return CANCELLED_RC, "\n".join(recent)
 
     proc.wait()
     return proc.returncode, "\n".join(recent)
@@ -192,7 +247,11 @@ def fail_stranded_jobs():
                                         'finished; resubmit to retry'),
                        progress_msg = 'stranded',
                        finished_at = now()
-                 WHERE status IN ('queued', 'running')
+                 -- `cancelling` too: a worker that dies while honouring a
+                 -- cancel would otherwise leave the job in that status
+                 -- forever, which is the same "poll me forever" trap the
+                 -- stranded sweep exists to close.
+                 WHERE status IN ('queued', 'running', 'cancelling')
                    AND created_at < NOW() - INTERVAL '30 seconds'
                 """
             )

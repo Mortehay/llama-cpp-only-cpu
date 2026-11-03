@@ -719,6 +719,30 @@ fragment of it.
 - A new GPU task still has to go in `model_gateway.GATED` —
   `tasks.redraw_frames_job` is registered there under the same label as
   `build_sheet_job`, because it is the same transformer.
+- **A cancel is honoured per CELL now, and `cancelling` is a real status**
+  (SOMET-694, 2026-11-03). The conveyor used to look for a cancel only
+  BETWEEN stages, and `actions-denoise` measures up to 1 h 43 m: job
+  3061288d was cancelled at 18:12 and was still drawing `cell 176/205` at
+  19:34, with the next job queued behind it. The check lives in
+  `job_runner.run_stage`, where the `denoised N/M` line is already parsed for
+  the progress bar - that is the only place awake often enough, and it needs
+  no database inside `build-sheet.py`. A stopped stage returns
+  `CANCELLED_RC` (-999), which the tasks must NOT report as a stage failure.
+  - **`DELETE` writes `cancelling`, the TASK writes `cancelled`.** Do not
+    "simplify" that back to one status: writing `cancelled` and
+    `finished_at` up front is exactly what made the row terminal while the
+    card was still busy, so a second DELETE answered *"already finished;
+    nothing to cancel"* about a job drawing its 176th cell. `jobs.TERMINAL`
+    must not contain `cancelling`, and `tasks._job_cancelled` must treat it
+    as cancelled.
+  - **Never `revoke(terminate=True)` here.** The worker is `--pool=solo`, so
+    terminate signals the only worker process. A plain revoke stops a job
+    that has not started; the cooperative flag stops one that has.
+  - A revoked task used to wedge the gateway: `task_postrun` is what
+    unregisters, and a task revoked before it starts never runs a body, so
+    its pending entry lived forever and refused every switch away from its
+    model (`/api/text` answering *"1 job(s) queued"* with nothing queued).
+    `@task_revoked` plus a boot sweep (`_reap_pending_ghosts`) close it.
 - **A sheet stays redrawable only while `images/_job_<id>/` survives, and
   nothing deletes it today** (checked 2026-10-22). `POST
   /api/jobs/{id}/redraw` re-reads `config.json`, every `cut_*.png`,

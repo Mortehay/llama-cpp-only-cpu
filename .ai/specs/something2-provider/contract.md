@@ -77,7 +77,7 @@ also `decisions/0019` on cell size and recognisability.
     GET    /api/jobs?status=running  -> by state
     GET    /api/jobs/{id}/sheet      -> the PNG   (409 until done)
     GET    /api/jobs/{id}/atlas      -> the JSON  (409 until done)
-    DELETE /api/jobs/{id}            -> cooperative cancel
+    DELETE /api/jobs/{id}            -> cooperative cancel, 2-phase status
 
 Submit body (every field optional except `concept_image`):
 
@@ -92,6 +92,37 @@ Submit body (every field optional except `concept_image`):
   "seed": 0
 }
 ```
+
+### Cancel is two-phase, and `cancelling` is a NEW status (2026-11-03)
+
+`DELETE /api/jobs/{id}` answers `{"status": "cancelling", "was_running":
+bool}`. The job reads `cancelling` until the task has actually left the
+conveyor, then `cancelled`. **Do not treat `cancelling` as terminal** - the
+card is still busy, and that distinction is the whole point of the change.
+
+Before this, DELETE wrote `cancelled` and `finished_at` immediately while the
+stage ran to completion: the conveyor only looked for a cancel BETWEEN stages
+and `actions-denoise` measures up to 1 h 43 m. Job 3061288d was cancelled at
+18:12 UTC and was still drawing `cell 176/205` at 19:34, with the next job
+queued behind it for ~75 minutes, and a second DELETE answered "already
+finished; nothing to cancel". Now:
+
+- a running stage stops **within one cell** (checked where the progress bar is
+  already parsed, so it works in every stage);
+- a second DELETE on a job that is still drawing **re-issues** the stop
+  instead of claiming it finished; it only answers "already finished" when the
+  Celery task is genuinely terminal;
+- a queued job is also revoked, so it cannot start later (not
+  `terminate=True`: the worker is `--pool=solo`, so terminating the running
+  task would signal the only worker process);
+- `progress_msg` reads `cancelling at cell N/M`, then `cancelled during
+  <stage>`.
+
+**The better "is the task really dead" signal is `status`, not `updated_at`.**
+`updated_at` advancing means a stage is still writing progress, which is a
+symptom; `cancelled` with `finished_at` set is the box confirming the task has
+exited. `GET /api/jobs/{id}` keeps updating `updated_at` and `progress_msg`
+throughout, as before.
 
 Three details worth knowing on the consumer side:
 
