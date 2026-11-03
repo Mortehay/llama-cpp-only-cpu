@@ -23,6 +23,13 @@ legs.
 Reports each direction's area as a multiple of the MEDIAN direction, so the
 comparison needs no absolute threshold and no good reference to exist.
 
+`--baseline <job_id>` takes the median from another job instead, and restricts
+it to the directions BOTH jobs rendered. Needed whenever a job renders a
+subset: a re-queue of the flagged rows only (se,e,ne,nw,w,sw) has lost `s` and
+`n`, which are the full-body anchors, and if `e`/`ne` are close-ups they
+inflate the very median they are being judged against. Two jobs compared on
+different direction sets are not comparable at all.
+
 Read-only, CPU-only: safe while a build holds the card.
 
     python3 scripts/probe-turnaround-framing.py <job_id> [<job_id> ...]
@@ -68,7 +75,22 @@ def describe(path: str) -> dict | None:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("job_ids", nargs="+")
+    ap.add_argument("--baseline", default=None,
+                    help="take the median from this job, over the directions "
+                         "both jobs rendered")
     a = ap.parse_args(argv)
+
+    base = {}
+    if a.baseline:
+        bwork = os.path.join(IMAGES, f"_job_{a.baseline}")
+        for d in DIRECTIONS:
+            m = describe(os.path.join(bwork, f"dir_{d}.png"))
+            if m:
+                base[d] = m
+        if not base:
+            print(f"baseline {a.baseline[:8]} has no dir_*.png", file=sys.stderr)
+            return 2
+        print(f"baseline: {a.baseline[:8]}, {len(base)} direction(s)")
 
     for job in a.job_ids:
         work = os.path.join(IMAGES, f"_job_{job}")
@@ -88,7 +110,20 @@ def main(argv=None) -> int:
             print("  no dir_*.png turnaround references (pruned?)")
             continue
 
-        med = float(np.median([m["area"] for m in found.values()]))
+        if base:
+            # Only the directions both jobs rendered, or the two medians
+            # describe different things and the multiples cannot be compared.
+            shared = [d for d in DIRECTIONS if d in found and d in base]
+            med = float(np.median([base[d]["area"] for d in shared]))
+            print(f"  median from baseline over {len(shared)} shared "
+                  f"direction(s): {', '.join(shared)}")
+        else:
+            med = float(np.median([m["area"] for m in found.values()]))
+            if len(found) < len(DIRECTIONS):
+                print(f"  WARNING: only {len(found)} of {len(DIRECTIONS)} "
+                      f"directions rendered, so this median excludes the "
+                      f"missing ones. Pass --baseline <full job> to compare "
+                      f"across jobs.")
         print(f"  {'dir':<5} {'area':>7} {'x median':>9} {'h_frac':>7} "
               f"{'aspect':>7}  verdict")
         for d in DIRECTIONS:
