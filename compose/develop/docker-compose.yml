@@ -511,5 +511,23 @@ services:
       - PYTHONUNBUFFERED=1
     ports:
       - "127.0.0.1:8188:8188"
+    # A CEILING, because this service starved the host twice on 2026-11-03.
+    #
+    # ComfyUI holds a 19.12 GiB fp8 transformer AND an 8.74 GiB text encoder -
+    # ~28 GiB of weights, where the diffusers lane never has both resident
+    # because qwen_edit.py splits encode from denoise exactly so they cannot
+    # coexist. Unconstrained, it took vmmem to 32.1 GB, left Windows 6.4 GB
+    # free, and made the distro unreachable from wsl.exe while still Running -
+    # so it could not even be told to stop.
+    #
+    # Lowering the WSL budget alone does not fix that: it just moves which
+    # layer runs out. This bounds the SERVICE, so ComfyUI's RAM-pressure cache
+    # has to unload a model rather than exhaust the VM, and dockerd, the
+    # worker, Postgres and Redis keep their share.
+    #
+    # memswap_limit above mem_limit lets it SWAP under pressure instead of
+    # being OOM-killed outright - a slow render beats a dead container.
+    mem_limit: ${COMFY_MEM_LIMIT:-20g}
+    memswap_limit: ${COMFY_MEMSWAP_LIMIT:-28g}
     restart: unless-stopped
     profiles: ["hq"]
