@@ -3486,9 +3486,13 @@ def build_sheet_job(self, job_id: str):
     base = ["python", "/app/scripts/build-sheet.py"]
     common = ["--work", work]
     per_stage = {
+        # `--engine` is passed from the spec, not defaulted here: the stage's
+        # own default is "diffusers", so an older spec with no engine field
+        # keeps today's behaviour byte for byte.
         "turnaround-encode": [concept, "--directions",
                               ",".join(spec.get("directions", ["s"])),
-                              "--seed", str(spec.get("seed", 0))],
+                              "--seed", str(spec.get("seed", 0)),
+                              "--engine", spec.get("engine", "diffusers")],
         "actions-encode": ["--actions", ",".join(spec.get("actions", ["walk"])),
                            "--frames", str(spec.get("frames", 4))],
         "compose": [sheet_path, "--cell", cell, "--colors", str(colors)],

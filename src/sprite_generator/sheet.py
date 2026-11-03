@@ -432,7 +432,16 @@ class SheetBuilder:
 
     def save(self, png_path: str, atlas_path: str | None = None,
              concept: Image.Image | None = None, allow_missing: bool = False,
-             frames_root: str | None = None, quality=None):
+             frames_root: str | None = None, quality=None,
+             engine: dict | None = None):
+        """`engine` is the provenance block from `engines.provenance()`.
+
+        Echoed into the atlas because a consumer cannot tell the two lanes
+        apart from the pixels: an HQ sheet that silently rendered with
+        diffusers looks exactly like the sheet the caller already had. The
+        echo is what makes "the box drew this with diffusers, the row asked
+        for comfyui-hq" a detectable condition rather than a suspicion.
+        """
         cells = self.cell_images(concept=concept, allow_missing=allow_missing)
         frames_index = None
         if frames_root:
@@ -441,6 +450,8 @@ class SheetBuilder:
                                   quality=quality, cells=cells)
         if frames_index is not None:
             atlas["frames"] = frames_index
+        if engine is not None:
+            atlas["engine"] = engine
         sheet.save(png_path)
 
         atlas_path = atlas_path or os.path.splitext(png_path)[0] + ".json"

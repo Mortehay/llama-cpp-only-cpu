@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 _here = os.path.dirname(os.path.abspath(__file__))
 for _c in (os.path.join(_here, "..", "src", "sprite_generator"),
@@ -347,7 +348,12 @@ def stage_turnaround_encode(a):
         # denoising a different set than was encoded pairs them wrongly.
         json.dump({"concept": concept_path, "directions": directions,
                    "turnaround_directions": turn,
-                   "size": a.size, "seed": a.seed}, f, indent=2)
+                   "size": a.size, "seed": a.seed,
+                   # Which renderer drew this sheet. Written ONCE, here, so
+                   # every later stage - including a redraw days later - reads
+                   # the engine off the work directory instead of re-deriving
+                   # it from a job row that may no longer exist.
+                   "engine": a.engine}, f, indent=2)
     log.info("encoded %d direction prompt(s)", len(cells))
 
 
@@ -358,6 +364,25 @@ def stage_turnaround_denoise(a):
 
     with open(_cfg_path(a.work)) as f:
         cfg = json.load(f)
+
+    # The HQ lane renders a direction in ONE call - ComfyUI owns its own
+    # memory, so there is no encode/denoise split to mirror here. The encode
+    # stage is a no-op for it and this branch does the whole turnaround.
+    #
+    # Everything after it is shared: `_judge_references` below, the cutout,
+    # the per-frame checks, the redraws, compose and the atlas all read
+    # `dir_<d>.png` and have no idea which renderer wrote it. That is
+    # deliberate - the moment a check behaves differently per lane, comparing
+    # the two lanes stops meaning anything.
+    if cfg.get("engine") == "comfyui-hq":
+        views = _hq_turnaround(a, cfg)
+        for d, img in views.items():
+            img.save(os.path.join(a.work, f"dir_{d}.png"))
+        log.info("wrote %d direction image(s) to %s (comfyui-hq)",
+                 len(views), a.work)
+        _judge_references(a.work, views)
+        return
+
     concept = Image.open(cfg["concept"])
     # Must mirror the same cells the encode stage did, and the same SET of
     # them - an embedding belongs to the (prompt, IMAGE) pair, so feeding the
@@ -381,6 +406,89 @@ def stage_turnaround_denoise(a):
         img.save(os.path.join(a.work, f"dir_{d}.png"))
     log.info("wrote %d direction image(s) to %s", len(views), a.work)
     _judge_references(a.work, views)
+
+
+def _hq_turnaround(a, cfg):
+    """The eight turnaround views, rendered through ComfyUI.
+
+    Uses the SAME camera prompts as the diffusers lane - `qwen_edit.angle_prompt`
+    - including the mirrored western azimuths, because that trick is a property
+    of the angles LoRA rather than of the engine: `M(render(M(C), east))` is
+    still `render(C, west)` whoever runs the sampler. Reusing it keeps the two
+    lanes comparable and keeps the west rows facing the right way.
+
+    The angles LoRA is at FULL strength here, matching the diffusers lane:
+    between directions the body must not move.
+    """
+    import comfy_client
+    import engines
+    import qwen_edit
+
+    dirs = cfg.get("turnaround_directions") or cfg["directions"]
+    concept_path = cfg["concept"]
+    flipped_path = None
+    out = {}
+    for d in dirs:
+        src = concept_path
+        if d in qwen_edit.MIRRORED_AZIMUTHS:
+            if flipped_path is None:
+                flipped_path = os.path.join(a.work, "_concept_mirrored.png")
+                qwen_edit.flip(Image.open(concept_path)).save(flipped_path)
+            src = flipped_path
+        prompt = qwen_edit.angle_prompt(
+            qwen_edit.MIRRORED_AZIMUTHS.get(d, d))
+        t0 = time.time()
+        png = comfy_client.render(
+            src, prompt, negative=engines.HQ_NEGATIVE, seed=cfg["seed"],
+            steps=engines.HQ_STEPS, cfg=engines.HQ_CFG,
+            size=cfg.get("size", 512))
+        out[d] = Image.open(png).convert("RGBA")
+        log.info("denoised %d/%d  %s  (%.1fs)", len(out), len(dirs), d,
+                 time.time() - t0)
+
+    # Exactly once, here, same as the diffusers lane - everything downstream
+    # sees a normal turnaround and needs to know nothing about mirroring.
+    return qwen_edit.unmirror_views(out)
+
+
+def _hq_render_cells(a, cfg, cells):
+    """Render action cells through ComfyUI. Returns {key: RGBA image}.
+
+    Same contract as `qwen_edit.denoise_cells` - keyed by the cell's `key` -
+    so the caller's write/score loop is untouched and the two lanes cannot
+    drift apart in how a cell becomes a file.
+
+    The angles LoRA is applied at `a.angles_scale`, matching the diffusers
+    lane, which lowers it below the turnaround's 1.0 ON PURPOSE: that LoRA
+    pins POSE as well as camera, and at full strength an action pose loses to
+    the turnaround stance.
+
+    Progress is printed as `denoised N/M` because `job_runner.run_stage`
+    parses exactly that line for the progress bar AND for the per-cell cancel
+    check. An HQ cell takes minutes, so this is the only thing that lets a
+    cancel land mid-stage rather than at the end of hours.
+    """
+    import comfy_client
+    import engines
+
+    out = {}
+    tmp = os.path.join(a.work, "_hq_src")
+    os.makedirs(tmp, exist_ok=True)
+    for i, c in enumerate(cells, 1):
+        # The view is already on disk as dir_<d>.png, but a mirrored western
+        # cell is a FLIPPED view that exists only in memory, so write whatever
+        # this cell actually carries rather than assuming the file matches.
+        src = os.path.join(tmp, f"{c['key'].replace('|', '_')}.png")
+        c["image"].convert("RGB").save(src)
+        t0 = time.time()
+        png = comfy_client.render(
+            src, c["prompt"], negative=engines.HQ_NEGATIVE, seed=cfg["seed"],
+            steps=engines.HQ_STEPS, cfg=engines.HQ_CFG,
+            size=cfg.get("size", 512), lora_scale=a.angles_scale)
+        out[c["key"]] = Image.open(png).convert("RGBA")
+        log.info("denoised %d/%d  %s  (%.1fs)", i, len(cells), c["key"],
+                 time.time() - t0)
+    return out
 
 
 def _judge_references(work, views):
@@ -591,9 +699,20 @@ def stage_actions_denoise(a):
         log.info("%d distinct cell(s) to render; %d repeated pose(s) will be "
                  "copied instead of denoised", len(cells), saved)
 
-    rendered = qwen_edit.denoise_cells(
-        cells, torch.load(_embeds_path(a.work, "act")), seed=cfg["seed"],
-        size=cfg["size"], with_angles=True, angles_scale=a.angles_scale)
+    # THE ONLY PLACE THE TWO LANES DIVERGE in this stage. Everything above -
+    # the plan, the per-pose dedup, the mirrored-view pairing - and everything
+    # below - the cutout, the per-frame checks, scores.json, the redraw
+    # bookkeeping - is shared code that has no idea which renderer ran.
+    #
+    # The dedup matters MORE on the HQ lane, not less: a repeated pose there
+    # costs minutes rather than ~30 s, so copying it is worth proportionally
+    # more.
+    if cfg.get("engine") == "comfyui-hq":
+        rendered = _hq_render_cells(a, cfg, cells)
+    else:
+        rendered = qwen_edit.denoise_cells(
+            cells, torch.load(_embeds_path(a.work, "act")), seed=cfg["seed"],
+            size=cfg["size"], with_angles=True, angles_scale=a.angles_scale)
 
     # No flip here: _action_cell does not mirror. compose flips whole rows.
     scores = _load_scores(a.work, cfg)
@@ -787,9 +906,17 @@ def stage_explicit_denoise(a):
     refs = _references(a.work, cfg)
     cells = _explicit_cells(qwen_edit, a.work, cfg, plan)
 
-    rendered = qwen_edit.denoise_cells(
-        cells, torch.load(_embeds_path(a.work, "redraw")), seed=cfg["seed"],
-        size=cfg["size"], with_angles=True, angles_scale=a.angles_scale)
+    # An HQ sheet redraws with HQ. Anything else would repair a sheet with a
+    # different renderer than drew it, so one cell in a row would be the only
+    # Q2_K frame in an otherwise high-precision sequence - and the atlas's
+    # engine echo would be a lie about those pixels.
+    if cfg.get("engine") == "comfyui-hq":
+        rendered = _hq_render_cells(a, cfg, cells)
+    else:
+        rendered = qwen_edit.denoise_cells(
+            cells, torch.load(_embeds_path(a.work, "redraw")),
+            seed=cfg["seed"], size=cfg["size"], with_angles=True,
+            angles_scale=a.angles_scale)
 
     for c in cells:
         act, d, f_i = c["action"], c["direction"], c["frame"]
@@ -900,9 +1027,13 @@ def stage_actions_redraw(a):
 
     log.info("redraw round %d: %d cell(s)%s", a.round, len(cells),
              " (whole rows)" if a.whole_rows else "")
-    rendered = qwen_edit.denoise_cells(
-        cells, embeds, seed=cfg["seed"], size=cfg["size"],
-        with_angles=True, angles_scale=a.angles_scale)
+    # Same rule as the explicit redraw: an HQ sheet is repaired by HQ.
+    if cfg.get("engine") == "comfyui-hq":
+        rendered = _hq_render_cells(a, cfg, cells)
+    else:
+        rendered = qwen_edit.denoise_cells(
+            cells, embeds, seed=cfg["seed"], size=cfg["size"],
+            with_angles=True, angles_scale=a.angles_scale)
 
     kept = 0
     for c in cells:
@@ -1006,9 +1137,23 @@ def stage_compose(a):
     concept = pixelate.key_background(Image.open(cfg["concept"]),
                                       tolerance=a.key_tolerance)
     frames_root = os.path.join(a.work, "frames")
+    # Provenance read from the WORK DIRECTORY's engine, not from a job row or
+    # a configured default: this is the only place that knows what actually
+    # drew the cells being composed, and a redraw days later composes the same
+    # way. `engines.provenance` is given the settings this lane really used.
+    import engines
+    eng = cfg.get("engine", "diffusers")
+    prov = engines.provenance(
+        eng,
+        steps=engines.HQ_STEPS if eng == "comfyui-hq" else None,
+        cfg=engines.HQ_CFG if eng == "comfyui-hq" else None,
+        loras=([{"name": engines.HQ_ANGLES_LORA,
+                 "scale": cfg.get("angles_scale", 1.0)}]
+               if eng == "comfyui-hq" else None))
     out, atlas = b.save(a.dst, concept=concept, allow_missing=True,
                         frames_root=frames_root,
-                        quality=_quality(a.work, cfg, mirrored))
+                        quality=_quality(a.work, cfg, mirrored),
+                        engine=prov)
     # Read BEFORE recording, so the first compose does not report its own
     # freshly written value as a pin it honoured.
     was_pinned = bool(cfg.get("sheet_scale")) and not a.refit
@@ -1088,6 +1233,12 @@ def main():
     te.add_argument("--directions", default="s,e,n,w")
     te.add_argument("--size", type=int, default=512)
     te.add_argument("--seed", type=int, default=0)
+    # Defaults to the fast lane, so every existing invocation - the Makefile
+    # targets, the probes, a hand-run stage - behaves exactly as before.
+    te.add_argument("--engine", default="diffusers",
+                    choices=["diffusers", "comfyui-hq"],
+                    help="which renderer draws this sheet; recorded in "
+                         "config.json and read by every later stage")
     te.add_argument("--no-clean-concept", dest="clean_concept",
                     action="store_false", default=True,
                     help="skip keying and ground-stripping the concept. The "
