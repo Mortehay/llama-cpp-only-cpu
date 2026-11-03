@@ -154,6 +154,27 @@ class GatedTask(Task):
 celery_app = Celery("sprite_tasks", broker=REDIS_URL, backend=REDIS_URL,
                     include=["map_tasks"], task_cls=GatedTask)
 
+# A SHEET BUILD OUTLIVES REDIS'S DEFAULT VISIBILITY TIMEOUT, AND THAT IS A BUG
+# IN THE CURRENT LANE, not only a future concern for a slower one.
+#
+# Celery's Redis transport redelivers any message still unacknowledged after
+# `visibility_timeout`, default 3600 s. Measured sheet builds on this box:
+# 3h07 for a 210-cell Q2_K sheet, 4h02 for Q3_K_S, 6h51 for Q6_K. Every one of
+# those exceeds an hour several times over, so Redis hands the same
+# build_sheet_job back to the broker while it is still drawing cells. The
+# worker is `--pool=solo`, so the duplicate does not run concurrently - it
+# queues and then REBUILDS THE WHOLE SHEET once the first pass finishes, which
+# looks like a job that ran twice for no reason rather than like a timeout.
+#
+# 24 h covers the slowest build measured with a wide margin. The cost of
+# raising it is that a genuinely lost task waits longer to be redelivered;
+# with one solo worker and multi-hour tasks that is the right trade, and the
+# stranded-job reaper in `job_runner` is what actually recovers those.
+celery_app.conf.broker_transport_options = {
+    "visibility_timeout": int(os.environ.get("CELERY_VISIBILITY_TIMEOUT_S",
+                                            str(24 * 3600))),
+}
+
 # Redis client for cooperative cancellation flags
 import redis as _redis
 _redis_client = _redis.from_url(REDIS_URL, decode_responses=True)
