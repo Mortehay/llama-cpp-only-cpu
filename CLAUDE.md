@@ -724,6 +724,47 @@ fragment of it.
     so raise it rather than tuning the generator against it.
   §7.
 
+**A close-up can live in the TURNAROUND REFERENCE, where `figure_ratio`
+structurally cannot see it**
+- Measured 2026-11-03 on job `7f9fc8f1` (`scripts/probe-turnaround-framing.py`).
+  something2 reported the `e`/`ne` rows of a 96x128 sheet as
+  chin-to-mid-thigh close-ups with QA passing every frame. `figure_ratio`
+  scored those cells at **mean 1.014** for `e` - against the 1.85-1.98
+  close-up signature on record - because it compares a cell to **its own
+  direction's `dir_<d>.png`**, and that reference WAS the close-up. The ratio
+  cancels. Same shape of blindness as `facing` going dormant when its
+  reference is weak: **a reference-relative metric cannot judge the
+  reference.**
+- Measuring the references against EACH OTHER is what shows it. Every render
+  is edge to edge, so height says nothing; opaque area and the occupied box's
+  aspect do:
+
+  | job | `dir_e` area x median | `dir_e` aspect | the row |
+  |---|---|---|---|
+  | `7f9fc8f1` | 1.22 | **0.904** | severe close-up |
+  | `67e00bd5` | 1.16 | 0.863 | full body |
+  | `f11a661e` | 1.05 | **0.729** | full body |
+
+  The aspect argument is the strong one: a figure in profile should be the
+  **narrowest** of the eight views, and in the bad job `e` is the WIDEST
+  relative to its height.
+- **A per-frame redraw cannot fix it.** Every action cell is re-conditioned on
+  `dir_<d>.png`, so re-rolling a cell re-inherits the framing - which is why
+  something2's redraws did not help. Only a **new job with a new seed**
+  redraws the turnaround, so a caller pinning its seed gets the same bad row
+  forever, exactly like the pinned-seed contact-sheet trap on the cutout path.
+- **Cell size cannot cause this, provably.** `--cell` is passed only to the
+  `compose` stage (`tasks.JOB_STAGE_CMD`) and is only an argument of `compose`
+  in `build-sheet.py`; the turnaround and action stages never see it, and
+  every render is 512 px. A 48x64-vs-96x128 comparison that changes framing
+  changed something else - in that report the SEED, which was different in all
+  four jobs on that concept (1216045144, 1413692531, 247024619, 911930750),
+  because `seed: 0` draws a fresh one per build.
+- Nothing checks the references against each other today. That is the gap a
+  semantic (VLM) framing check would close, and it should judge
+  `dir_<d>.png` FIRST - catching it there fixes a whole row for one call
+  instead of per cell.
+
 **Sheet cells are checked per frame now — and the checks measure the RAW render**
 - `sheet_qc.py` scores every cell before it is fitted into 48x64, because the
   fitted cell cannot answer the question. Pre-fit figure height is **478-512
