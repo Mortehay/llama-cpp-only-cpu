@@ -58,6 +58,7 @@ from pydantic import BaseModel, Field, field_validator
 # pulling in the Celery/torch import chain that tasks.py brings.
 import actions as action_lib
 import auth
+import engines
 # The request ledger. Safe at module scope - `generations` pulls in auth,
 # fastapi and psycopg2 and nothing from the Celery/torch chain, which is also
 # why `a1111.py` imports it the same way.
@@ -101,6 +102,18 @@ def _require_auth(authorization: str | None, scope: str = "read"):
     The legacy token still works; `auth` honours it. See auth.py.
     """
     return auth.require(authorization, scope)
+
+
+# The renderers a sheet can be drawn with. `diffusers` is the lane that has
+# always existed; `comfyui-hq` is the quality lane. Kept as data rather than a
+# literal in the validator so `main.py` and the gateway read one list.
+ENGINES = ("diffusers", "comfyui-hq")
+
+# The engine a caller gets when they say nothing, which must stay `diffusers`
+# forever: every existing something2 integration omits the field, and changing
+# what silence means would move every one of them onto a lane that costs hours
+# per sheet without anyone asking for it.
+DEFAULT_ENGINE = "diffusers"
 
 
 class JobSpec(BaseModel):
@@ -161,6 +174,43 @@ class JobSpec(BaseModel):
     # the reason `concept_check` records: Pydantic drops an undeclared field
     # silently and the caller cannot tell it was ignored.
     quality_checks: bool = True
+
+    # Which renderer draws this sheet. Declared here for exactly the reason
+    # `concept_check` records above: an undeclared field is dropped in
+    # silence, and silence is the one failure mode this field cannot have. A
+    # caller that asks for the high-quality lane and is quietly served the
+    # fast one gets a sheet that looks like the lane it paid hours for did
+    # nothing, with no way to tell the difference from the response.
+    #
+    # "diffusers" is today's path, byte for byte - same stages, same defaults,
+    # same output. "comfyui-hq" renders the turnaround and the action frames
+    # through ComfyUI at higher precision and without the 4-step distillation;
+    # everything after the render - cutout, QA, redraws, pixelate, atlas - is
+    # the SAME CODE, so the two lanes differ only where they must.
+    #
+    # An unknown or unavailable engine is 422 + X-Error-Kind: engine_unavailable
+    # and is NOT retryable, which is what distinguishes it from the 503 +
+    # Retry-After that `vram_busy` returns. IT NEVER FALLS BACK: a lane that
+    # silently degrades to diffusers would be indistinguishable from the HQ
+    # lane not working, and the whole point of the field is to be able to tell.
+    engine: str = "diffusers"
+
+    @field_validator("engine")
+    @classmethod
+    def _known_engine(cls, v):
+        """Reject an unknown engine at the edge, with the valid set named.
+
+        Validation only - it says nothing about whether the engine can RUN
+        right now. Availability is a runtime question (is ComfyUI up, are its
+        weights on disk) and is answered where the job is accepted, so that a
+        box with the field but no ComfyUI gives a different, truthful error
+        from a typo.
+        """
+        if v not in ENGINES:
+            raise ValueError(
+                f"unknown engine {v!r}; valid engines are "
+                f"{', '.join(sorted(ENGINES))}")
+        return v
 
     def cells(self) -> int:
         """Cell count, which is what actually predicts runtime."""
@@ -231,6 +281,24 @@ def create_job(spec: JobSpec, request: Request,
                    f"A frame is a named pose, not an interpolation - asking "
                    f"for more cannot produce more motion. Use {limit} or "
                    f"fewer, or add poses to action_prompts.json.")
+
+    # Can the requested engine actually run, here, now? Asked before the row
+    # exists, because the alternative is a job that sits queued and then fails
+    # hours later for a reason that was knowable at submit time.
+    #
+    # 422, not 400 and not 503: the request is well-formed and the engine name
+    # is valid, but this box cannot serve it - and unlike `vram_busy`, waiting
+    # will not help, so it carries no Retry-After. A caller that retries this
+    # is burning requests on an answer that cannot change without an operator.
+    if spec.engine != DEFAULT_ENGINE:
+        why = engines.unavailable_reason(spec.engine)
+        if why:
+            raise HTTPException(
+                status_code=422,
+                detail=f"engine {spec.engine!r} is not available on this box: "
+                       f"{why}. This job was NOT queued and no concept was "
+                       f"consumed. It will not succeed on retry.",
+                headers={"X-Error-Kind": "engine_unavailable"})
 
     job_id = uuid.uuid4()
     with _db() as conn, conn.cursor() as cur:
