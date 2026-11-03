@@ -118,6 +118,24 @@ finished; nothing to cancel". Now:
 - `progress_msg` reads `cancelling at cell N/M`, then `cancelled during
   <stage>`.
 
+### Where `mirrored_from` lives, and the one format trap
+
+A mirrored row (`w`, `nw`, `sw`) declares itself in three places, all written
+on every sheet:
+
+- **`atlas.rows[i].mirrored_from`** - the field to read. Value is a bare
+  DIRECTION: `"e"`, `"ne"`, `"se"`. The same row also carries
+  **`handedness: "swapped"`**. Non-mirrored rows simply omit both keys.
+- **`atlas.quality[]`** entries carry the same `mirrored_from` per FRAME, with
+  the same bare-direction value.
+- **`atlas.mirrored`** is a top-level convenience map,
+  `{"nw": "ne", "w": "e", "sw": "se"}`.
+
+**The trap:** `GET /api/jobs/{id}/frames/{row}/{n}.png` sends an
+`X-Mirrored-From` header whose value is `action_direction` (`"idle_e"`), NOT
+the bare direction the atlas uses. Same field name, two formats. Parse them
+separately, or prefer the atlas.
+
 **The better "is the task really dead" signal is `status`, not `updated_at`.**
 `updated_at` advancing means a stage is still writing progress, which is a
 symptom; `cancelled` with `finished_at` set is the box confirming the task has

@@ -72,7 +72,13 @@ def main(argv=None) -> int:
         # A mirrored row's pixels come from the eastern cell, so the 512 px
         # source to compare against is that one - following the row name would
         # look for a cut_*.png that was never rendered.
-        src_dir = mirrored.get(direction, direction)
+        #
+        # `rows[i].mirrored_from` is the documented field and its value is a
+        # bare DIRECTION ("e", "ne", "se"). An earlier version of this script
+        # assumed "idle_e" and split it, which failed and sent it to the
+        # top-level `mirrored` map instead - the field was always there. The
+        # map stays as the fallback for an older atlas.
+        src_dir = r.get("mirrored_from") or mirrored.get(direction, direction)
         for f in range(nframes):
             box = (f * cw, ry, (f + 1) * cw, ry + ch)
             cell_alpha = np.asarray(sheet.crop(box))[:, :, 3]
