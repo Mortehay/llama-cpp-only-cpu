@@ -41,8 +41,17 @@ import os
 
 logger = logging.getLogger(__name__)
 
-ACTION_PROMPTS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                   "action_prompts.json")
+# Overridable so a CANDIDATE pose table can be rendered and scored without
+# swapping the file the service reads. A pose rewrite has to be measured
+# against the old text through the same path - same references, same seed, same
+# stages - because the published family averages are post-redraw numbers and a
+# first-attempt run is not comparable to them. Swapping the real file to get
+# that control leaves the repo one interrupted command away from a half-edited
+# pose table, which is its own tripwire.
+ACTION_PROMPTS_PATH = os.environ.get(
+    "ACTION_PROMPTS_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                 "action_prompts.json"))
 
 # Fallback if the file is unreadable on the very first load, before any good
 # copy exists. Deliberately minimal: enough to keep the service answering, not
