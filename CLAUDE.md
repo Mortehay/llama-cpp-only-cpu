@@ -636,6 +636,42 @@ fragment of it.
   plainly more recognisable. It catches drift, which is what it was built
   for; it cannot see "the shape became mush". A passing `identity` is not
   evidence a sprite is usable at its cell size — `.ai/specs/sheet-quality/`
+- **"The figure is sliced off by a straight vertical line" is the DOWNSCALE,
+  not the render, and the QA check asked for would never pass** (SOMET-696,
+  measured 2026-11-03 on all three jobs something2 named;
+  `scripts/probe-slice-fitted.py`, `scripts/probe-vertical-slice.py`).
+  something2 measured straight silhouette runs of 20-26 scanlines on e/w
+  cells of a 48x64 sheet and read them as the figure being cut during
+  generation. Measuring the SAME cells at both resolutions:
+
+  | job | fitted max run | render max run | fit amplification |
+  |---|---|---|---|
+  | a22ed1ed | 0.417 | 0.237 | 3.11x (median 2.96x) |
+  | f11a661e | **0.760** | 0.168 | **5.70x** (median 5.57x) |
+  | 67e00bd5 | 0.519 | 0.238 | 3.24x (median 3.14x) |
+
+  as a fraction of the FIGURE's own height, so the two resolutions are
+  comparable. The 512 px render never exceeds **0.238** in any job; the fitted
+  cell reaches **0.42-0.76**. An ~8.5x nearest-neighbour downscale quantises
+  an edge that wanders by 1-2 px onto a single column for many rows, which
+  looks exactly like a cut.
+  - **At 512 px the side views have the SHORTEST runs of any direction**
+    (0.06-0.10 against 0.22-0.24 for `n`/`s`), the opposite of the report.
+    Nothing sits on the image border in any job, so no frame was clipped
+    either. Neither the render nor the BiRefNet cutout introduces it -
+    `cell_*.png` and `cut_*.png` measure the same (0.100 vs 0.086 median on
+    the side rows).
+  - **Do NOT add "fail a straight vertical run >= 31% of cell height".** The
+    fitted MEDIAN is 0.254-0.340 across these jobs, so that threshold fails
+    about half of ALL cells in every direction, and a redraw structurally
+    cannot clear it - the next render gets quantised the same way. It would
+    be a check that burns GPU forever and never passes, on sheets whose QA
+    currently and correctly reports `passed: true`.
+  - The perception is real even though the defect is not: `e`/`w` are worst
+    because a standing figure in profile genuinely has a long near-vertical
+    back line (interpretation, not measured), and at 48 px wide that
+    survives quantisation as a hard column. The lever is **cell size**
+    (`0019`, and `cell` is already in the submit body), not another check.
 - **"The sprite looks nothing like the concept" is a CELL-SIZE problem, and
   it is the INTERIOR that is lost, not the outline**
   (`scripts/cell-size-cost.py`, all 210 cells of `2ff8af36`, 2026-10-24, CPU
