@@ -67,6 +67,15 @@ CARD_KEY = "gw:card"
 
 # Labels for jobs whose model is fixed by the task, not chosen by the caller.
 QWEN_EDIT = "qwen-image-edit"
+# The high-quality lane is a DIFFERENT label, not a variant of the one above,
+# and that distinction is the whole reason it is registered here. Both lanes
+# render with Qwen-Image-Edit, but they are separate processes holding separate
+# copies on a 12 GB card: ComfyUI loads its own ~19 GB transformer while the
+# worker's child may still hold the Q2_K one. Sharing a label would let the
+# gateway consider the card already granted and run them together, which is
+# precisely the wedge it exists to prevent - measured once today at 36 MiB
+# free when an ungated process landed beside a gated one.
+QWEN_EDIT_HQ = "comfyui-hq"
 FLUX_EDIT = "flux-kontext-edit"
 AUDIO_MUSIC = "audio:ace-step"
 AUDIO_STABLE = "audio:stable-audio"
@@ -118,6 +127,36 @@ def _edit_engine() -> str:
         return "qwen-gguf"
 
 
+def _sheet_model(job_id) -> str:
+    """Which renderer this sheet job needs the card for.
+
+    A redraw of an HQ sheet must resolve to the HQ label too, or a redraw
+    would be gated against the wrong renderer and could be granted the card
+    while ComfyUI still holds it. Reading it from the row rather than from an
+    argument is what makes that automatic: `redraw_frames_job` takes only a
+    job id, and the engine is a property of the sheet, not of the request.
+
+    Falls back to the fast lane when the row or the field is missing, which is
+    the correct default for every sheet built before the field existed.
+    """
+    try:
+        import job_runner
+        conn = job_runner._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT spec->>'engine' FROM jobs WHERE id = %s",
+                            (str(job_id),))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if row and row[0] == "comfyui-hq":
+            return QWEN_EDIT_HQ
+    except Exception as e:  # noqa: BLE001 - gating must never crash a task
+        logger.warning("gateway: could not read engine for job %s (%s); "
+                       "gating as the default lane", job_id, e)
+    return QWEN_EDIT
+
+
 def _job_model(job_id) -> str:
     """`spec.llm_name` of a jobs row (tile, map, props), or the default."""
     import core_models
@@ -154,12 +193,13 @@ GATED = {
     "maps.build_map_job": lambda a, k: _job_model(_arg(a, k, 0, "job_id")),
     "maps.resolve_map_props":
         lambda a, k: _job_model(_arg(a, k, 0, "props_job_id")),
-    "tasks.build_sheet_job": lambda a, k: QWEN_EDIT,
+    "tasks.build_sheet_job": lambda a, k: _sheet_model(_arg(a, k, 0, "job_id")),
     # Same label as build_sheet_job because it is the same transformer: a
     # redraw re-renders cells of a sheet with Qwen-Image-Edit. Registering it
     # is not optional - a GPU task missing from GATED bypasses the gateway
     # silently and can land on the card beside a model that is already there.
-    "tasks.redraw_frames_job": lambda a, k: QWEN_EDIT,
+    "tasks.redraw_frames_job":
+        lambda a, k: _sheet_model(_arg(a, k, 0, "job_id")),
     # QWEN_EDIT, not FLUX_EDIT, since /api/edit moved onto Qwen-Image-Edit
     # (tasks.EDIT_ENGINE, .ai/decisions/0015). Sharing the label with
     # build_sheet_job is the point and not an accident: it is the same

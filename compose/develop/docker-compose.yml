@@ -203,6 +203,10 @@ services:
       dockerfile: compose/develop/sprite_generator/Dockerfile
     container_name: sprite_generator
     volumes:
+      # Read-only view of the HQ weights so engines.unavailable_reason()
+      # can answer truthfully without the ComfyUI container running. The
+      # same host tree comfyui mounts read-write.
+      - /mnt/d/comfy-hq/models:/models-hq:ro
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
@@ -316,6 +320,10 @@ services:
     container_name: sprite_worker
     command: ["celery", "-A", "tasks", "worker", "--loglevel=info", "--concurrency=1"]
     volumes:
+      # Read-only view of the HQ weights so engines.unavailable_reason()
+      # can answer truthfully without the ComfyUI container running. The
+      # same host tree comfyui mounts read-write.
+      - /mnt/d/comfy-hq/models:/models-hq:ro
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
@@ -469,3 +477,39 @@ services:
       - HF_TOKEN=${HF_TOKEN}
       - PYTHONUNBUFFERED=1
     profiles: ["rig"]
+
+  # The high-quality sprite lane (JobSpec engine="comfyui-hq").
+  #
+  # A SEPARATE SERVICE, not a mode of sprite-worker, because the two renderers
+  # must be able to hold the card one at a time under the model gateway. The
+  # worker reaches it over HTTP at COMFYUI_URL; nothing imports it.
+  #
+  # Its weights live on D: - ~28 GB that would not fit comfortably beside the
+  # 158 GB already under /models on a C: that has filled twice. COMFY_MODELS_DIR
+  # points at the host tree; /models-hq is the same path inside the worker, so
+  # `engines.missing_weights()` and ComfyUI agree about what exists.
+  #
+  # `profiles` keeps it OFF by default: a box that has not provisioned the HQ
+  # weights should not start a service that cannot serve, and `engines` answers
+  # 422 engine_unavailable in exactly that case. Start it with
+  # `--profile hq` once the weights are in place.
+  comfyui:
+    build:
+      context: ../../
+      dockerfile: compose/develop/comfyui/Dockerfile
+    container_name: comfyui_hq
+    volumes:
+      # The SAME host tree at two paths, deliberately. ComfyUI only looks under
+      # its own models/ directory, while the worker checks /models-hq to decide
+      # whether to answer 422 engine_unavailable. Mounting one tree twice is
+      # what keeps those two answers from drifting: there is no second copy to
+      # fall out of date, and a file either exists for both or for neither.
+      - ${COMFY_MODELS_DIR:-/mnt/d/comfy-hq/models}:/models-hq
+      - ${COMFY_MODELS_DIR:-/mnt/d/comfy-hq/models}:/opt/ComfyUI/models
+      - ${IMAGES_DIR:-../../images}:/app/images
+    environment:
+      - PYTHONUNBUFFERED=1
+    ports:
+      - "127.0.0.1:8188:8188"
+    restart: unless-stopped
+    profiles: ["hq"]

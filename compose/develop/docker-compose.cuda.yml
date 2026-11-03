@@ -143,3 +143,21 @@ services:
   # dependency on a service its profile has switched off, so it follows it.
   collector:
     profiles: ["legacy-llm"]
+
+  # The HQ renderer needs the card like every other inference service here.
+  # Same single-device reservation: there is one GPU and the model gateway is
+  # what stops two renderers wanting it at once.
+  comfyui:
+    build:
+      dockerfile: compose/develop/comfyui/Dockerfile
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
