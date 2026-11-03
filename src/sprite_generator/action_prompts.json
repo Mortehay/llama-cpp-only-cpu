@@ -52,7 +52,11 @@
       "rule": "A frame pose must change the SILHOUETTE as seen from THAT camera. Motion along the view axis does not exist in the output. Profile cameras get sagittal motion (strides, thrusts, lunges); front and back get vertical and lateral motion (knee lifts, overhead swings, arms going wide). Ask a front camera for a forward punch and the model draws the nearest thing it can see - measured, a literal T-pose in six of eight directions.",
       "write_poses_not_verbs": "'walking' is a process and the model picks the same instant of it every time, so four frames of a walk come back as four frames of standing. Name limb positions instead, so each frame is a different, checkable target.",
       "back_is_not_front": "THE `back` LIST IS NOT A COPY OF `front`, and it was one for every action until 2026-10-22. From behind, the torso occludes everything held in front of it: \"arms swept down in front, both palms pushed forward at chest height\" and \"hands brought together low in front of the hips\" are invisible from that camera, so those frames had no silhouette to change and the model filled the gap however it liked. Measured on the 7-action Cultist sheet: back rows moved least of the three families (mean frame step 12.20 against 19.08 for side), `walk n` - a WALK CYCLE - managed 4.40, and `attack n` had two consecutive frames 0.39 apart, which is the same picture twice. Write what is visible from behind: elbows flaring, shoulder blades drawing together, the back arching or rounding, heels lifting, knees rising, arms going wide or overhead. ALSO: do not repeat a pose within one list. The conveyor renders one image per distinct (direction, pose) and copies it, so a repeated entry produces byte-identical frames by construction - the old walk list named \"both feet flat on the ground, standing upright\" at frames 2 AND 5, so a third of that cycle could not move. `atlas.rows[].motion` reports `duplicates` per row so this is visible without squinting at a sheet.",
-      "effects_stay_on_the_body": "THE CONVEYOR ASKS FOR NO EFFECTS AT ALL (2026-10-22). cast and use previously named a glowing ember, an orb at the fingertips, sparks around the hands and an object held out in front, and they got them: measured on job 8d9d164d the cast row came back with a grey-beige glow behind the figure that the cutout keeps as part of the character, and the masked-colour identity check scored that row 0.082/0.064 against 0.009 for idle - on BOTH evidence sheets. The game draws its own effects, so a sheet must contain none. The poses now name hand and arm positions only. DO NOT restore the effect wording to make an action read better. A NEGATIVE PROMPT IS NOT THE ALTERNATIVE: the conveyor runs true_cfg_scale=1.0 (qwen_edit.denoise_cells), so there is no classifier-free guidance to subtract with, and 'no glow, no aura' in a POSITIVE prompt puts those nouns into the conditioning - the same trap as 'no frame, no border'. WHAT THE OLD WORDING WAS FOR, so it is not reinvented: before 2026-08-25 cast asked for an effect that TRAVELLED ('energy discharged outward'), and the model painted a dark full-frame ground behind the light - no background colour in the corners, so pixelate.key_background cleared nothing and the cell composed as an OPAQUE TILE with the character buried in it (64.1% opaque against ~20% for its neighbours). Pinning the effect to the hands fixed that (16.8%, in band at 22.1/24.9/16.8/18.3, motion preserved at 28.4/23.5/9.8). Removing the effect entirely is strictly safer by that same measurement: there is no effect left to fill the frame. This rule governs the `frames` blocks ONLY. The ControlNet path's `prompt` fields still ask for fire and impact on purpose - a skeleton cannot request flames, and that pipeline does not feed something2."
+      "effects_stay_on_the_body": "THE CONVEYOR ASKS FOR NO EFFECTS AT ALL (2026-10-22). cast and use previously named a glowing ember, an orb at the fingertips, sparks around the hands and an object held out in front, and they got them: measured on job 8d9d164d the cast row came back with a grey-beige glow behind the figure that the cutout keeps as part of the character, and the masked-colour identity check scored that row 0.082/0.064 against 0.009 for idle - on BOTH evidence sheets. The game draws its own effects, so a sheet must contain none. The poses now name hand and arm positions only. DO NOT restore the effect wording to make an action read better. A NEGATIVE PROMPT IS NOT THE ALTERNATIVE: the conveyor runs true_cfg_scale=1.0 (qwen_edit.denoise_cells), so there is no classifier-free guidance to subtract with, and 'no glow, no aura' in a POSITIVE prompt puts those nouns into the conditioning - the same trap as 'no frame, no border'. WHAT THE OLD WORDING WAS FOR, so it is not reinvented: before 2026-08-25 cast asked for an effect that TRAVELLED ('energy discharged outward'), and the model painted a dark full-frame ground behind the light - no background colour in the corners, so pixelate.key_background cleared nothing and the cell composed as an OPAQUE TILE with the character buried in it (64.1% opaque against ~20% for its neighbours). Pinning the effect to the hands fixed that (16.8%, in band at 22.1/24.9/16.8/18.3, motion preserved at 28.4/23.5/9.8). Removing the effect entirely is strictly safer by that same measurement: there is no effect left to fill the frame. This rule governs the `frames` blocks ONLY. The ControlNet path's `prompt` fields still ask for fire and impact on purpose - a skeleton cannot request flames, and that pipeline does not feed something2.",
+      "an_arm_direction_needs_a_height": "NAMING A DIRECTION WITHOUT A HEIGHT PRODUCES A POINTING POSE (2026-11-03). Every frame the owner flagged as 'pointing' on the Warrior:2 walk and attack sheets was a frame whose text said `arm forward` or `arms raised high` and nothing else - walk side 0/3, walk back 2/5, attack side 3, attack front/back 0/1 - and the reported frame indices matched that set exactly. A text encoder given 'right arm forward' with no height picks shoulder height, which reads as a point rather than a swing. Say where the hand ends up and what it passes: 'right arm swung forward low beside the hip', 'both arms low beside the thighs'. The same applies to lift: 'knee raised high, foot well off the ground' is what produced the kick the owner called a kick, and it was being obeyed, not misread - 'foot just clearing the ground' is the walk version.",
+      "name_the_weapon_in_strike_frames": "NO `frames` ENTRY NAMED THE WEAPON UNTIL 2026-11-03, WHICH IS WHY IT VANISHED. Not one pose string in any action mentioned a weapon or held object, so 'arms raised high overhead' let the editor drop whatever the character was carrying - reported as 'arms raised with NO sword visible' and 'empty hand forward' on a sword-carrying warrior. This is NOT the effects_stay_on_the_body trap: that rule is about effects the conveyor cannot subtract, whereas the weapon is already present in the source image and naming it is additive reinforcement of what is there. Use the generic word 'weapon', NOT 'sword': the lists are shared by every concept, and a clawed or unarmed subject given 'sword' may have one invented for it. UNTESTED RISK: the rewrite was verified on a sword-carrying concept only, so whether 'weapon' invents one for an unarmed subject is not yet known - check that before concluding the wording is safe everywhere.",
+      "no_left_right_only_or_degree_only_pairs": "SIX DISTINCT STRINGS IS NOT ENOUGH; THEY MUST DIFFER IN SOMETHING THE CAMERA CAN SEE (2026-11-03). Two failure modes, both measured on 512px cutouts. (1) LEFT/RIGHT ONLY: head-on, a raised left knee and a raised right knee are near-mirrors with the same silhouette. The old walk front 0/3 and 1/4 were exactly that, and walk n frames 1 and 4 - six DISTINCT strings - came back 0.78 apart, which is a copy; front rows measured 7.60/9.65 mean step against 24.09 for side on the same sheet. The fix is to give each frame a body HEIGHT and an ARM state as well as a foot state, and to name the contralateral arm, which is visible head-on as the arm crossing in front of the hip. (2) DEGREE ONLY: the old attack front/back 3 'hunched forward' and 4 'STILL hunched, one shoulder dropped lower' differ only in amount, and attack n measured 0.65 apart there. Make frame 4 move something locatable instead - the weapon tip appearing past the other hip. SEE ALSO: `row_motion` counts CONSECUTIVE duplicate pairs only, so a repeat at frames 2 and 5 reports `duplicates: 0`; walk front carried 'both feet flat on the ground, standing upright' at BOTH 2 and 5 from the 2026-10-22 fix until 2026-11-03, measuring 0.00 apart on s and se the whole time. Use `scripts/probe-row-motion.py` for the full pairwise matrix.",
+      "a_motion_metric_cannot_see_a_semantic_repeat": "`attack e` on job 2eb89259 measured mean step 41.37 - the HIGHEST row on that sheet - while the owner read frames 0-3 as one repeated pointing pose. The arm angle genuinely changed; what did not change was what the pose read AS. So a healthy mean_step is not evidence a row is good, and a semantic complaint must not be answered with a motion number."
     },
     "view_families": "Which prompt set each compass direction uses. Left and right profiles share one: they are the same view family, mirrored (see domain.md)."
   },
@@ -137,28 +141,28 @@
       "sheet_label": "Walk",
       "frames": {
         "side": [
-          "left leg forward heel down, right arm forward, contact",
-          "weight settling onto the left leg, body at its lowest",
-          "legs together, right leg passing, body at its highest",
-          "right leg forward heel down, left arm forward, contact",
-          "weight settling onto the right leg, body at its lowest",
-          "legs together, left leg passing, body at its highest"
+          "left leg forward heel down, right arm swung forward low beside the hip, contact",
+          "weight settling onto the left leg, body at its lowest, both arms hanging low",
+          "legs together, right leg passing through, body at its highest, arms close to the sides",
+          "right leg forward heel down, left arm swung forward low beside the hip, contact",
+          "weight settling onto the right leg, body at its lowest, both arms hanging low",
+          "legs together, left leg passing through, body at its highest, arms close to the sides"
         ],
         "front": [
-          "left knee raised high, left foot well off the ground",
-          "left foot lowering toward the ground, knee half bent",
-          "both feet flat on the ground, standing upright",
-          "right knee raised high, right foot well off the ground",
-          "right foot lowering toward the ground, knee half bent",
-          "both feet flat on the ground, standing upright"
+          "left foot forward and flat on the ground, right arm swung forward low across the front of the hip, left arm back, body at mid height",
+          "right knee lifting, right foot just clearing the ground, body at its highest, both arms low beside the thighs",
+          "right foot reaching forward about to land, left arm beginning to swing forward low, body dropping",
+          "right foot forward and flat on the ground, left arm swung forward low across the front of the hip, right arm back, body at mid height",
+          "left knee lifting, left foot just clearing the ground, body at its highest, both arms low beside the thighs",
+          "left foot reaching forward about to land, right arm beginning to swing forward low, body dropping"
         ],
         "back": [
-          "left knee raised high, left heel lifted toward the body",
-          "left foot planting down, weight shifting onto it",
-          "legs together, right leg swinging through, left arm forward",
-          "right knee raised high, right heel lifted toward the body",
-          "right foot planting down, weight shifting onto it",
-          "legs together, left leg swinging through, right arm forward"
+          "left heel lifting behind, sole of the left boot starting to show, right arm low at the side, body at mid height",
+          "left knee rising behind, sole of the left boot fully visible, body at its highest, both arms low",
+          "left foot swinging through below the hips, shoulders level, right arm low and slightly back",
+          "right heel lifting behind, sole of the right boot starting to show, left arm low at the side, body at mid height",
+          "right knee rising behind, sole of the right boot fully visible, body at its highest, both arms low",
+          "right foot swinging through below the hips, shoulders level, left arm low and slightly back"
         ]
       }
     },
@@ -273,28 +277,28 @@
       "sheet_label": "Attack",
       "frames": {
         "side": [
-          "arms drawn back behind the body, weight on the back foot",
-          "arms coiled, shoulders turned, about to release",
-          "arms swinging forward, weight shifting to the front foot",
-          "arms fully extended forward, strike landed",
-          "arms past full extension, body carried forward",
-          "arms lowering back to the sides, weight settling"
+          "weapon drawn back behind the shoulder, angled up and back, weight on the back foot",
+          "torso coiled, both hands gripping the weapon at shoulder height, still drawn back",
+          "weapon swinging forward, sweeping down through shoulder height, weight shifting to the front foot",
+          "weapon at full extension in front, level at chest height, front knee deeply bent, strike landed",
+          "weapon carried past the target and angled down toward the ground, torso turned through",
+          "weapon lowered to waist height, angled down and forward, weight settling back"
         ],
         "front": [
-          "both arms raised high overhead, leaning back",
-          "arms at their highest, body coiled and still",
-          "arms coming down, elbows bent, weight shifting forward",
-          "arms swung down low in front, body hunched forward",
-          "arms low and loose, body still bent forward",
-          "arms returning to the sides, standing upright"
+          "weapon raised overhead in both hands, held vertical, leaning back",
+          "weapon at the top of the swing, tipped back behind the head, body coiled",
+          "weapon chopping down in front, angled down across the chest, weight shifting forward",
+          "weapon swung down low in front of the knees, angled at the ground, body hunched forward",
+          "weapon resting low and angled across to one side, shoulders turned, body still bent forward",
+          "weapon drawn back up to waist height in both hands, standing upright"
         ],
         "back": [
-          "both arms raised high overhead, back arched",
-          "arms at their highest, elbows flared wide",
-          "arms chopping down past the shoulders, elbows out",
-          "shoulders hunched forward, back rounded",
-          "still hunched, one shoulder dropped lower than the other",
-          "straightening up, arms returning to the sides"
+          "weapon raised overhead in both hands, held vertical above the head, back arched",
+          "weapon tipped back behind the head, elbows flared wide, shoulders drawn up",
+          "weapon chopping down past the shoulders, disappearing in front of the body, elbows out",
+          "shoulders hunched forward, back rounded, arms down in front, weapon tip just visible past one hip",
+          "torso turned, one shoulder dropped, weapon tip visible past the other hip",
+          "straightening up, weapon drawn back to waist height, tip angled out to one side"
         ]
       }
     },

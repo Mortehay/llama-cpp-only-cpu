@@ -502,7 +502,8 @@ test-all:
 	for t in test-train-prep test-split-sheets test-apply-verdicts \
 	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
 	         test-pedestal-guard test-audio test-text-contract \
-	         test-qwen-vram-wait test-job-cancel test-models-manifest; do \
+	         test-qwen-vram-wait test-job-cancel test-action-poses \
+	         test-models-manifest; do \
 	    printf '\n=== %s ===\n' "$$t"; \
 	    if $(MAKE) --no-print-directory $$t; then \
 	        echo "--- $$t OK"; \
@@ -629,6 +630,16 @@ test-model-gateway:
 # Drives the real run_stage loop against a fake stage; no GPU, no database.
 test-job-cancel:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm 		--entrypoint python sprite-worker 		/app/scripts/test-job-cancel.py
+
+# The sheet pose lists against the rules their own _readme sets out. Structural
+# only - no GPU, no render - because the one thing these cannot judge is whether
+# a pose is good. Exists because `back_is_not_front` records the walk front 2/5
+# repeat as fixed in 2026-10-22 and it survived in `front` until 2026-11-03,
+# invisible because row_motion counts consecutive duplicates only.
+test-action-poses:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-action-poses.py
 
 # The Qwen VRAM gate waits out the persistent child's post-reply park instead
 # of refusing (2026-11-02). Replays the measured readings; no GPU, no Redis.
