@@ -120,9 +120,26 @@ def build_graph(image_name: str, prompt: str, *, negative: str, seed: int,
     branch a different reference would be comparing the sample against
     something the positive branch never saw.
     """
+    # A .gguf needs ComfyUI-GGUF's loader; a .safetensors needs the built-in
+    # one, and they take different inputs. Chosen from the EXTENSION rather
+    # than a flag, so the model file is the single source of truth and the two
+    # cannot be set inconsistently.
+    #
+    # This matters more than it looks on this card. `UNETLoader` on the
+    # fp8mixed file logs "manual cast: torch.bfloat16" - it dequantises every
+    # weight on the fly, because sm_86 has no FP8 tensor cores - on top of
+    # streaming a 19.58 GB staged model over PCIe every step. A GGUF
+    # dequantises through ComfyUI-GGUF's own kernels instead, which is the
+    # path the diffusers lane's Q6_K took to reach 68.8 s/cell.
+    if unet.lower().endswith(".gguf"):
+        loader = {"class_type": "UnetLoaderGGUF",
+                  "inputs": {"unet_name": unet}}
+    else:
+        loader = {"class_type": "UNETLoader",
+                  "inputs": {"unet_name": unet,
+                             "weight_dtype": WEIGHT_DTYPE}}
     g = {
-        "unet": {"class_type": "UNETLoader",
-                 "inputs": {"unet_name": unet, "weight_dtype": WEIGHT_DTYPE}},
+        "unet": loader,
         "clip": {"class_type": "CLIPLoader",
                  "inputs": {"clip_name": text_encoder, "type": "qwen_image"}},
         "vae": {"class_type": "VAELoader", "inputs": {"vae_name": vae}},

@@ -99,12 +99,37 @@ def comfy_reachable() -> tuple[bool, str]:
 # Floors rather than exact sizes: a re-quantised or re-uploaded file may
 # differ by metadata, and the job of this check is to catch a truncation, not
 # to pin a build. The real sizes are 19.12 GiB, 8.74 GiB, 0.24 GiB, 0.27 GiB.
-MIN_BYTES = {
-    "unet": 17 * 1024 ** 3,
-    "text_encoders": 8 * 1024 ** 3,
-    "vae": 200 * 1024 ** 2,
-    "loras": 200 * 1024 ** 2,
+# A FLOOR PER KIND CANNOT WORK FOR THE TRANSFORMER, which is the one file this
+# lane is meant to swap. The first version hard-coded 17 GiB from the fp8
+# file's 19.12 GiB and then reported the 15.70 GiB Q6_K as truncated - a check
+# calibrated to one model, in the slot whose whole purpose is holding
+# different ones.
+#
+# So known transformers carry their own expected size, and anything
+# unregistered falls back to a weak sanity floor. Registering a size is what
+# buys real truncation detection; not registering one is not an error, it just
+# means a half-downloaded unknown file is only caught if it is tiny.
+EXPECTED_BYTES = {
+    "qwen_image_edit_2511_fp8mixed.safetensors": 20_533_762_817,
+    "qwen-image-edit-2511-Q6_K.gguf": 16_852_417_120,
+    "qwen-image-edit-2511-Q3_K_S.gguf": 9_218_914_912,
+    "qwen_2.5_vl_7b_fp8_scaled.safetensors": 9_384_670_680,
+    "qwen_image_vae.safetensors": 253_806_246,
+    "qwen-image-edit-2511-multiple-angles-lora.safetensors": 295_140_688,
 }
+
+# Used only when the file is not in EXPECTED_BYTES above.
+MIN_BYTES = {
+    "unet": 1 * 1024 ** 3,
+    "text_encoders": 1 * 1024 ** 3,
+    "vae": 50 * 1024 ** 2,
+    "loras": 50 * 1024 ** 2,
+}
+
+# How far under its expected size a file may sit and still count as complete.
+# Not zero: a re-upload or a different build of the same quant can differ by
+# metadata, and this check exists to catch a truncation, not to pin a build.
+SIZE_TOLERANCE = 0.98
 
 
 def missing_weights() -> list[str]:
@@ -128,11 +153,16 @@ def missing_weights() -> list[str]:
         except OSError as e:  # noqa: PERF203
             out.append(f"{name} (unreadable: {e})")
             continue
-        floor = MIN_BYTES.get(kind, 0)
+        expected = EXPECTED_BYTES.get(os.path.basename(name))
+        floor = (expected * SIZE_TOLERANCE if expected
+                 else MIN_BYTES.get(kind, 0))
         if size < floor:
+            detail = (f"expected ~{expected / 1024 ** 3:.2f} GiB"
+                      if expected else
+                      f"expected at least {floor / 1024 ** 3:.1f} GiB")
             out.append(f"{name} (incomplete: {size / 1024 ** 3:.2f} GiB, "
-                       f"expected at least {floor / 1024 ** 3:.0f} GiB - a "
-                       f"download still in progress looks exactly like this)")
+                       f"{detail} - a download still in progress looks "
+                       f"exactly like this)")
     return out
 
 

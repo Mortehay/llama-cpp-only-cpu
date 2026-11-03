@@ -207,6 +207,10 @@ services:
       # can answer truthfully without the ComfyUI container running. The
       # same host tree comfyui mounts read-write.
       - /mnt/d/comfy-hq/models:/models-hq:ro
+      # The GGUF transformers at the SAME path ComfyUI sees them, so
+      # engines.missing_weights() and the renderer cannot disagree about
+      # whether a .gguf model exists.
+      - ${MODELS_DIR:-../../models}/image-gguf/transformers:/models-hq/unet/gguf:ro
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
@@ -324,6 +328,10 @@ services:
       # can answer truthfully without the ComfyUI container running. The
       # same host tree comfyui mounts read-write.
       - /mnt/d/comfy-hq/models:/models-hq:ro
+      # The GGUF transformers at the SAME path ComfyUI sees them, so
+      # engines.missing_weights() and the renderer cannot disagree about
+      # whether a .gguf model exists.
+      - ${MODELS_DIR:-../../models}/image-gguf/transformers:/models-hq/unet/gguf:ro
       - ${MODELS_DIR:-../../models}:/models
       - ../../src/sprite_generator:/app
       - ${IMAGES_DIR:-../../images}:/app/images
@@ -506,6 +514,14 @@ services:
       # fall out of date, and a file either exists for both or for neither.
       - ${COMFY_MODELS_DIR:-/mnt/d/comfy-hq/models}:/models-hq
       - ${COMFY_MODELS_DIR:-/mnt/d/comfy-hq/models}:/opt/ComfyUI/models
+      # The existing GGUF transformers, exposed as a SUBDIRECTORY of ComfyUI's
+      # unet folder - it walks those recursively, so `gguf/<file>.gguf` is a
+      # valid unet_name. Mounted rather than copied for two reasons: the Q6_K
+      # is 16.85 GB and already on disk, and /models lives on the distro's
+      # EXT4 while COMFY_MODELS_DIR is a Windows drive over 9p. Measured on
+      # this box: 153 MB/s from /mnt/d against 447 MB/s on ext4, and ComfyUI
+      # itself logs `fast_disk=False` for the 9p path.
+      - ${MODELS_DIR:-../../models}/image-gguf/transformers:/opt/ComfyUI/models/unet/gguf:ro
       - ${IMAGES_DIR:-../../images}:/app/images
     environment:
       - PYTHONUNBUFFERED=1
