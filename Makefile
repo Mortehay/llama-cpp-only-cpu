@@ -847,12 +847,21 @@ hq-logs:
 # Answers the two questions the 422 is built on - are the weights there, is
 # the server up - from the worker's point of view, which is the one that
 # decides. Reports the pinned versions the image actually got.
+# Asks the RUNNING worker, via `docker exec`, NOT `compose run`.
+#
+# `compose run` starts a FRESH container from the current compose file, so it
+# sees mounts the running worker may not have. That disagreement is not
+# hypothetical: this target reported AVAILABLE while the live worker - started
+# before /models-hq was added - could not see a single weight file, and the
+# smoke render failed with "4 HQ weight files not on disk" seconds later.
+# The question is always "can the process that will run the job see them".
 hq-health:
-	@docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
-		--entrypoint python sprite-worker -c \
+	@docker exec sprite_worker python -c \
 		"import sys; sys.path.insert(0,'/app'); import engines; \
 r = engines.unavailable_reason('comfyui-hq'); \
-print('comfyui-hq:', 'AVAILABLE' if r is None else 'unavailable - ' + r)"
+print('comfyui-hq (as the RUNNING worker sees it):', \
+'AVAILABLE' if r is None else 'unavailable - ' + r)" \
+		2>/dev/null || echo "sprite_worker is not running"
 	@-docker exec comfyui_hq sh -c \
 		'echo "comfyui  $$(cat /opt/comfyui.sha 2>/dev/null)"; \
 		 echo "gguf     $$(cat /opt/comfyui-gguf.sha 2>/dev/null)"' \
