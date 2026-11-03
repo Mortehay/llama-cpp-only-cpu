@@ -402,7 +402,8 @@ def stage_turnaround_denoise(a):
     # move. The action stage deliberately lowers it.
     views = qwen_edit.denoise_cells(
         cells, torch.load(_embeds_path(a.work, "turn")),
-        seed=cfg["seed"], size=cfg["size"], with_angles=True, angles_scale=1.0)
+        seed=cfg["seed"], size=cfg["size"], with_angles=True, angles_scale=1.0,
+        steps=_sampling(cfg)[0], cfg_scale=_sampling(cfg)[1])
 
     # Flip the mirror-sourced directions back exactly once, here, so that
     # everything downstream - the action stage, compose, the atlas - sees a
@@ -747,7 +748,8 @@ def stage_actions_denoise(a):
     else:
         rendered = qwen_edit.denoise_cells(
             cells, torch.load(_embeds_path(a.work, "act")), seed=cfg["seed"],
-            size=cfg["size"], with_angles=True, angles_scale=a.angles_scale)
+            size=cfg["size"], with_angles=True, angles_scale=a.angles_scale,
+            steps=_sampling(cfg)[0], cfg_scale=_sampling(cfg)[1])
 
     # No flip here: _action_cell does not mirror. compose flips whole rows.
     scores = _load_scores(a.work, cfg)
@@ -951,7 +953,8 @@ def stage_explicit_denoise(a):
         rendered = qwen_edit.denoise_cells(
             cells, torch.load(_embeds_path(a.work, "redraw")),
             seed=cfg["seed"], size=cfg["size"], with_angles=True,
-            angles_scale=a.angles_scale)
+            angles_scale=a.angles_scale,
+            steps=_sampling(cfg)[0], cfg_scale=_sampling(cfg)[1])
 
     for c in cells:
         act, d, f_i = c["action"], c["direction"], c["frame"]
@@ -1068,7 +1071,8 @@ def stage_actions_redraw(a):
     else:
         rendered = qwen_edit.denoise_cells(
             cells, embeds, seed=cfg["seed"], size=cfg["size"],
-            with_angles=True, angles_scale=a.angles_scale)
+            with_angles=True, angles_scale=a.angles_scale,
+            steps=_sampling(cfg)[0], cfg_scale=_sampling(cfg)[1])
 
     kept = 0
     for c in cells:
@@ -1178,10 +1182,14 @@ def stage_compose(a):
     # way. `engines.provenance` is given the settings this lane really used.
     import engines
     eng = cfg.get("engine", "diffusers")
+    # Resolved through the SAME helper the renderers used, so the echo cannot
+    # describe different settings from the ones that drew the pixels. Reading
+    # engines.HQ_STEPS here instead would report the box's current config,
+    # which is wrong the moment a job overrides it or an operator changes it
+    # between the render and the compose.
+    _s, _c = _sampling(cfg, eng)
     prov = engines.provenance(
-        eng,
-        steps=engines.HQ_STEPS if eng == "comfyui-hq" else None,
-        cfg=engines.HQ_CFG if eng == "comfyui-hq" else None,
+        eng, steps=_s, cfg=_c,
         loras=([{"name": engines.HQ_ANGLES_LORA,
                  "scale": cfg.get("angles_scale", 1.0)}]
                if eng == "comfyui-hq" else None))

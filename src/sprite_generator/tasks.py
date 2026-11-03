@@ -3492,7 +3492,16 @@ def build_sheet_job(self, job_id: str):
         "turnaround-encode": [concept, "--directions",
                               ",".join(spec.get("directions", ["s"])),
                               "--seed", str(spec.get("seed", 0)),
-                              "--engine", spec.get("engine", "diffusers")],
+                              "--engine", spec.get("engine", "diffusers"),
+                              # Only when the caller actually asked. An absent
+                              # flag leaves the stage's own default, which is
+                              # the engine's default - so a spec written
+                              # before these fields existed behaves exactly as
+                              # it did.
+                              *(["--steps", str(spec["steps"])]
+                                if spec.get("steps") else []),
+                              *(["--cfg", str(spec["cfg"])]
+                                if spec.get("cfg") else [])],
         "actions-encode": ["--actions", ",".join(spec.get("actions", ["walk"])),
                            "--frames", str(spec.get("frames", 4))],
         "compose": [sheet_path, "--cell", cell, "--colors", str(colors)],

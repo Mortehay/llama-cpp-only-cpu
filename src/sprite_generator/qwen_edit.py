@@ -1103,8 +1103,16 @@ def encode_cells(cells: list, size: int = ENCODE_SIZE,
 def denoise_cells(cells: list, embeds: dict, seed: int = 0,
                   steps: int | None = None, size: int = 512,
                   with_angles: bool = True, with_lightning: bool = True,
-                  angles_scale: float = 1.0, cache_dir: str = "/models") -> dict:
-    """Render every cell with ONE transformer load. Returns {key: PIL image}."""
+                  angles_scale: float = 1.0, cache_dir: str = "/models",
+                  cfg_scale: float | None = None) -> dict:
+    """Render every cell with ONE transformer load. Returns {key: PIL image}.
+
+    `cfg_scale` overrides the module default so a single JOB can pick its own
+    guidance, which is what lets a caller compare 4-step/CFG-1 against
+    6-step/CFG-4 without an operator editing env vars and restarting
+    containers. None keeps the env-configured value, so nothing changes for
+    callers that do not pass it.
+    """
     from diffusers import (GGUFQuantizationConfig, QwenImageEditPlusPipeline,
                            QwenImageTransformer2DModel)
 
@@ -1181,7 +1189,8 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
         # entries, so an old work directory re-denoises exactly as before
         # rather than failing on a missing key.
         neg = embeds.get(_neg_key(c["key"]))
-        cfg = CFG_SCALE if (neg and CFG_SCALE > 1.0) else 1.0
+        want = CFG_SCALE if cfg_scale is None else cfg_scale
+        cfg = want if (neg and want > 1.0) else 1.0
         kw = {}
         if cfg > 1.0:
             npe, nmask = neg
