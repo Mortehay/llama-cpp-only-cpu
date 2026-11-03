@@ -228,13 +228,30 @@ def _record(scores, act, d, f_i, attempt, seed, metrics):
     """
     import sheet_qc
 
+    # The border check needs this frame's pose text: a frame that raises
+    # something above the head legitimately leaves the top of the frame, and
+    # no geometry can tell a sword tip from a clipped crown. Looked up rather
+    # than threaded through `measure`, which has no idea which cell it holds.
+    pose = None
+    try:
+        import actions as action_lib
+        poses = action_lib.frames(act, d)
+        if f_i < len(poses):
+            pose = poses[f_i]
+    except Exception as e:  # noqa: BLE001 - never lose a scored cell to this
+        # `log`, not `logger`: this module has no `logger`, and a NameError
+        # raised INSIDE an except block replaces the real error with a
+        # confusing one and takes the whole stage down with it.
+        log.debug("could not resolve pose text for %s/%s/%s: %s",
+                  act, d, f_i, e)
+
     k = _key(act, d, f_i)
     cell = scores["cells"].setdefault(
         k, {"action": act, "direction": d, "frame": f_i,
             "attempts": [], "row_redrawn": False})
     cell["attempts"].append({
         "attempt": attempt, "seed": seed,
-        "failed_checks": sheet_qc.failures(metrics),
+        "failed_checks": sheet_qc.failures(metrics, pose=pose),
         "score": round(sheet_qc.score(metrics), 3),
         "metrics": {kk: (round(v, 4) if isinstance(v, float) else v)
                     for kk, v in metrics.items()},
@@ -363,6 +380,71 @@ def stage_turnaround_denoise(a):
     for d, img in views.items():
         img.save(os.path.join(a.work, f"dir_{d}.png"))
     log.info("wrote %d direction image(s) to %s", len(views), a.work)
+    _judge_references(a.work, views)
+
+
+def _judge_references(work, views):
+    """Record whether each turnaround panel ran off the TOP of the render.
+
+    THIS IS THE HALF THAT MATTERS MOST. Every action cell is re-conditioned on
+    `dir_<d>.png`, so a reference cut by the frame propagates to every frame
+    of that row AND hides itself from `figure_ratio`, which compares a cell to
+    that same reference and cancels. Judging here is eight reads per sheet and
+    catches a whole row at once; judging cells catches it per cell and a
+    redraw cannot fix it anyway.
+
+    Unconditional: a turnaround is a neutral standing pose, so there is no
+    overhead exemption to make - nothing is ever above the head in one.
+
+    Written to `references.json`, not into scores.json, because references are
+    not cells and nothing downstream should start treating them as such.
+    Recorded, never fatal: a reference that fails here is information for the
+    caller, and refusing to build would throw away the GPU time already spent.
+    """
+    import numpy as np
+
+    import border_qc
+
+    def _keyed(img):
+        """Silhouette by keying near-white, NOT BiRefNet.
+
+        `dir_*.png` is an RGB render on white, so `sheet_qc.figure_mask` would
+        reach for the segmenter - an extra pass on the card at the exact
+        moment this stage has just released the transformer, for a mask this
+        does not need. The border check only asks "does the silhouette reach
+        row 0", and a corner key answers that: `probe-top-cut.py` produced
+        every finding on record this way and agreed with the eye on all of
+        them.
+        """
+        a = np.asarray(img.convert("RGBA"))
+        if a.shape[2] == 4 and a[..., 3].min() < 255:
+            return a[..., 3]
+        return (255 - (a[..., :3].min(axis=2) > 245).astype(np.uint8) * 255)
+
+    out = {}
+    for d, img in sorted(views.items()):
+        try:
+            m = border_qc.measure(_keyed(img))
+            if not m:
+                continue
+            m["cut"] = border_qc.is_cut(m, reference=True)
+            out[d] = m
+        except Exception as e:  # noqa: BLE001 - never fail a build over QA
+            log.debug("reference check failed for %s: %s", d, e)
+    if not out:
+        return
+    try:
+        with open(os.path.join(work, "references.json"), "w") as f:
+            json.dump({"references": out}, f, indent=1)
+    except Exception as e:  # noqa: BLE001
+        log.debug("could not write references.json: %s", e)
+    cut = [d for d, m in out.items() if m["cut"]]
+    if cut:
+        log.warning("turnaround reference(s) cut by the frame: %s - every "
+                    "cell in those rows inherits it and a redraw cannot fix "
+                    "it", ", ".join(cut))
+    else:
+        log.info("turnaround references: %d checked, none cut", len(out))
 
 
 def _action_cell(qwen_edit, views, act, d, f_i, pose):

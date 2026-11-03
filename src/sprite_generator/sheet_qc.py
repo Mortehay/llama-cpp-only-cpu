@@ -146,6 +146,7 @@ import numpy as np
 from PIL import Image
 
 import framing
+import border_qc
 
 logger = logging.getLogger(__name__)
 
@@ -194,7 +195,7 @@ CONTINUITY_MAX = _f("QC_CONTINUITY_MAX", 0.060)
 ALPHA = 128
 
 CHECKS = ("close_up", "backdrop", "border", "facing", "identity",
-          "continuity", "framing")
+          "continuity", "framing", "top_cut")
 
 
 # --- masks --------------------------------------------------------------
@@ -409,11 +410,27 @@ def measure(img: Image.Image, view: Reference | None = None,
     feet = framing.feet_in_frame(img)
     if feet is not None:
         out["feet_in_frame"] = round(feet, 4)
+
+    # Exact, unlike everything above it: if the frame cut the head off, the
+    # alpha MUST reach row 0. Recorded on every build; it only FAILS a cell
+    # when BORDER_QC_ENFORCE is on. The pose is not known here, so the
+    # overhead exemption is applied in `failures`.
+    border = border_qc.measure(fig)
+    if border:
+        out.update(border)
     return out
 
 
-def failures(m: dict, neighbours: list | None = None) -> list:
-    """Which checks this frame fails. An empty list means it passes."""
+def failures(m: dict, neighbours: list | None = None,
+             pose: str | None = None, reference: bool = False) -> list:
+    """Which checks this frame fails. An empty list means it passes.
+
+    `pose` is the frame's pose text, needed only by the border check: a frame
+    that deliberately raises something above the head legitimately leaves the
+    top of the frame, and width cannot tell a sword tip from a clipped crown.
+    `reference` marks a turnaround panel, which has no pose and is therefore
+    never exempt.
+    """
     bad = []
     ratio = m.get("figure_ratio")
     if ratio is not None and ratio > FIGURE_RATIO_MAX:
@@ -447,6 +464,14 @@ def failures(m: dict, neighbours: list | None = None) -> list:
     # reference is too weak to read.
     if framing.is_close_up(m.get("feet_in_frame")):
         bad.append("framing")
+
+    # Recording-only by default (BORDER_QC_ENFORCE=0). The verdict is in the
+    # metrics either way, so the fire rate can be read off real builds before
+    # anyone spends GPU on the trigger: 11 of 30 cells on a medium-era idle
+    # sheet with no overhead frames to exempt, against 3 of 30 all-exempt on
+    # the first `wide` sheet.
+    if border_qc.ENFORCE and border_qc.is_cut(m, pose=pose, reference=reference):
+        bad.append("top_cut")
     return bad
 
 
