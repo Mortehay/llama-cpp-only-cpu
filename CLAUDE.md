@@ -148,6 +148,32 @@ fragment of it.
     manners: a CUDA fault trips a breaker (`GPU_FAULT_COOLDOWN_S`, default 90s)
     that refuses work in ~0.2 ms and re-probes in-process before resuming. The
     API turns that into **503 + `Retry-After`**, not 500.
+- **A Qwen VRAM refusal seconds after a SUCCESS is the box's own park, not
+  another tenant** (fixed 2026-11-02, SOMET-684). The persistent child replies
+  `RESULT` and only THEN moves the transformer and VAE back to host RAM
+  (`qwen_server._park_denoiser`, off the request path on purpose), so a caller
+  sending its next image at once is measured mid-transfer. All eight refusals
+  that day landed **1.2-3.4 s after a success**, reading 9.0-9.1 GiB free
+  against the 9.8 GiB `QWEN_MIN_FREE_MB` wants, on a card that reads
+  **10.98 GiB free when quiet**. `_wait_free_vram` now polls for
+  `QWEN_VRAM_WAIT_S` (30 s) first and the refusal is **503 +
+  `Retry-After`** (`error_kind: vram_busy`), not 500.
+  - **Do not go looking for a second process.** `generate_raw_task` is the
+    only txt2img route, the worker is `--pool=solo`, and there is one
+    persistent child; nothing ever loads a second copy. The old message said
+    "usually llm-server's chat model, which unloads after 2 idle minutes" -
+    written for the retired `llm_engine` lane - and that guess sent a session
+    hunting a process that does not exist. `_card_holder()` names the holder
+    now.
+  - **The window varies and can be shorter than the gap.** Re-measured the
+    same day after a worker restart: 10.70-10.98 GiB free at 1.2-4.4 s after
+    `RESULT` across 10 back-to-back images, so the park had already finished
+    and the wait never engaged. A quiet reproduction is not evidence the race
+    is gone - the gate logs its MARGIN on every Qwen request now, so read
+    that rather than re-running until it passes.
+  - Do not shorten the wait to "fail fast", and do not try to manufacture the
+    failure by holding VRAM from a second process in the container: that
+    races the child's own placement and can fault the context.
 - **`nvidia-smi` inside WSL does not see host VRAM**, so guest and host
   readings diverge — once measured 1342 MiB guest against 11,601 MiB host on
   the same 12 GB card. Still true; but a high host figure is no longer the

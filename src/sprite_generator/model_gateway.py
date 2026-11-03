@@ -60,6 +60,10 @@ ACTIVE_KEY = "gw:active"
 SWITCHING_KEY = "gw:switching"
 PENDING_KEY = "gw:pending"
 LOAD_S_KEY = "gw:load_s"
+# The worker's last look at the card. Only the worker can take that
+# reading - the API process has no CUDA context - so it is published here
+# rather than computed in `status`, and `status` always says how old it is.
+CARD_KEY = "gw:card"
 
 # Labels for jobs whose model is fixed by the task, not chosen by the caller.
 QWEN_EDIT = "qwen-image-edit"
@@ -405,6 +409,27 @@ def admit_sync(model: str) -> dict | None:
             "retry_after_s": retry_after_s(active, now)}
 
 
+def note_card(free_mb: int, total_mb: int, holder: str,
+              ttl_s: int = 3600) -> None:
+    """Publish the worker's VRAM reading and what it believes is holding the
+    card, for GET /api/model-gateway.
+
+    Wanted by something2 (2026-11-02) to tell "the model is still loading"
+    apart from "someone else has the card" without reading container logs.
+    Never fatal and never authoritative: it is a SNAPSHOT from whenever the
+    worker last measured, which is why `status` reports `measured_s_ago`
+    beside it. A client that needs the truth should ask for the work and read
+    the 503.
+    """
+    try:
+        _r.set(CARD_KEY, json.dumps({"free_mb": int(free_mb),
+                                     "total_mb": int(total_mb),
+                                     "holder": holder, "at": time.time()}),
+               ex=ttl_s)
+    except Exception as e:
+        logger.debug("gateway: could not note the card reading: %s", e)
+
+
 def status() -> dict:
     """What both UIs poll: GET /api/model-gateway."""
     now = time.time()
@@ -427,9 +452,14 @@ def status() -> dict:
     if switching:
         switching = {**switching,
                      "elapsed_s": round(now - float(switching["started"]), 1)}
+    card = _load(CARD_KEY)
+    if card:
+        card = {**card,
+                "measured_s_ago": int(now - float(card.get("at") or now))}
     return {
         "active": active,
         "switching": switching,
+        "card": card,
         "pending": sorted(({"task_id": t, **p} for t, p in pending.items()),
                           key=lambda p: p.get("queued_at", 0)),
         "by_model": by_model,

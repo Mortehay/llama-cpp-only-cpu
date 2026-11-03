@@ -218,6 +218,29 @@ the caller should know:
 - `503` + `Retry-After` from the model gateway when another model holds the
   card (see `.ai/specs/model-gateway/`).
 
+**A refusal AFTER queueing, and it used to be a 500** (`error_kind:
+vram_busy`, fixed 2026-11-02, SOMET-684):
+- The Qwen path refuses when the card has less than `QWEN_MIN_FREE_MB`
+  (10,000 MiB) free. That is now `503` + `Retry-After: 60`, never `500`: the
+  card is occupied, not broken, and something2 read `500` as "the box
+  crashed".
+- **It waits first.** `QWEN_VRAM_WAIT_S` (30 s) of polling before it gives up,
+  because the commonest holder is the box's OWN previous image: the persistent
+  Qwen child replies and only THEN moves the transformer and VAE back to host
+  RAM, so a caller that sends the next request at once is measured
+  mid-transfer. Every one of the eight refusals on 2026-11-02 landed 1.2-3.4 s
+  after a SUCCESS, reading 9.0-9.1 GiB free against the 9.8 GiB wanted, on a
+  card that reads 10.98 GiB free when quiet. Nothing else held it, so the
+  2-4 minutes per art batch bought nothing.
+- **There was never a second process to route around.** `generate_raw_task` is
+  the only txt2img route, the worker is `--pool=solo`, and there is exactly
+  one persistent child. A request is never served by a process that would load
+  a second copy of the model.
+- The message now NAMES the holder from the worker's own bookkeeping
+  (`tasks._card_holder`). It used to blame "llm-server's chat model, which
+  unloads after 2 idle minutes" unconditionally - a line written for the
+  retired `llm_engine` lane, and wrong in exactly the case that fires most.
+
 ## Troubleshooting, mapped to their error text
 
 | Their error | Cause here |

@@ -2281,9 +2281,16 @@ QWEN_STAGE_TIMEOUT_S = {
 
 # Free VRAM the Qwen core needs before it starts: measured peak 9.55 GiB
 # (9,779 MiB) with the transformer resident, plus a little. Checked AFTER the
-# SDXL eviction, so what is missing belongs to another tenant - usually the
-# llama.cpp model, which stays resident for --sleep-idle-seconds 120.
+# SDXL eviction, so what is missing belongs to another tenant. It is NOT
+# "usually the llama.cpp model, resident for --sleep-idle-seconds 120", as this
+# said until 2026-11-02: that lane is retired, and the holder that actually
+# fires is the persistent Qwen child's own post-reply park. _wait_free_vram.
 QWEN_MIN_FREE_MB = int(os.environ.get("QWEN_MIN_FREE_MB", "10000"))
+# How long to WAIT for that much before refusing, and what to tell the caller
+# when the wait runs out. The number above was being READ seconds before it
+# was true - see _wait_free_vram for the measurement.
+QWEN_VRAM_WAIT_S = float(os.environ.get("QWEN_VRAM_WAIT_S", "30"))
+QWEN_VRAM_RETRY_S = int(os.environ.get("QWEN_VRAM_RETRY_S", "60"))
 
 
 def _run_qwen_stage(task_id: str, argv: list, label: str) -> str | None:
@@ -2488,6 +2495,87 @@ def _qwen_progress_line(task_id: str, line: str, label: str) -> bool:
     return True
 
 
+def _card_holder() -> str:
+    """What is on the card, named from this worker's own bookkeeping.
+
+    Everything that can hold this card is either this process or a child of
+    it, so a refusal has no reason to guess. The old text named
+    "llm-server's chat model, which unloads after 2 idle minutes" whatever was
+    actually resident - a line written for the retired `llm_engine` lane and
+    its `--sleep-idle-seconds 120`. It cost the something2 session a morning
+    hunting a second Qwen process that does not exist (2026-11-02): both
+    txt2img calls go to this one solo worker and this one persistent child.
+    """
+    import brain_engine
+    who = []
+    if _qwen_server_alive():
+        who.append(f"this worker's persistent Qwen child "
+                   f"({_qwen_srv['model']}), which moves the transformer and "
+                   f"VAE back to host RAM in the seconds after each image")
+    if brain_engine.alive():
+        who.append("llama-server's chat model (the brain), a child of this "
+                   "worker")
+    if pipes:
+        who.append("resident diffusers pipeline(s): " + ", ".join(sorted(pipes)))
+    return "; ".join(who) or ("nothing this worker knows of - the driver may "
+                              "still be reclaiming a freed allocation")
+
+
+def _wait_free_vram(need_mb: int, limit_s: float, label: str,
+                    probe=None, sleep=time.sleep):
+    """Poll until `need_mb` is free, up to `limit_s`. Returns
+    (free_bytes, total_bytes, waited_s) - still short means the caller refuses.
+
+    WHY A WAIT AND NOT A REFUSAL. The persistent child writes RESULT and only
+    THEN moves the transformer and VAE off the card (qwen_server's
+    `_park_denoiser`, off the request path on purpose). That transfer costs
+    about what the placement it undoes costs - `place_s` measures 2.3-3.4 s -
+    and a caller that sends its next image straight away arrives in the middle
+    of it.
+
+    Measured 2026-11-02 in sprite_worker's log: every refusal that day landed
+    **1.2-3.4 s after a SUCCESS**, reading 9.0-9.1 GiB free against the
+    9.8 GiB this path wants, while the same card idle reads 10.98 GiB free.
+    Nothing else held it. The check was right about the number and wrong about
+    the moment, and something2 lost 2-4 minutes per art batch to it.
+
+    The child cannot race itself - it reads the next request only after the
+    park returns - so this is the PARENT's check, and waiting is the whole
+    fix. A real holder (a brain that will not die, another tenant) still
+    refuses, just `limit_s` later and with a Retry-After a caller can obey.
+
+    `probe` and `sleep` are injected so scripts/test-qwen-vram-wait.py can
+    replay those numbers without a card.
+    """
+    probe = probe or torch.cuda.mem_get_info
+    need, started, told = need_mb * 2 ** 20, time.time(), False
+    while True:
+        free, total = probe()
+        waited = time.time() - started
+        if free >= need or waited >= limit_s:
+            # Always, not only after a wait. The MARGIN is what the
+            # 2026-11-02 diagnosis was missing: the gate logged a number only
+            # when it refused, so nobody could see 10.98 GiB on a quiet card
+            # against 9.0 GiB one second after an image. One line per request.
+            logger.info("%s: %.2f GiB of %.1f free, needs %.1f%s", label,
+                        free / 2 ** 30, total / 2 ** 30, need / 2 ** 30,
+                        f" (waited {waited:.1f}s)" if told else "")
+            try:
+                model_gateway.note_card(free // 2 ** 20, total // 2 ** 20,
+                                        _card_holder())
+            except Exception as e:
+                logger.debug("%s: could not publish the card reading: %s",
+                             label, e)
+            return free, total, waited
+        if not told:
+            logger.info("%s: %.1f GiB free of %.1f, needs %.1f - waiting up "
+                        "to %.0fs. Holding the card: %s", label,
+                        free / 2 ** 30, total / 2 ** 30, need / 2 ** 30,
+                        limit_s, _card_holder())
+            told = True
+        sleep(0.25)
+
+
 def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
                 seed: int, job_label: str):
     """One Qwen-Image picture, as (RGB image, None) or (None, error dict).
@@ -2504,17 +2592,29 @@ def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
     _evict_pipelines(f"a {job_label}")
     release_vram_cache(job_label)
 
-    # Refuse in a millisecond rather than after a minute of encode + load.
+    # Refuse rather than spend a minute on encode + load - but WAIT first,
+    # because the commonest reason this is short is the PREVIOUS image's own
+    # park still in flight. _wait_free_vram carries the measurement.
     if torch.cuda.is_available():
-        free, total = torch.cuda.mem_get_info()
+        free, total, waited = _wait_free_vram(QWEN_MIN_FREE_MB,
+                                              QWEN_VRAM_WAIT_S,
+                                              f"Task {task_id}")
         if free < QWEN_MIN_FREE_MB * 2 ** 20:
+            # "Not enough free VRAM" and "holds the card" are LOAD-BEARING.
+            # something2's art and audio drains classify a busy card by
+            # matching both, and three answers they cannot classify stop a
+            # batch as "provider looks down". An earlier draft of this line
+            # said "Holding the card:" and would have broken them (caught
+            # 2026-11-02 before it reached them). Changing either phrase is a
+            # contract change - scripts/test-qwen-vram-wait.py asserts them.
             msg = (f"Not enough free VRAM for Qwen-Image: {free / 2**30:.1f} GiB "
                    f"free of {total / 2**30:.1f}, needs "
-                   f"{QWEN_MIN_FREE_MB / 1024:.1f} GiB. Another process holds "
-                   f"the card - usually llm-server's chat model, which unloads "
-                   f"after 2 idle minutes. Retry then.")
+                   f"{QWEN_MIN_FREE_MB / 1024:.1f} GiB, after waiting "
+                   f"{waited:.0f}s for it. Another process holds the card: "
+                   f"{_card_holder()}. Retry after {QWEN_VRAM_RETRY_S}s.")
             logger.error("Task %s refused: %s", task_id, msg)
-            return None, {"error": msg}
+            return None, {"error": msg, "error_kind": "vram_busy",
+                          "retry_after_s": QWEN_VRAM_RETRY_S}
 
     # A `+lightning8` value carries its own steps/CFG/LoRA (core_models
     # GGUF_LORAS); without one, qwen_t2i.py runs its benched 20 steps / CFG 4.
@@ -2533,6 +2633,16 @@ def _qwen_image(task_id: str, prompt: str, negative: str, llm_name: str,
                                        seed, raw_png)
             if not err:
                 return Image.open(raw_png).convert("RGB"), None
+            if "not enough free vram" in err.lower():
+                # The child's OWN check, and it is the well-timed one: taken
+                # after the child parked its encoder, and the child reads a
+                # request only once the previous park returned. The
+                # per-request path below would meet the same wall ~100 s
+                # later, so answer now with a header the caller can obey.
+                logger.error("Task %s refused by the Qwen child: %s", task_id,
+                             err)
+                return None, {"error": err, "error_kind": "vram_busy",
+                              "retry_after_s": QWEN_VRAM_RETRY_S}
             # The per-request path below still works without the child; a
             # failed child costs this request the old ~100 s, not an error.
             logger.warning("Task %s: persistent Qwen failed (%s); falling back "

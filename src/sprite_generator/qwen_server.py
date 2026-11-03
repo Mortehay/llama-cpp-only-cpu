@@ -127,7 +127,10 @@ class Server:
         free = _free_mb()
         if free < MIN_FREE_MB:
             return {"ok": False, "error": (
-                f"not enough free VRAM to place the Qwen transformer: "
+                # Same two load-bearing phrases as tasks.py's gate: this
+                # string reaches something2 verbatim, and "not enough" in
+                # lower case did not match what they look for.
+                f"Not enough free VRAM to place the Qwen transformer: "
                 f"{free / 1024:.1f} GiB free, needs {MIN_FREE_MB / 1024:.1f}. "
                 f"Another process holds the card.")}
 

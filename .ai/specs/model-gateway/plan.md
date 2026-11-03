@@ -77,6 +77,16 @@ the gateway.
 For a `gguf:` model there is nothing resident to load - the switch only evicts
 the SDXL pipeline, so it completes in about a second.
 
+**`card`** (added 2026-11-02 for something2): the worker's last VRAM reading
+and what it believes holds the card - `{free_mb, total_mb, holder, at,
+measured_s_ago}`, Redis key `gw:card`, TTL 1 h, `null` if never measured. It
+is PUBLISHED, not computed: only the worker has a CUDA context, so the API
+process cannot take the reading itself. It is therefore a snapshot from
+whenever the worker last looked - hence `measured_s_ago` beside it - and a
+client that needs the truth should ask for the work and read the `503`. Taken
+on every Qwen-Image request (`tasks._wait_free_vram`), which is where the
+question "is it loading or is someone else on the card" actually arises.
+
 **Status endpoint**: `GET /api/model-gateway` -> active, switching (+ expected
 and elapsed seconds), pending per model, deferred count. `POST
 /api/model-gateway/switch {model, force}` (scope: admin/generate - match

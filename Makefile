@@ -502,7 +502,7 @@ test-all:
 	for t in test-train-prep test-split-sheets test-apply-verdicts \
 	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
 	         test-pedestal-guard test-audio test-text-contract \
-	         test-models-manifest; do \
+	         test-qwen-vram-wait test-models-manifest; do \
 	    printf '\n=== %s ===\n' "$$t"; \
 	    if $(MAKE) --no-print-directory $$t; then \
 	        echo "--- $$t OK"; \
@@ -624,6 +624,13 @@ test-model-gateway:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-model-gateway.py
+
+# The Qwen VRAM gate waits out the persistent child's post-reply park instead
+# of refusing (2026-11-02). Replays the measured readings; no GPU, no Redis.
+test-qwen-vram-wait:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-qwen-vram-wait.py
 
 # /api/text's 422 rules and the brain roster (decisions/0013), no stack needed.
 test-text-contract:

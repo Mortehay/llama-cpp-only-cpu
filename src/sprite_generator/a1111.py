@@ -956,6 +956,14 @@ def txt2img(req: Txt2ImgRequest, request: Request,
             # the worker reached it.
             status = 503
             headers = {"Retry-After": str(result.get("retry_after_s") or 60)}
+        if kind == "vram_busy":
+            # The card is occupied, not broken - which is the whole point of
+            # the distinction. Under 500 something2's art drain read this as
+            # "the box crashed" and waited out a fixed penalty; the measured
+            # cost was 2-4 minutes per batch for a card that was free again
+            # about three seconds later (tasks._wait_free_vram).
+            status = 503
+            headers = {"Retry-After": str(result.get("retry_after_s") or 60)}
         if kind == "gpu_faulted":
             # 503 + Retry-After, and the header is the point of the whole
             # exercise. Under 500 a bulk runner reasonably retries at once, and
@@ -966,6 +974,13 @@ def txt2img(req: Txt2ImgRequest, request: Request,
             # generic HTTP client will actually obey.
             status = 503
             headers = {"Retry-After": str(result.get("retry_after_s") or 90)}
+        # The kind as a HEADER as well as prose. something2 classifies these
+        # by regex over `detail` today, so a reworded message changes their
+        # control flow - which nearly happened on 2026-11-02. A header is
+        # additive: their current matching keeps working, and they can move
+        # to this and stop caring what the sentence says.
+        if kind:
+            headers = {**(headers or {}), "X-Error-Kind": kind}
         generations.fail(gen, detail,
                          duration_ms=(time.time() - started) * 1000)
         raise HTTPException(status_code=status, detail=detail, headers=headers)
