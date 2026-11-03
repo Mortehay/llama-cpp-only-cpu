@@ -760,25 +760,34 @@ structurally cannot see it**
   changed something else - in that report the SEED, which was different in all
   four jobs on that concept (1216045144, 1413692531, 247024619, 911930750),
   because `seed: 0` draws a fresh one per build.
-- **`dir_e` framing is BIASED, not a seed lottery - a re-roll is about 1 in
-  4, not a coin flip** (four genuine builds of one concept, 2026-11-03; all
-  four rendered their own `e` reference, so none is inherited):
+- **`dir_e` IS CUT ON EVERY SEED MEASURED, AND A RE-ROLL NEVER FIXES IT.
+  The "about 1 in 4" figure below was WRONG and is corrected here**
+  (2026-11-03). The original claim rated each job by `dir_e` ASPECT and
+  labelled the lowest one a full body without opening the file. Opening all
+  six: **6 of 6 are cut at mid-thigh with the head at or past the top
+  edge**, `f11a661e` (aspect 0.729, the "full body" counter-example the
+  whole argument rested on) included.
 
-  | job | seed | `dir_e` aspect | row looked |
+  | job | seed | `dir_e` aspect | OPENED THE FILE |
   |---|---|---|---|
-  | `7f9fc8f1` | 1216045144 | 0.904 | close-up |
-  | `67e00bd5` | 1413692531 | 0.863 | "full body" at 48x64 |
-  | `12b6be3a` | 456064951 | 0.854 | close-up |
-  | `f11a661e` | 247024619 | **0.729** | full body |
+  | `7f9fc8f1` | 1216045144 | 0.904 | cut |
+  | `02cb757f` | 140676820 | 0.813 | cut |
+  | `b0e77e2a` | 2067971861 | 0.762 | cut, and `dir_w` too |
+  | `67e00bd5` | 1413692531 | 0.863 | cut |
+  | `12b6be3a` | 456064951 | 0.854 | cut |
+  | `f11a661e` | 247024619 | **0.729** | **cut** |
 
-  Non-`e` directions cluster at 0.66-0.79 in every job, so `e` is the
-  within-job outlier in three of the four. **67e00bd5 is the instructive
-  one:** at 0.863 it is MORE zoomed than the 0.854 that was called a
-  close-up, but it was a 48x64 build at ~1275 figure px where a moderate
-  close-up is invisible - the same resolution effect that hid the framing
-  until 96x128 exposed it. So re-queueing reduces the problem (a re-roll
-  fixed `ne`: 0.785 -> 0.738) and does not solve it for `e`. Do not build a
-  retry loop on the assumption that a re-roll is 50/50.
+  So it is not a bias, not a lottery and not seed-dependent: at the old
+  `medium` distance it is **systematic**, and anyone told to re-queue for a
+  better `e` row is being sent to burn hours for nothing. **The lever is
+  `QWEN_ISO_DISTANCE`, now defaulting to `wide`** - see the reasoning in
+  `qwen_edit.ISO_DISTANCE`, where the 8-direction measurement lives.
+  - **The lesson is the one this file keeps relearning: aspect and area are
+    proxies, and a row of plausible numbers is not a reading of the
+    picture.** `dir_e` aspect spans 0.729-0.904 across six references that
+    are all the same defect, so the spread that looked like seed variance
+    was just subject and weapon pose. Open the PNG before labelling a
+    reference good - it costs one tool call.
 - **The long straight runs and the close-ups may be ONE defect.** On
   `12b6be3a` the `e` frames with 0.40-0.42 runs are 1, 2 and 3 - the same
   indices flagged as worst close-ups - while 0, 4 and 5 read 0.16-0.19. A
@@ -790,16 +799,27 @@ structurally cannot see it**
   mid-thigh with the head at the top edge, while `dir_s` is a clean full
   body with feet. A consumer that re-mirrors in game sees only the `e`
   half of it, which is why the reports name one direction.
-- **Likely mechanism, and it points at a one-variable fix nobody has
-  tried.** A figure in profile is the NARROWEST of the eight views; the
-  model frames to fill the canvas, so it scales up until the head and
-  thighs leave the frame. That predicts e/w and not s/n, which is what is
-  observed. `qwen_edit.DISTANCES` already carries a trained **`wide`**
-  token (x1.8) beside the `medium` default, and `QWEN_ISO_DISTANCE` is
-  read by **both** `turnaround_cells` and `build-sheet`'s action prompt,
-  so references and cells cannot desynchronise. Cost is fewer pixels on
-  the figure, which the 96x128 cell largely offsets. **Try this before the
-  VLM lane** - it needs one turnaround-only render to evaluate.
+- **MECHANISM, AND THE FIX THAT IS NOW THE DEFAULT.** A figure in profile is
+  the NARROWEST of the eight views; the model frames to fill the canvas, so
+  it scales up until the head and thighs leave the frame. That predicts e/w
+  and not s/n, which is what is measured. `qwen_edit.DISTANCES` carries a
+  trained **`wide`** token beside the old `medium`, and `QWEN_ISO_DISTANCE`
+  is read by **both** `turnaround_cells` and `build-sheet`'s action prompt,
+  so references and cells cannot desynchronise. **`ISO_DISTANCE` now
+  defaults to `wide`** (2026-11-03). Measured on one concept across all 8
+  directions at a fixed seed: six directions move 0.94-0.99x in area and
+  under 0.01 in aspect, while `e` goes 0.55x and `w` 0.61x - targeted, not
+  a global zoom-out. **It costs no resolution**: the area falls because the
+  silhouette becomes a slim whole body instead of a bulky torso, while
+  `h_frac` stays ~0.97, so the figure is still nearly frame height. Full
+  numbers in the `ISO_DISTANCE` comment.
+  - **It is a reduction, not a cure, and that was checked rather than
+    hoped.** On a second concept the same change moved `e` from aspect
+    0.904 to 0.770 and the figure is **still cut at the thigh**. So the
+    semantic reference check below is still required; `wide` lowers how
+    often it has to fire, it does not remove the need for it.
+  - Do NOT reach for `close` to keep the ground plane out of frame - that
+    was tried and it crops the legs, which is this very defect.
   - `qwen_edit.turnaround()` (the older per-image loop, NOT the sheet
     path) calls `angle_prompt(d, elevation)` and drops its own `distance`
     argument on the floor. Harmless today because the module default is

@@ -256,7 +256,37 @@ ISO_ELEVATION = os.environ.get("QWEN_ISO_ELEVATION", "eye")
 # ground plane under the subject, and how much of it lands in frame depends on
 # both the elevation AND the crop. A tighter shot can push it out entirely
 # while keeping the elevated angle an isometric game wants.
-ISO_DISTANCE = os.environ.get("QWEN_ISO_DISTANCE", "medium")
+#
+# DEFAULTS TO `wide` SINCE 2026-11-03, AND THAT FIXES THE PROFILE CLOSE-UPS.
+# At `medium` the two profile views come back cut off at the thigh with the
+# head at the frame edge - reported on five jobs across two concepts, and the
+# reason `figure_ratio` cannot see it is that every action cell is
+# re-conditioned on that same cut reference, so the ratio cancels.
+#
+# The mechanism looks like frame-filling: a figure in profile is the NARROWEST
+# of the eight views, so the model scales it up until the head and thighs leave
+# the frame. That predicts e/w and not s/n, which is exactly what is measured.
+#
+# Measured on one concept, all 8 directions, same seed, medium -> wide:
+#
+#   s   0.97x area   se  0.98x   ne  0.94x   n  0.99x   nw  0.98x   sw  0.95x
+#   e   0.55x area, aspect 0.762 -> 0.699, h_frac 1.000 -> 0.973
+#   w   0.61x area, aspect 0.746 -> 0.551, h_frac 1.000 -> 0.988
+#
+# Six of eight are unchanged within a percent or two and only the profiles move,
+# so this is targeted rather than a global zoom-out. IT COSTS NO RESOLUTION:
+# the area falls because the silhouette becomes a slim whole body instead of a
+# bulky torso, while h_frac stays ~0.97, so the figure is still nearly frame
+# height and the sheet fit has as many pixels to work with as before.
+#
+# IT IS A REDUCTION, NOT A CURE. On a second concept the same change moved `e`
+# from aspect 0.904 to 0.770 and the figure is STILL cut at the thigh. So the
+# semantic reference check (SOMET-696, judging dir_<d>.png before any action
+# cell is drawn) is still needed; this lowers how often it has to fire.
+#
+# Do NOT reach for `close` to control the ground plane - that was tried and it
+# crops the legs, which is the same defect this setting now exists to avoid.
+ISO_DISTANCE = os.environ.get("QWEN_ISO_DISTANCE", "wide")
 
 # Per-azimuth prompt reinforcement. Measured, not decorative.
 #

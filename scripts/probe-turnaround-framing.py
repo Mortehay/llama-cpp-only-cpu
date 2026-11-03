@@ -131,8 +131,21 @@ def main(argv=None) -> int:
             if not m:
                 continue
             mult = m["area"] / med
-            flag = ("CLOSE-UP?" if mult >= 1.25 else
-                    "small" if mult <= 0.8 else "")
+            # Direction-aware, because a PROFILE legitimately covers less of
+            # the frame than a front view - it is the narrowest of the eight.
+            # Calling that "small" was an artefact of calibrating on the
+            # broken state: at the old `medium` default `e` read 1.17-1.22x
+            # the median, i.e. MORE area than a front view, which is
+            # physically backwards. Since the `wide` default a correct
+            # profile reads 0.68-0.69x and would have been flagged for being
+            # right. For e/w the tell is therefore reaching the median at
+            # all, not falling below it.
+            if d in ("e", "w"):
+                flag = "CLOSE-UP? (a profile should be the SMALLEST view)" \
+                    if mult >= 1.0 else ""
+            else:
+                flag = ("CLOSE-UP?" if mult >= 1.25 else
+                        "small" if mult <= 0.8 else "")
             print(f"  {d:<5} {m['area']:>7} {mult:>9.2f} {m['h_frac']:>7.3f} "
                   f"{m['aspect']:>7.3f}  {flag}")
 
