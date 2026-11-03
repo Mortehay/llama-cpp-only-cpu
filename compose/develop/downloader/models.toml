@@ -119,6 +119,40 @@ not an image model, despite the directory name.
 """
 
 [[model]]
+name = "brain-vl-8b-mmproj"
+kind = "hf-file"
+tier = "required"
+repo = "unsloth/Qwen3-VL-8B-Instruct-GGUF"
+file = "mmproj-F16.gguf"
+as = "Qwen3VL-8B-Instruct-mmproj-F16.gguf"
+dest = "image-gguf/qwen-image-2.1"
+bytes = 1159030336
+used_by = ["brain_engine.BRAINS['qwen3-vl-8b']['mmproj']"]
+why = "The vision half of the fast brain. Without it the VL brain is text-only."
+notes = """
+THE Q4_K_M GGUF BESIDE THIS ONE HAS NO VISION TENSORS, which is easy to
+disbelieve given the file is called Qwen3VL. Checked with gguf-head.py rather
+than assumed: 399 tensors, prefixes blk/output/output_norm/token_embd only, no
+`v.` tower and no `mm.` projector. llama.cpp splits a VL model into the
+language GGUF and a separate CLIP projector, and only the former was fetched
+on 2026-09-29. So `brain_engine` could load that model all year and answer
+text while silently having no way to see an image.
+
+This file is the other half: general.architecture = 'clip', 352 tensors,
+v=348 + mm=4, clip.vision.block_count = 27. Verified remotely before fetching
+(gguf-head.py reads a few MB of a URL), which is the cheap way to confirm a
+candidate is what its name claims.
+
+`as` follows the sibling's convention - BRAIN_8B_PATH drops the hyphen after
+Qwen3, so the pair sorts together in a directory listing. Keep them together;
+llama-server wants --mmproj alongside -m.
+
+F16 not F32 (2.3 GB) or BF16: the projector is 27 blocks of vision encoder and
+the brain beside it is already Q4_K_M, so F32 precision on the eyes of a
+4-bit model buys nothing. F16 is 1.08 GiB.
+"""
+
+[[model]]
 name = "qwen-image-2512-q2k"
 kind = "hf-file"
 tier = "required"

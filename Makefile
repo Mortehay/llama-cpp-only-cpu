@@ -503,7 +503,7 @@ test-all:
 	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
 	         test-pedestal-guard test-audio test-text-contract \
 	         test-qwen-vram-wait test-job-cancel test-action-poses \
-	         test-models-manifest; do \
+	         test-brain-vision test-models-manifest; do \
 	    printf '\n=== %s ===\n' "$$t"; \
 	    if $(MAKE) --no-print-directory $$t; then \
 	        echo "--- $$t OK"; \
@@ -640,6 +640,17 @@ test-action-poses:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-action-poses.py
+
+# The brain's vision wiring: has_vision, the --mmproj guard, base64 content
+# parts, and the REFUSAL when the projector is absent - which is the point,
+# because the language GGUF answers about an image it never received and
+# sounds no less certain. CPU-only, starts no brain, safe while a build holds
+# the card. It does NOT judge whether a framing verdict is correct; that needs
+# the weights and the card, in scripts/judge-references.py.
+test-brain-vision:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-brain-vision.py
 
 # The Qwen VRAM gate waits out the persistent child's post-reply park instead
 # of refusing (2026-11-02). Replays the measured readings; no GPU, no Redis.

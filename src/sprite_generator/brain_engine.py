@@ -81,8 +81,30 @@ BRAINS: dict[str, dict] = {
             "BRAIN_8B_PATH",
             f"{MODELS}/image-gguf/qwen-image-2.1/Qwen3VL-8B-Instruct-Q4_K_M.gguf"),
         "args": ["-ngl", "99"],
-        # Measured 2026-10-01: ~5.5 GB host-side at an 8k context.
+        # THE LANGUAGE GGUF ABOVE HAS NO VISION TENSORS despite being called
+        # Qwen3VL - checked with gguf-head.py, not assumed: 399 tensors,
+        # prefixes blk/output/output_norm/token_embd, no `v.` tower and no
+        # `mm.` projector. llama.cpp splits a VL model into the language GGUF
+        # and a separate CLIP projector; only the former was fetched in
+        # 2026-09. So this brain answered text all year with no way to see an
+        # image, and nothing said so.
+        #
+        # With `mmproj` present llama-server gets --mmproj and the brain
+        # accepts OpenAI-style image_url content parts. Absent, it still runs
+        # text-only rather than failing, so a box that has not provisioned the
+        # projector degrades instead of breaking - callers that need vision
+        # must check `has_vision()`.
+        "mmproj": os.environ.get(
+            "BRAIN_8B_MMPROJ_PATH",
+            f"{MODELS}/image-gguf/qwen-image-2.1/"
+            f"Qwen3VL-8B-Instruct-mmproj-F16.gguf"),
+        # Measured 2026-10-01: ~5.5 GB host-side at an 8k context. The F16
+        # projector is a further 1.08 GiB of weights plus its activations, so
+        # the floor rises with vision in play; `_preflight` reads
+        # `min_free_mb_vision` when the projector is actually on disk.
         "min_free_mb": int(os.environ.get("BRAIN_8B_MIN_FREE_MB", "6500")),
+        "min_free_mb_vision": int(
+            os.environ.get("BRAIN_8B_VISION_MIN_FREE_MB", "8200")),
         "min_ram_gib": float(os.environ.get("BRAIN_8B_MIN_RAM_GIB", "2")),
         "default": False,
     },
@@ -174,19 +196,36 @@ def _log_tail(n: int = 6) -> str:
         return ""
 
 
+def has_vision(brain: str) -> bool:
+    """Can this brain actually see an image?
+
+    True only when the brain declares a projector AND that file is on disk.
+    A caller that needs vision must ask: the language GGUF loads and answers
+    text perfectly well without its projector, so "the brain replied" is no
+    evidence it looked at the picture - it would describe an imagined one.
+    """
+    spec = BRAINS.get(brain) or {}
+    mm = spec.get("mmproj")
+    return bool(mm) and os.path.exists(mm)
+
+
 def _preflight(brain: str) -> None:
     """Refuse to start without the VRAM and host RAM the brain needs."""
     spec = BRAINS[brain]
     if not os.path.exists(spec["path"]):
         raise BrainError("unavailable", f"brain {brain}: {spec['path']} not on disk")
+    # The projector is extra weights on the card, so the floor is higher when
+    # it is going to be loaded.
+    need_mb = (spec.get("min_free_mb_vision", spec["min_free_mb"])
+               if has_vision(brain) else spec["min_free_mb"])
     try:
         import torch
         if torch.cuda.is_available():
             free_mb = torch.cuda.mem_get_info()[0] / 2 ** 20
-            if free_mb < spec["min_free_mb"]:
+            if free_mb < need_mb:
                 raise BrainError("unavailable", (
                     f"brain {brain}: {free_mb:.0f} MB VRAM free, needs "
-                    f"{spec['min_free_mb']} MB - something else holds the card"))
+                    f"{need_mb} MB - something else holds the card"))
     except BrainError:
         raise
     except Exception as e:
@@ -230,6 +269,12 @@ def ensure(brain: str) -> float:
            "-c", str(CTX), "--jinja", "-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0",
            "--threads", str(os.cpu_count() or 4), "--parallel", "1",
            "--no-webui", *spec["args"]]
+    # Only when the projector is actually on disk. Passing --mmproj with a
+    # missing path makes llama-server exit during load, which surfaces as
+    # "brain exited while loading" and reads like a broken brain rather than
+    # an unprovisioned one.
+    if has_vision(brain):
+        cmd += ["--mmproj", spec["mmproj"]]
     started = time.time()
     with open(log, "wb") as out:
         proc = subprocess.Popen(cmd, stdout=out, stderr=subprocess.STDOUT,
@@ -250,6 +295,49 @@ def ensure(brain: str) -> float:
     stop(f"not ready within {READY_S:.0f}s")
     raise BrainError("failed", f"brain {brain} not ready within {READY_S:.0f}s: "
                                f"{_log_tail()}")
+
+
+def image_message(text: str, image_paths: list[str], role: str = "user") -> dict:
+    """A chat message carrying both text and images, OpenAI content-part form.
+
+    `complete` posts `messages` straight through to llama-server's
+    /v1/chat/completions, so no change was needed there to send pictures -
+    only this encoder and the --mmproj on the child. Images go as base64 data
+    URIs rather than file paths: the server reads them out of the request, and
+    a path would be resolved in ITS filesystem, which happens to be the same
+    container today and would stop being so the moment the brain moves.
+
+    Raises FileNotFoundError rather than sending a message with the images
+    quietly missing - a VL model handed no image answers from the text alone,
+    confidently, and that is indistinguishable from it having looked.
+    """
+    import base64
+    parts: list[dict] = [{"type": "text", "text": text}]
+    for p in image_paths:
+        with open(p, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        ext = os.path.splitext(p)[1].lower().lstrip(".") or "png"
+        parts.append({"type": "image_url", "image_url": {
+            "url": f"data:image/{'jpeg' if ext in ('jpg', 'jpeg') else ext};base64,{b64}"}})
+    return {"role": role, "content": parts}
+
+
+def _prompt_text(messages: list[dict]) -> str:
+    """The last message's text, for the ledger.
+
+    `content` is a string for a text-only call and a list of parts once an
+    image rides along. Recording the list would put a whole base64 PNG in the
+    generations table, so the parts are flattened to their text and the
+    images counted instead.
+    """
+    content = (messages or [{}])[-1].get("content", "")
+    if isinstance(content, str):
+        return content
+    text = " ".join(p.get("text", "") for p in content
+                    if isinstance(p, dict) and p.get("type") == "text")
+    n_img = sum(1 for p in content
+                if isinstance(p, dict) and p.get("type") == "image_url")
+    return f"{text}  [+{n_img} image(s)]" if n_img else text
 
 
 def complete(brain: str, messages: list[dict], *, schema: dict | None = None,
@@ -332,7 +420,7 @@ def complete_in_job(brain: str, messages: list[dict], *, schema: dict | None = N
                        max_tokens=max_tokens)
         generations.record(
             kind="text", status="done", served_from="generated", route=route,
-            prompt=messages[-1]["content"], model=brain,
+            prompt=_prompt_text(messages), model=brain,
             duration_ms=(time.time() - started) * 1000,
             params={"reply": (out.get("text") or "")[:32768],
                     "timings": out.get("timings"), "usage": out.get("usage")},
@@ -342,7 +430,7 @@ def complete_in_job(brain: str, messages: list[dict], *, schema: dict | None = N
         logger.warning("brain in job (%s) failed: %s", route, e)
         generations.record(
             kind="text", status="failed", served_from="generated", route=route,
-            prompt=messages[-1]["content"], model=brain, error=str(e),
+            prompt=_prompt_text(messages), model=brain, error=str(e),
             duration_ms=(time.time() - started) * 1000,
             caller={"principal_name": f"{route} (internal)"})
         return {"error": str(e)}
