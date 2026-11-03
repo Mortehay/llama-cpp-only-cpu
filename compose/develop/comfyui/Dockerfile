@@ -47,16 +47,39 @@ RUN git clone --depth 1 --branch ${COMFY_REF} \
     && cd /opt/ComfyUI \
     && git rev-parse HEAD > /opt/comfyui.sha
 
-# ComfyUI's own requirements, WITHOUT touching torch. `--no-deps` is wrong here
-# (several of these have real deps) so torch/torchvision are pinned to what the
-# base already has, which stops pip from "upgrading" the proven CUDA build out
-# from under us while resolving something trivial like einops.
+# ComfyUI's own requirements, WITHOUT touching torch.
+#
+# A CONSTRAINT FILE CANNOT DO THIS, which cost a build to learn. Pinning
+# `torch==2.14.1+cu130` as a constraint while requirements.txt asks for a bare
+# `torch` makes pip fail outright:
+#
+#   ERROR: Cannot install torch because these package versions have
+#   conflicting dependencies.
+#     The user requested torch
+#     The user requested (constraint) torch==2.14.1+cu130
+#
+# The local version label `+cu130` does not exist on the index, so pip will
+# not reconcile the two even though that exact build is already installed.
+#
+# So the torch lines are STRIPPED from the requirements instead: they are
+# already satisfied by the base image, and removing them is what "do not touch
+# torch" actually means. `--no-deps` is not an option - several of the rest
+# have real dependencies.
+#
+# Then ASSERT the build did not move. Another package pulling torch as a
+# transitive dependency would silently replace the proven CUDA wheel with a
+# PyPI one, and the base image's own comments record that failure mode: a
+# torch that reports cuda.is_available() == False on this host. Better to fail
+# the build than to ship a renderer that cannot see the card.
 RUN cd /opt/ComfyUI \
-    && python -c "import torch, torchvision; \
-print(f'torch=={torch.__version__}'); \
-print(f'torchvision=={torchvision.__version__}')" > /tmp/pins.txt \
-    && pip install --no-cache-dir -r requirements.txt -c /tmp/pins.txt \
-    && python -c "import torch; assert torch.cuda.is_available() or True"
+    && python -c "import torch; print(torch.__version__)" > /tmp/torch.before \
+    && grep -vE '^(torch|torchvision)\s*$' requirements.txt > /tmp/req.txt \
+    && pip install --no-cache-dir -r /tmp/req.txt \
+    && python -c "import torch; print(torch.__version__)" > /tmp/torch.after \
+    && diff /tmp/torch.before /tmp/torch.after \
+       || (echo "REFUSING: torch changed during the ComfyUI install -" \
+           && echo "before: $(cat /tmp/torch.before)" \
+           && echo "after:  $(cat /tmp/torch.after)" && exit 1)
 
 # No `|| true` on the checkout: if a ref is given and cannot be checked out,
 # the BUILD FAILS rather than quietly shipping the default branch under a pin
@@ -66,7 +89,12 @@ RUN git clone https://github.com/city96/ComfyUI-GGUF.git \
     && cd /opt/ComfyUI/custom_nodes/ComfyUI-GGUF \
     && if [ -n "${COMFY_GGUF_REF}" ]; then git checkout "${COMFY_GGUF_REF}"; fi \
     && git rev-parse HEAD > /opt/comfyui-gguf.sha \
-    && pip install --no-cache-dir -r requirements.txt -c /tmp/pins.txt
+    && grep -vE '^(torch|torchvision)\s*$' requirements.txt > /tmp/greq.txt \
+    && pip install --no-cache-dir -r /tmp/greq.txt \
+    && python -c "import torch; print(torch.__version__)" > /tmp/torch.gguf \
+    && diff /tmp/torch.before /tmp/torch.gguf \
+       || (echo "REFUSING: torch changed during the ComfyUI-GGUF install" \
+           && exit 1)
 
 # Models are a BIND MOUNT from D:, never baked in: they are ~28 GB and they
 # are the thing most likely to change independently of this image.
