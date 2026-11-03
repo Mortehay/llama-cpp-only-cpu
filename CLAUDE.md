@@ -760,10 +760,36 @@ structurally cannot see it**
   changed something else - in that report the SEED, which was different in all
   four jobs on that concept (1216045144, 1413692531, 247024619, 911930750),
   because `seed: 0` draws a fresh one per build.
+- **`dir_e` framing is BIASED, not a seed lottery - a re-roll is about 1 in
+  4, not a coin flip** (four genuine builds of one concept, 2026-11-03; all
+  four rendered their own `e` reference, so none is inherited):
+
+  | job | seed | `dir_e` aspect | row looked |
+  |---|---|---|---|
+  | `7f9fc8f1` | 1216045144 | 0.904 | close-up |
+  | `67e00bd5` | 1413692531 | 0.863 | "full body" at 48x64 |
+  | `12b6be3a` | 456064951 | 0.854 | close-up |
+  | `f11a661e` | 247024619 | **0.729** | full body |
+
+  Non-`e` directions cluster at 0.66-0.79 in every job, so `e` is the
+  within-job outlier in three of the four. **67e00bd5 is the instructive
+  one:** at 0.863 it is MORE zoomed than the 0.854 that was called a
+  close-up, but it was a 48x64 build at ~1275 figure px where a moderate
+  close-up is invisible - the same resolution effect that hid the framing
+  until 96x128 exposed it. So re-queueing reduces the problem (a re-roll
+  fixed `ne`: 0.785 -> 0.738) and does not solve it for `e`. Do not build a
+  retry loop on the assumption that a re-roll is 50/50.
+- **The long straight runs and the close-ups may be ONE defect.** On
+  `12b6be3a` the `e` frames with 0.40-0.42 runs are 1, 2 and 3 - the same
+  indices flagged as worst close-ups - while 0, 4 and 5 read 0.16-0.19. A
+  zoomed torso presents a longer continuous near-vertical edge than a full
+  body does. Hypothesis, not measured: if it holds, fixing framing removes
+  both and no straight-run check is needed at all.
 - Nothing checks the references against each other today. That is the gap a
   semantic (VLM) framing check would close, and it should judge
   `dir_<d>.png` FIRST - catching it there fixes a whole row for one call
-  instead of per cell.
+  instead of per cell. `e` on this concept is a characterised test case:
+  three of four seeds should FAIL such a check.
 
 **Sheet cells are checked per frame now — and the checks measure the RAW render**
 - `sheet_qc.py` scores every cell before it is fitted into 48x64, because the
