@@ -17,11 +17,25 @@ FROM ${BASE}
 # unfalsifiable: a sheet that renders differently next week could be the
 # weights, the workflow or a node update, and there would be no way to tell.
 # Bump this deliberately and re-run the smoke render when you do.
-ARG COMFY_REF=v0.3.45
+# v0.43.2, NOT v0.3.45. The first pin here was v0.3.45 and it CANNOT RUN THIS
+# MODEL AT ALL: that version has no comfy_extras/nodes_qwen.py and no
+# TextEncodeQwenImageEditPlus - it predates Qwen-Image support entirely, so
+# the lane would have built, started, and failed at the first render with an
+# unknown-node error. Verified by reading the pinned source rather than
+# assuming: v0.43.2 and v0.42.5 both carry TextEncodeQwenImageEdit,
+# TextEncodeQwenImageEditPlus and friends. `...EditPlus` is the node matching
+# the QwenImageEditPlusPipeline the diffusers lane already uses.
+ARG COMFY_REF=v0.43.2
 # ComfyUI-GGUF supplies the UnetLoaderGGUF node, needed only if the HQ
-# transformer is a .gguf rather than a .safetensors. Pinned for the same
-# reason; it executes its own Python at import, like every custom node.
-ARG COMFY_GGUF_REF=2a0c4b1
+# transformer is a .gguf rather than a .safetensors. It executes its own
+# Python at import, like every custom node.
+#
+# EMPTY MEANS UNPINNED, AND THE IMAGE RECORDS WHAT IT GOT. A guessed SHA here
+# would be worse than no pin: with `|| true` after the checkout it would look
+# pinned, silently fall back to the default branch, and the recorded version
+# would be a fiction. Set this to the SHA from /opt/comfyui-gguf.sha after a
+# build to pin it for real.
+ARG COMFY_GGUF_REF=
 
 WORKDIR /opt
 
@@ -44,11 +58,14 @@ print(f'torchvision=={torchvision.__version__}')" > /tmp/pins.txt \
     && pip install --no-cache-dir -r requirements.txt -c /tmp/pins.txt \
     && python -c "import torch; assert torch.cuda.is_available() or True"
 
-RUN git clone --depth 1 \
-        https://github.com/city96/ComfyUI-GGUF.git \
+# No `|| true` on the checkout: if a ref is given and cannot be checked out,
+# the BUILD FAILS rather than quietly shipping the default branch under a pin
+# that reads as satisfied.
+RUN git clone https://github.com/city96/ComfyUI-GGUF.git \
         /opt/ComfyUI/custom_nodes/ComfyUI-GGUF \
     && cd /opt/ComfyUI/custom_nodes/ComfyUI-GGUF \
-    && git checkout ${COMFY_GGUF_REF} 2>/dev/null || true \
+    && if [ -n "${COMFY_GGUF_REF}" ]; then git checkout "${COMFY_GGUF_REF}"; fi \
+    && git rev-parse HEAD > /opt/comfyui-gguf.sha \
     && pip install --no-cache-dir -r requirements.txt -c /tmp/pins.txt
 
 # Models are a BIND MOUNT from D:, never baked in: they are ~28 GB and they
