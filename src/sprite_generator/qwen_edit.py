@@ -997,6 +997,39 @@ def _place(pipe, transformer) -> None:
                     free / 1024 ** 3, total / 1024 ** 3)
 
 
+# THE NEGATIVE PROMPT, AND THE GUIDANCE THAT MAKES IT MEAN ANYTHING.
+#
+# Both default to OFF, so the production path is byte-identical until someone
+# turns them on. They are a PAIR and must move together: a negative prompt at
+# QWEN_CFG=1.0 does nothing at all (no classifier-free guidance to subtract
+# with), and CFG above 1.0 without Lightning disabled fights the distillation
+# the LoRA trained for.
+#
+# Turning this on means: QWEN_LIGHTNING=0, QWEN_CFG=~2.5-4, QWEN_STEPS=~8-20,
+# QWEN_NEGATIVE="...". Expect it to cost roughly steps/4 times the wall clock
+# of the 4-step default, plus a second text encode per cell.
+NEGATIVE_PROMPT = os.environ.get("QWEN_NEGATIVE", "").strip()
+CFG_SCALE = float(os.environ.get("QWEN_CFG", "1.0"))
+
+# A ONE-WAY override: this can only switch Lightning OFF, never on where a
+# caller passed with_lightning=False. The asymmetry is deliberate - callers
+# that disable it have a reason (denoise_only's probes), and an env var should
+# not be able to re-enable it behind their back.
+LIGHTNING_ENABLED = os.environ.get("QWEN_LIGHTNING", "1").strip().lower() \
+    not in ("0", "false", "no")
+
+
+def _neg_key(key: str) -> str:
+    """Where a cell's negative embedding is stored in the embeds dict.
+
+    A suffix on the same dict rather than a parallel structure, so the file
+    `encode_cells` writes and `denoise_cells` loads stays one object and an
+    older embeds file simply has no negative entries - which is exactly the
+    behaviour wanted when the feature is off.
+    """
+    return f"{key}\x00neg"
+
+
 def encode_cells(cells: list, size: int = ENCODE_SIZE,
                  cache_dir: str = "/models") -> dict:
     """Embed a whole sheet's worth of (image, prompt) pairs in ONE encoder load.
@@ -1033,6 +1066,27 @@ def encode_cells(cells: list, size: int = ENCODE_SIZE,
         out[c["key"]] = (embeds.detach().cpu(),
                          mask.detach().cpu() if mask is not None else None)
         del embeds, mask
+        # The NEGATIVE embedding for the same (image, size) pair, when a
+        # negative prompt is in play. Encoded here because `encode_prompt`
+        # takes the image as well as the text, so a negative embedding belongs
+        # to its direction exactly as the positive one does - and because this
+        # is the only place the text encoder is loaded. Skipped entirely when
+        # there is no negative prompt, so the default path is unchanged.
+        #
+        # WHY THIS EXISTS AT ALL: the 4-step Lightning LoRA forces
+        # true_cfg_scale=1.0, and at CFG 1.0 there is no classifier-free
+        # guidance, so this conveyor has never been able to use a negative
+        # prompt - every "no extra limbs" instruction landed in the POSITIVE
+        # conditioning, which is the documented "no frame, no border" trap.
+        if NEGATIVE_PROMPT:
+            with torch.no_grad():
+                nembeds, nmask = pipe.encode_prompt(
+                    prompt=[NEGATIVE_PROMPT], image=src,
+                    device=torch.device(DEVICE_STR))
+            out[_neg_key(c["key"])] = (
+                nembeds.detach().cpu(),
+                nmask.detach().cpu() if nmask is not None else None)
+            del nembeds, nmask
         _free()
         if (i + 1) % 10 == 0 or i + 1 == len(cells):
             logger.info("  encoded %d/%d", i + 1, len(cells))
@@ -1074,10 +1128,20 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
         pipe.load_lora_weights(ANGLES_LORA, weight_name=ANGLES_WEIGHT,
                                adapter_name="angles")
         adapters.append("angles"); weights.append(angles_scale)
-    if with_lightning:
+    # `and LIGHTNING_ENABLED` is the one-way env override: it can switch
+    # Lightning off for an experiment, never on where the caller said no.
+    use_lightning = with_lightning and LIGHTNING_ENABLED
+    if use_lightning:
         pipe.load_lora_weights(LIGHTNING_LORA, weight_name=LIGHTNING_WEIGHT,
                                adapter_name="lightning")
         adapters.append("lightning"); weights.append(LIGHTNING_SCALE)
+    elif with_lightning:
+        # Say it out loud: without the distillation, the 4-step default would
+        # be badly undercooked, and the step count is the caller's to raise.
+        logger.warning("Lightning DISABLED by QWEN_LIGHTNING; rendering %d "
+                       "step(s) at CFG %.1f%s", steps, CFG_SCALE,
+                       " with a negative prompt" if NEGATIVE_PROMPT
+                       else " with NO negative prompt (CFG alone)")
     if adapters:
         pipe.set_adapters(adapters, adapter_weights=weights)
 
@@ -1104,6 +1168,26 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
         # pipeline accepts both, but every sheet ever rendered went through
         # the bare form and this is not the place to find out they differ.
         srcs = _as_sources(c["image"], size)
+        # CFG and the negative embedding travel together or not at all.
+        #
+        # `true_cfg_scale` was hardcoded to 1.0 here, which is correct for the
+        # 4-step Lightning default and is ALSO why this conveyor has never had
+        # a negative prompt. Above 1.0 the pipeline runs a second, negative
+        # pass per step - so the cost is roughly double per step on top of
+        # whatever step count is asked for.
+        #
+        # A negative embedding is used only if `encode_cells` actually made
+        # one. An embeds file written before this existed has no negative
+        # entries, so an old work directory re-denoises exactly as before
+        # rather than failing on a missing key.
+        neg = embeds.get(_neg_key(c["key"]))
+        cfg = CFG_SCALE if (neg and CFG_SCALE > 1.0) else 1.0
+        kw = {}
+        if cfg > 1.0:
+            npe, nmask = neg
+            kw["negative_prompt_embeds"] = npe.to(DEVICE_STR)
+            if nmask is not None:
+                kw["negative_prompt_embeds_mask"] = nmask.to(DEVICE_STR)
         latents[c["key"]] = pipe(
             image=(srcs[0] if len(srcs) == 1 else srcs),
             height=size, width=size,
@@ -1111,9 +1195,10 @@ def denoise_cells(cells: list, embeds: dict, seed: int = 0,
             prompt_embeds_mask=(mask.to(DEVICE_STR)
                                 if mask is not None else None),
             num_inference_steps=steps,
-            true_cfg_scale=1.0,
+            true_cfg_scale=cfg,
             generator=torch.Generator(device="cpu").manual_seed(cell_seed),
             output_type="latent",
+            **kw,
         ).images
         logger.info("  denoised %d/%d  %s", i + 1, len(cells), c["key"])
 
