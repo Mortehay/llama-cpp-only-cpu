@@ -235,9 +235,31 @@ def _row_to_job(row) -> dict:
         "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
         "error": row["error"],
     }
+    # Which renderer this job asked for, echoed at the top level so a caller
+    # does not have to dig through `spec` to find it. The ATLAS carries the
+    # authoritative block describing what actually drew the pixels - this one
+    # says what was requested, which is the comparison a caller needs: a job
+    # whose atlas says "diffusers" against a request that said "comfyui-hq"
+    # is the failure the echo exists to expose.
+    spec = row["spec"] or {}
+    out["engine"] = spec.get("engine", DEFAULT_ENGINE)
+
     if row["status"] == "done" and row["sheet_path"]:
         out["sheet_url"] = f"/api/jobs/{row['id']}/sheet"
         out["atlas_url"] = f"/api/jobs/{row['id']}/atlas"
+        # Read from the atlas on disk rather than recomputed: it is the record
+        # of what ran, and a default read at response time would describe the
+        # box's CURRENT configuration instead of the sheet in hand.
+        try:
+            ap = os.path.splitext(row["sheet_path"])[0] + ".json"
+            if os.path.exists(ap):
+                with open(ap) as f:
+                    eng = json.load(f).get("engine")
+                if eng:
+                    out["engine_info"] = eng
+        except Exception as e:  # noqa: BLE001 - never fail a status read
+            logger.debug("could not read engine from the atlas of %s: %s",
+                         row["id"], e)
     return out
 
 

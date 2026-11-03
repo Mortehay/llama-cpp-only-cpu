@@ -503,7 +503,7 @@ test-all:
 	         test-auth-scopes test-spec-fields test-audit-mirrors-cutout \
 	         test-pedestal-guard test-audio test-text-contract \
 	         test-qwen-vram-wait test-job-cancel test-action-poses \
-	         test-brain-vision test-models-manifest; do \
+	         test-brain-vision test-engine-contract test-models-manifest; do \
 	    printf '\n=== %s ===\n' "$$t"; \
 	    if $(MAKE) --no-print-directory $$t; then \
 	        echo "--- $$t OK"; \
@@ -651,6 +651,15 @@ test-brain-vision:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-brain-vision.py
+
+# The engine field, its 422, the provenance echo and the gateway labels. Two
+# silent failures are what it guards: a dropped `engine` serving the fast lane
+# to a caller who asked for HQ, and an HQ job quietly rendering with diffusers
+# - both indistinguishable from success in the response. No GPU, no ComfyUI.
+test-engine-contract:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker \
+		/app/scripts/test-engine-contract.py
 
 # The Qwen VRAM gate waits out the persistent child's post-reply park instead
 # of refusing (2026-11-02). Replays the measured readings; no GPU, no Redis.
