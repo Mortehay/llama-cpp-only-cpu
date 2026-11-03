@@ -89,16 +89,51 @@ def comfy_reachable() -> tuple[bool, str]:
         return False, f"ComfyUI at {COMFY_URL} is not answering ({e})"
 
 
+# Smallest plausible size for each weight, in bytes. EXISTENCE IS NOT ENOUGH:
+# a half-downloaded file exists, passes `os.path.exists`, and then fails at
+# load with a corrupt-safetensors error - hours after the job was accepted,
+# and looking nothing like "the download did not finish". Observed exactly
+# that during this lane's own provisioning, with the transformer at 11.8 of
+# 19.12 GiB reporting as present.
+#
+# Floors rather than exact sizes: a re-quantised or re-uploaded file may
+# differ by metadata, and the job of this check is to catch a truncation, not
+# to pin a build. The real sizes are 19.12 GiB, 8.74 GiB, 0.24 GiB, 0.27 GiB.
+MIN_BYTES = {
+    "unet": 17 * 1024 ** 3,
+    "text_encoders": 8 * 1024 ** 3,
+    "vae": 200 * 1024 ** 2,
+    "loras": 200 * 1024 ** 2,
+}
+
+
 def missing_weights() -> list[str]:
-    """HQ weight files that are not on disk, by their served name."""
+    """HQ weight files that are absent or obviously incomplete.
+
+    Returns a description per problem, not just a name, so the 422 says
+    whether a file is missing or truncated - two different operator actions.
+    """
     want = [
-        (os.path.join(HQ_MODELS, "unet", HQ_UNET), HQ_UNET),
-        (os.path.join(HQ_MODELS, "text_encoders", HQ_TEXT_ENCODER),
-         HQ_TEXT_ENCODER),
-        (os.path.join(HQ_MODELS, "vae", HQ_VAE), HQ_VAE),
-        (os.path.join(HQ_MODELS, "loras", HQ_ANGLES_LORA), HQ_ANGLES_LORA),
+        ("unet", HQ_UNET), ("text_encoders", HQ_TEXT_ENCODER),
+        ("vae", HQ_VAE), ("loras", HQ_ANGLES_LORA),
     ]
-    return [name for path, name in want if not os.path.exists(path)]
+    out = []
+    for kind, name in want:
+        path = os.path.join(HQ_MODELS, kind, name)
+        if not os.path.exists(path):
+            out.append(name)
+            continue
+        try:
+            size = os.path.getsize(path)
+        except OSError as e:  # noqa: PERF203
+            out.append(f"{name} (unreadable: {e})")
+            continue
+        floor = MIN_BYTES.get(kind, 0)
+        if size < floor:
+            out.append(f"{name} (incomplete: {size / 1024 ** 3:.2f} GiB, "
+                       f"expected at least {floor / 1024 ** 3:.0f} GiB - a "
+                       f"download still in progress looks exactly like this)")
+    return out
 
 
 def unavailable_reason(engine: str) -> str | None:

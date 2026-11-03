@@ -824,3 +824,36 @@ test-register-cutouts:
 	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
 		--entrypoint python sprite-worker \
 		/app/scripts/test-register-cutouts.py
+
+# --- the high-quality lane (engine="comfyui-hq") -------------------------
+#
+# Off by default: `profiles: ["hq"]` keeps the service stopped unless asked
+# for, which is also exactly when the API answers 422 engine_unavailable.
+
+hq-up:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile hq \
+		up -d comfyui
+	@echo "ComfyUI starting. It loads no model until a render arrives;"
+	@echo "check with: make hq-health"
+
+hq-down:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile hq \
+		stop comfyui
+
+hq-logs:
+	docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) --profile hq \
+		logs --tail 80 -f comfyui
+
+# Answers the two questions the 422 is built on - are the weights there, is
+# the server up - from the worker's point of view, which is the one that
+# decides. Reports the pinned versions the image actually got.
+hq-health:
+	@docker compose -f $(COMPOSE_FILE) --env-file $(ENV_FILE) run --rm \
+		--entrypoint python sprite-worker -c \
+		"import sys; sys.path.insert(0,'/app'); import engines; \
+r = engines.unavailable_reason('comfyui-hq'); \
+print('comfyui-hq:', 'AVAILABLE' if r is None else 'unavailable - ' + r)"
+	@-docker exec comfyui_hq sh -c \
+		'echo "comfyui  $$(cat /opt/comfyui.sha 2>/dev/null)"; \
+		 echo "gguf     $$(cat /opt/comfyui-gguf.sha 2>/dev/null)"' \
+		2>/dev/null || echo "(container not running)"
