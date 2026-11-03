@@ -846,7 +846,60 @@ structurally cannot see it**
   block - is confounded because **in profile the legs overlap anyway**:
   `waist_ratio` ranks `w` above `e` in 3 of 6 jobs. Every cheap metric
   here is really measuring "this is a profile view", which is exactly the
-  direction that is biased. Do not add a fifth geometric proxy.
+  direction that is biased. Do not add a fifth AREA-SHAPED proxy - but see
+  the border-touch entry below, which is not one: it is an exact fact about
+  a different defect.
+
+**A HEAD CUT BY THE FRAME IS EXACT; A FOOT ON THE BORDER IS NORMAL; A RAISED
+SWORD IS NEITHER**
+- `scripts/probe-top-cut.py`, 2026-11-03. something2 reported heads cut flat
+  and proposed failing when the alpha touches the render's border. Right
+  about the top, wrong about the bottom, and incomplete about what else
+  touches the top.
+- **The cutout does not hide it.** `cutout.cut_out` returns a full-size RGBA
+  with no crop and no pad, so `cut_*.png` keeps the alpha where the model put
+  it. `pixelate` centres the bounding box later, which is why measuring the
+  FINISHED SHEET finds no opaque pixel on a cell's top row and reads as
+  "compose is not cropping". True, and also the one place the evidence has
+  been destroyed. **Measure `cut_*.png`.**
+- **TOP touch separates cut heads from intact ones**: cut reads `y0 == 0`
+  with a flat slice, intact reads `y0` 4-18 with a narrow crown.
+- **BOTTOM touch is the NORMAL state and must never be failed on.** The
+  angles LoRA frames edge to edge, so a correctly framed standing figure has
+  its feet ON the last row - the verified-good `wide` references touch it
+  too. `bot_w` does not rescue it: a verified thigh cut reads 0.402 against
+  a verified-good 0.416.
+- **A RAISED WEAPON ALSO TOUCHES THE TOP, and width cannot tell it from a
+  clipped crown.** On the first `wide` attack sheet the only three touching
+  cells were `n_0`, `ne_0`, `se_0` - all FRAME 0, which is "weapon raised
+  overhead". Opening `cut_attack_ne_0.png`: the figure is complete, the head
+  entirely intact, and what leaves the frame is the sword blade. Sword tips
+  measure top_w 0.092-0.158 against genuine mild crown clips at 0.018-0.210,
+  so the ranges overlap and no threshold splits them. **An unconditional
+  per-frame top-touch check would fail every overhead attack frame forever
+  and no redraw could clear it** - the same "check nobody can pass" trap as
+  the >= 0.31 straight-run proposal.
+  - So: **unconditional on `dir_<d>.png`** (a turnaround is a neutral
+    standing pose, nothing is overhead in any of the eight, no
+    counter-example found), and **on cells only when the frame's pose text
+    does not name overhead**. The conveyor already holds the pose string per
+    (action, direction, frame), so that exemption needs no model.
+- **A CELL CAN BE HEAD-CUT WHILE ITS REFERENCE IS FINE**, which is why this
+  cannot be left to a reference-only check. On `7f9fc8f1` `dir_s.png` reads
+  y0=4, no touch, top_w 0.021 - clean - while **5 of its 6 `idle s` cells
+  touch y0=0**. Severity inverts from the profile story too: front cuts are
+  mild crown clips (0.018-0.210), profile cuts take a third to half the head
+  (0.36-0.53).
+- **`wide` fixes cells as well as references**, measured: top touches
+  2/8 -> 0/8 on references at a fixed concept and seed, and 4 of 30 cells on
+  the first `wide` attack sheet (3 of those being the sword tips above)
+  against 21 of 30 on a medium-era idle sheet.
+- **Two mistakes made here, both from not opening the file.** (1) "The
+  defect is profile-only" was concluded from two jobs that contained no `s`
+  row at all - the absence was noted in the same breath and the conclusion
+  drawn anyway. (2) The per-frame check was recommended before checking
+  what actually fires it. Both were caught by rendering and looking, which
+  is the only instrument that has not yet been wrong about this.
 - Nothing checks the references against each other today. That is the gap a
   semantic (VLM) framing check would close, and it should judge
   `dir_<d>.png` FIRST - catching it there fixes a whole row for one call
