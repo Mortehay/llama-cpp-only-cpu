@@ -785,11 +785,57 @@ structurally cannot see it**
   zoomed torso presents a longer continuous near-vertical edge than a full
   body does. Hypothesis, not measured: if it holds, fixing framing removes
   both and no straight-run check is needed at all.
+- **It is BOTH profiles, not just `e`** (verified by eye 2026-11-03 on job
+  `b0e77e2a`, a second concept): `dir_e` AND `dir_w` are both cut at
+  mid-thigh with the head at the top edge, while `dir_s` is a clean full
+  body with feet. A consumer that re-mirrors in game sees only the `e`
+  half of it, which is why the reports name one direction.
+- **Likely mechanism, and it points at a one-variable fix nobody has
+  tried.** A figure in profile is the NARROWEST of the eight views; the
+  model frames to fill the canvas, so it scales up until the head and
+  thighs leave the frame. That predicts e/w and not s/n, which is what is
+  observed. `qwen_edit.DISTANCES` already carries a trained **`wide`**
+  token (x1.8) beside the `medium` default, and `QWEN_ISO_DISTANCE` is
+  read by **both** `turnaround_cells` and `build-sheet`'s action prompt,
+  so references and cells cannot desynchronise. Cost is fewer pixels on
+  the figure, which the 96x128 cell largely offsets. **Try this before the
+  VLM lane** - it needs one turnaround-only render to evaluate.
+  - `qwen_edit.turnaround()` (the older per-image loop, NOT the sheet
+    path) calls `angle_prompt(d, elevation)` and drops its own `distance`
+    argument on the floor. Harmless today because the module default is
+    read from the env var anyway; it would silently ignore an explicit
+    `distance=` from a caller.
+- **FOUR geometric signals have now failed to catch it. Geometry is not
+  enough** (six jobs, 2026-11-03; `probe-turnaround-framing.py`,
+  `probe-reference-legs.py`):
+
+  | job | area x med | aspect | h_frac | waist_ratio | truth |
+  |---|---|---|---|---|---|
+  | `b0e77e2a` | 1.17 | 0.762 | 1.000 | 1.200 | **CUT, seen** |
+  | `02cb757f` | **1.04** | 0.813 | **0.984** | 1.187 | **CUT, seen** |
+  | `7f9fc8f1` | 1.22 | 0.904 | 1.000 | 1.074 | cut, reported |
+  | `12b6be3a` | - | 0.854 | 1.000 | 1.135 | cut, reported |
+  | `67e00bd5` | 1.16 | 0.863 | - | 1.165 | called full body |
+  | `f11a661e` | 1.05 | 0.729 | - | 0.914 | full body |
+
+  **`02cb757f` is the decisive row:** it scores the MOST normal of the set
+  on area and `h_frac` and is visibly cut at the thigh. `h_frac`
+  saturates near 1.0 because every render is edge to edge, so it
+  discriminates nothing. And the bottom-taper idea - a standing figure
+  ends in two feet with air between them, a thigh cut ends in one solid
+  block - is confounded because **in profile the legs overlap anyway**:
+  `waist_ratio` ranks `w` above `e` in 3 of 6 jobs. Every cheap metric
+  here is really measuring "this is a profile view", which is exactly the
+  direction that is biased. Do not add a fifth geometric proxy.
 - Nothing checks the references against each other today. That is the gap a
   semantic (VLM) framing check would close, and it should judge
   `dir_<d>.png` FIRST - catching it there fixes a whole row for one call
   instead of per cell. `e` on this concept is a characterised test case:
-  three of four seeds should FAIL such a check.
+  three of four seeds should FAIL such a check. It is the EXPENSIVE fix
+  (mmproj download, `--mmproj` wiring, image content parts, and a new
+  batched stage because brain and transformer cannot share the card) - so
+  settle the `wide` distance test above first; if that works, this
+  becomes a safety net rather than the fix.
 
 **Sheet cells are checked per frame now — and the checks measure the RAW render**
 - `sheet_qc.py` scores every cell before it is fitted into 48x64, because the
@@ -961,6 +1007,51 @@ structurally cannot see it**
     hypothesis, not a defect.** Render and measure before rewriting, and
     measure the families separately - `n` exercises `back`, `e` exercises
     `side`, so one run scores both independently.
+- **`walk front` STILL repeats frames 2 and 5, and `duplicates: 0` is why
+  nobody noticed** (2026-11-03, job `b0e77e2a`). `_readme.back_is_not_front`
+  records that repeat being fixed - it was fixed for `back` and **never for
+  `front`**, where `"both feet flat on the ground, standing upright"` is
+  still frames 2 AND 5. Byte-identical renders by construction: measured
+  **0.00** apart on both `s` and `se`. `row_motion` reported
+  `duplicates: 0` for all five rows of that sheet because it counts
+  **consecutive** pairs only, exactly as the sway entry warns, and 2-5 is
+  not adjacent. **`scripts/probe-row-motion.py` reads the full pairwise
+  matrix** and names a non-adjacent copy as one.
+- **A frame that differs only by LEFT/RIGHT collapses on the front and back
+  cameras.** `walk front` 0/3 and 1/4 are left/right swaps, and head-on a
+  raised left knee and a raised right knee are near-mirrors with the same
+  silhouette: `s` min step **1.86**, and `walk n` frames 1 and 4 came back
+  **0.78** apart - a copy, from six DISTINCT strings. Measured on 512px
+  cutouts: front rows 7.60/9.65 mean step against side 24.09 and back
+  17.57-23.42 on the same sheet. So a list of six distinct strings is not
+  enough; each frame must change something the camera can actually see
+  (body height, torso lean, arm extent), not which limb is doing it.
+  `attack` fails this the other way - front/back 3 "hunched forward" and 4
+  "**still hunched**, one shoulder dropped lower" differ only in degree, and
+  `attack n` measured 0.65 apart there.
+- **An arm direction with no HEIGHT reads as pointing.** Every frame the
+  owner flagged as a "pointing pose" on the Warrior walk and attack sheets
+  is a frame whose text says `arm forward` or `arms raised high` and
+  nothing else: `walk side` 0/3, `walk back` 2/5, `attack side` 3 ("arms
+  fully extended forward, strike landed"), `attack front`/`back` 0/1,
+  `damage front`/`back` 4. The reported indices match that set exactly.
+  Qualify the height and the path against the body - "swinging low past the
+  hip, hand beside the thigh" - rather than naming a direction alone. Same
+  for lift: `"knee raised high, foot well off the ground"` is what produced
+  the kick, and it is being obeyed, not misread.
+- **NO pose string in ANY action names the weapon, which is why the sword
+  vanishes.** Grep the file: not one `frames` entry mentions a sword, a
+  blade or a held object, so "arms raised high overhead" lets the editor
+  drop what the character was holding - reported as "arms raised with NO
+  sword visible" and "empty hand forward". This is **not** the "no glow, no
+  aura" trap: that rule is about effects the conveyor cannot subtract
+  (there is no negative prompt), whereas the weapon is already in the
+  source image and naming it is additive. Name it in strike frames.
+- **A motion metric cannot see "all six frames are the same KIND of pose".**
+  `attack e` on `2eb89259` measured mean step **41.37**, the highest row on
+  that sheet, while the owner read frames 0-3 as one repeated pointing
+  pose. The arm angle genuinely changes; what does not change is what the
+  pose reads as. Do not answer a semantic complaint with `mean_step`.
 - **`/api/action-catalog` now reports what a redraw actually does**
   (`redraw.frame_context`, `.ordering`, `.max_frames`). It exists because a
   consumer UI captioned a redraw "redrawn in order, context: f0, f3" and the
